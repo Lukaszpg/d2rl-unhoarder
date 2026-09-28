@@ -1,17 +1,19 @@
-MindH1ve Loot Filter License 1.0
+# MindH1ve Loot Filter License 1.0
 
 Copyright © 2026 MindH1ve. All rights reserved.
 
 Permission is granted, free of charge, to use and redistribute the compiled
 Loot Filter plugin for Diablo II: Resurrected, subject to the following terms:
 
-1. The plugin may be used for personal or non-commercial purposes.
+1. The plugin may be used for personal and other non-commercial purposes.
 
 2. The original, unmodified plugin may be redistributed, mirrored, or included
-   in mod packs and other community distributions.
+   in free mod packs and other non-commercial community distributions.
 
-3. The plugin itself may not be sold, sublicensed, or offered as a paid product
-   without permission from the copyright holder.
+3. Commercial use is not permitted without prior written permission from the
+   copyright holder. This includes selling the plugin, including it as part of
+   a paid product or service, charging for access to it, or otherwise using it
+   for commercial gain.
 
 4. Redistribution must preserve the original copyright, license, attribution,
    and third-party notices.
