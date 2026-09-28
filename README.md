@@ -10,6 +10,10 @@ It provides ordered `Show` / `Hide` rules, ground-label styling, custom names, s
 > **DLL:** `loot-filter.dll`  
 > **Configuration:** `filter.json`
 
+## Acknowledgements
+
+I would like to say huge THANK YOU to RuffnecKk for allowing me to use his code and research from MapSense in this plugin. He's an amazing guy, go check out his work [here](https://github.com/RuffDood/RuffnecKk-D2RLoader-Suite/tree/main)!
+
 ## Features
 
 - PoE-style ordered **Show / Hide** rule blocks.
