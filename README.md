@@ -1,6 +1,6 @@
 # Loot Filter
 
-**Loot Filter** is a native, JSON-configurable loot filter for **Diablo II: Resurrected**, developed for **Sanctuary of Exile**.
+**Loot Filter** is a native, JSON-configurable loot filter for **Diablo II: Resurrected**.
 
 It provides ordered `Show` / `Hide` rules, ground-label styling, custom names, sounds, stack-aware conditions, pickup suppression for hidden items, and configurable automap markers — all driven by a live-reloadable `filter.json`.
 
@@ -51,8 +51,6 @@ Loot Filter 1.0.0 currently targets:
 - **Diablo II: Resurrected build 93847**
 - **D2RLoader 1.3.x / PluginSDK v4**
 - a **mod-scoped** D2RLoader installation
-
-The plugin was developed and tested for **Sanctuary of Exile**.
 
 ---
 
