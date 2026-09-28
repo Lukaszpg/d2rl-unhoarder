@@ -50,7 +50,7 @@ The filter intentionally does **not** expose hidden affixes or hidden unique ide
 
 ## Requirements
 
-Loot Filter 1.0.0 currently targets:
+UnHoarder 1.0.0 currently targets:
 
 - **Diablo II: Resurrected build 93847**
 - **D2RLoader 1.3.x / PluginSDK v4**
@@ -115,7 +115,7 @@ Create `filter.json` beside the DLL:
 }
 ```
 
-Save the file while the game is running. Loot Filter watches the configuration and reloads it automatically after the file has remained stable briefly.
+Save the file while the game is running. UnHoarder watches the configuration and reloads it automatically after the file has remained stable briefly.
 
 You can also force a reload with:
 
@@ -652,7 +652,7 @@ When several continued rules set the same property, the later matching rule wins
 
 ## Live reload and error handling
 
-Loot Filter watches `filter.json` while the game is running.
+UnHoarder watches `filter.json` while the game is running.
 
 When the file changes:
 
@@ -678,7 +678,7 @@ Maximum rules:            256
 
 Conditions such as rarity, item level, socket count, ethereal state, and identified state depend on qualified native item properties.
 
-If a rule could match but a required native value is unavailable, Loot Filter does **not** treat the missing value as `0` or `false`. Evaluation stops at that unresolved point and the item remains visible rather than allowing a later broad `hide` rule to conceal it accidentally.
+If a rule could match but a required native value is unavailable, UnHoarder does **not** treat the missing value as `0` or `false`. Evaluation stops at that unresolved point and the item remains visible rather than allowing a later broad `hide` rule to conceal it accidentally.
 
 This behavior is intentional.
 
@@ -696,9 +696,9 @@ Pickup suppression is tied to the qualified ground-item interaction path and sho
 
 ## Known incompatibilities
 
-Loot Filter 1.0.0 expects exclusive or qualified access to several Diablo II: Resurrected native functions on build 93847. Plugins that detour, patch, or replace these functions may disable some or all Loot Filter functionality:
+UnHoarder 1.0.0 expects exclusive or qualified access to several Diablo II: Resurrected native functions on build 93847. Plugins that detour, patch, or replace these functions may disable some or all UnHoarder functionality:
 
-| D2R RVA | Native code / role | Loot Filter dependency |
+| D2R RVA | Native code / role | UnHoarder dependency |
 |---|---|---|
 | `0x36EF50` | Item-code helper | **CRITICAL** |
 | `0x1FA9F0` | Ground-label formatter | **CRITICAL** |
@@ -716,13 +716,13 @@ Loot Filter 1.0.0 expects exclusive or qualified access to several Diablo II: Re
 | `0x8DA7E0` | Native UI row renderer | Hidden-hover styling |
 | `0x2F5020` | Native stat reader | Quantity / sockets |
 
-Loot Filter generally fails open rather than blindly chaining an unknown native hook. Depending on the overlap, this can result in the entire filter remaining inactive or only a specific feature—such as minimap icons, colors, hover styling, or pickup suppression—being disabled.
+UnHoarder generally fails open rather than blindly chaining an unknown native hook. Depending on the overlap, this can result in the entire filter remaining inactive or only a specific feature—such as minimap icons, colors, hover styling, or pickup suppression—being disabled.
 
-One additional incompatibility surface is outside D2R native code: the standalone minimap renderer hooks D3D12/DXGI methods for ExecuteCommandLists, Present, and ResizeBuffers (vtable slots 54, 140 and 145). Another overlay that hooks those methods could conflict with Loot Filter's minimap renderer even if it never touches D2R's automap code.
+One additional incompatibility surface is outside D2R native code: the standalone minimap renderer hooks D3D12/DXGI methods for ExecuteCommandLists, Present, and ResizeBuffers (vtable slots 54, 140 and 145). Another overlay that hooks those methods could conflict with UnHoarder's minimap renderer even if it never touches D2R's automap code.
 
-Loot Filter 1.0.0 contains its own standalone D3D12/ImGui automap-marker renderer.
+UnHoarder 1.0.0 contains its own standalone D3D12/ImGui automap-marker renderer.
 
-MapSense currently uses the same native automap projection rendezvous. To avoid blindly chaining conflicting hooks, Loot Filter fails closed for its minimap projection when MapSense is already loaded.
+MapSense currently uses the same native automap projection rendezvous. To avoid blindly chaining conflicting hooks, UnHoarder fails closed for its minimap projection when MapSense is already loaded.
 
 The rest of the loot filter continues to operate; only Loot Filter's automap-marker functionality is unavailable in that configuration.
 
@@ -730,7 +730,7 @@ The rest of the loot filter continues to operate; only Loot Filter's automap-mar
 
 ## Design principles
 
-Loot Filter follows a few deliberate rules:
+UnHoarder follows a few deliberate rules:
 
 - filtering should be based on information legitimately available from the dropped item;
 - unidentified items should not reveal hidden affixes;
@@ -836,7 +836,7 @@ Make sure `filter.json` is beside `loot-filter.dll` and contains a valid top-lev
 Wait briefly for automatic reload or press **Ctrl+Shift+F9**.
 
 **An invalid edit broke my filter**  
-It should not. Loot Filter keeps the previous valid ruleset active when a reload fails. Check the D2RLoader log for a `LOOT_RULES_REFUSED` message.
+It should not. UnHoarder keeps the previous valid ruleset active when a reload fails. Check the D2RLoader log for a `LOOT_RULES_REFUSED` message.
 
 **A `baseName` rule is rejected**  
 The name must match an exact entry from the active `weapons.txt` or `armor.txt` data.
@@ -854,7 +854,7 @@ This is expected in 1.0.0. The minimap projection hook deliberately refuses to i
 
 ## License
 
-See the repository's `LICENSE` file for the terms applying to Loot Filter and `THIRD_PARTY_NOTICES` for licenses and attribution relating to third-party components.
+See the repository's `LICENSE` file for the terms applying to UnHoarder and `THIRD_PARTY_NOTICES` for licenses and attribution relating to third-party components.
 
 ---
 
