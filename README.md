@@ -70,16 +70,7 @@ Place the plugin and configuration in the mod-scoped D2RLoader `plugins` directo
 
 `filter.json` must be beside `loot-filter.dll`.
 
-For users upgrading from development builds, the plugin can also read these legacy filenames when `filter.json` is absent:
-
-```text
-loot-filter.json
-loot-filter-probe.json
-```
-
 New installations should always use `filter.json`.
-
-Do not load an old `loot-filter-probe.dll` together with `loot-filter.dll`.
 
 ---
 
