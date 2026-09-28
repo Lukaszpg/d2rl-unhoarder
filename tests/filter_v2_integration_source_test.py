@@ -12,12 +12,14 @@ assert 'seen.insert(codeValue)' in s and 'fresh->schema==1' in s
 assert 'rule.show=fresh->schema==3 ? wrapperShow :' in s
 assert 'if (rule.conditions.quantity.enabled) fresh->usesQuantity=true;' in s
 assert 'unsupported-ground-condition:' in s
-assert 'GroundRuleItem(result.code,unit,rules.get(),id)' in s
+assert 'GroundRuleItem(code,unit,rules.get(),id)' in s
 assert 'CachedGroundRuleItem(verifiedCode,verifiedClassId,' in s
 assert 'rowItem.classId=append.classId;' in s
 assert 'rowItem.quantityKnown=append.quantityKnown;' in s
 assert 'ObserveGroundSoundIdentity(unitId,code,true,nativeUnit,classId);' in s
 assert 'ResolveGroundRule(snapshot.get(),' in s
-assert 'NativePickupGuardCandidates.fetch_add' in s
-assert 'NativeActionPhase' not in s[s.index('NativePickupDecision QualifyGroundPickup('):s.index('void RecordPickupDecision(')]
+guard=s[s.index('PickupGuard::Decision QualifyGroundPickup('):s.index('void __fastcall HookNativeActionDispatch(')]
+assert 'ResolveGroundRule(rules.get(),ruleItem,resolvedRule)' in guard
+assert 'NativeActionPhase' not in guard
+assert 'RecordPickupDecision' not in s
 print('v1/v2 migration + v3 composite shared ground and pickup integration: ok')

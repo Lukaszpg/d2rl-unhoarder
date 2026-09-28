@@ -6,7 +6,7 @@ assert '.version = "1.0.0"' in s
 assert 'RuleEngine::NeedsNativeQualityLevel(table->rules,item)' in s
 assert 'ResolveMatchingRulesFailOpen' in h
 assert 'ReadNativeGroundQualityLevel(' in s
-assert 'if(table && (table->usesQuality || table->usesItemLevel) &&' in s
+assert 'if((table->usesQuality || table->usesItemLevel) &&' in s
 assert s.count('const auto scalars=GroundRuleItem(code,unit,table.get(),recordId,') == 1
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'if(CheapConditionsCannotMatch(c,item)) continue;' in h

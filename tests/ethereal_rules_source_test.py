@@ -11,8 +11,8 @@ assert 'dest.etherealExpected=it.value().get<bool>();' in s
 assert 'if (rule.conditions.etherealEnabled) fresh->usesEthereal=true;' in s
 assert 'NativeEtherealMask = 0x00400000U' in mask
 assert 'GroundEthereal::FromNativeFlags(' in s
-assert 'GroundCandidateProbe::ReadLe32(itemData.data()+0x18)' in s
-assert 'GroundCandidateProbe::ReadLe32(check.data()+0x18)' in s
+assert 'GroundPropertyReader::ReadLe32(itemData.data()+0x18)' in s
+assert 'GroundPropertyReader::ReadLe32(check.data()+0x18)' in s
 assert 'if(includeEthereal &&' in s
 assert 'before!=after' in s
 assert 'GroundPropertyLive::AllowsMode(mode,purpose)' in s

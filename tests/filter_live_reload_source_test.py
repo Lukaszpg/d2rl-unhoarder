@@ -21,11 +21,13 @@ assert 'last-valid-rules-preserved=1' in s
 assert 'if (!seeded_) {Resync(stamp);return false;}' in h
 assert 'now-lastChanged_<settleMs' in h
 assert 'unsettled_=false;' in h
-# No native hook I/O, caller authorization or time-limited pickup suppression.
-start=s.index('NativePickupDecision QualifyGroundPickup(')
-end=s.index('void RecordPickupDecision(',start)
+# Pickup suppression is independent of reload/capture phases.
+start=s.index("PickupGuard::Decision QualifyGroundPickup(")
+end=s.index("void __fastcall HookNativeActionDispatch(",start)
 guard=s[start:end]
-assert 'FilterConfigPath' not in guard
-assert 'NativeActionPhase' not in guard
-assert 'NativePickupGuardCandidates.fetch_add' in guard
-print('1.0.0 live reload worker and pickup regression contracts: ok')
+assert "FilterConfigPath" not in guard
+assert "NativeActionPhase" not in guard
+assert "RecordPickupDecision" not in s
+assert "DrainPickupDecisions" not in s
+assert "ResolveGroundRule(rules.get(),ruleItem,resolvedRule)" in guard
+print("1.0.0 live reload worker and production pickup regression contracts: ok")

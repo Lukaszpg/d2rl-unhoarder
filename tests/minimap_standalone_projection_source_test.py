@@ -9,10 +9,11 @@ assert 'reason=mapsense-loaded-shared-rendezvous' in s
 assert 'InstallInlineHook(AutomapRenderUnitRva' in s
 assert 'original(unit,automapContext);' in s
 assert 'ProjectClientToAutomap(automapContext,&projected' in s
-assert 'AutomapProjectionProbe::WorldSubtileToClient' in s
-assert 'AutomapProjectionProbe::PackClientCoordinates' in s
-assert 'AutomapProjectionProbe::Contains(clip,screen)' in s
+assert 'AutomapProjection::WorldSubtileToClient' in s
+assert 'AutomapProjection::PackClientCoordinates' in s
+assert 'AutomapProjection::Contains(clip,screen)' in s
 assert 'LOOT_MINIMAP_PROJECTION_READY version=1.0.0' in s
-assert 'mapSenseDependency=0 standalone=1 coexistence=fail-closed-if-mapsense-loaded' in s
+assert 'mapSenseDependency=0' in s
+assert 'AutomapProjectionProbe' not in s
 assert 'InstallAutomapPayloadObserver' not in s
 print('1.0.0 standalone native automap projection production contract ok')

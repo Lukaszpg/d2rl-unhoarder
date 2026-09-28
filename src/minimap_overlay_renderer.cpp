@@ -573,7 +573,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
         return false;
     }
     HWND probeWindow = CreateWindowExW(
-        0U, className, L"SoE Loot Filter Minimap Probe",
+        0U, className, L"Loot Filter Minimap Overlay",
         WS_OVERLAPPEDWINDOW, 0, 0, 100, 100,
         nullptr, nullptr, Module, nullptr);
     if (probeWindow == nullptr) return false;

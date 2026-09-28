@@ -14,11 +14,11 @@ assert 'ExpectedNativeUiOpenStateWitness' in p
 assert 'ExpectedNativeUiCloseStateWitness' in p
 assert 'ExpectedNativeUiToggleStateWitness' in p
 assert 'LOOT_MINIMAP_AUTOMAP_GATE_READY version=1.0.0' in p
-assert 'no-timeout-only-fallback=1' in p
+assert 'Base+NativeUiStateTableRva' in p
 assert 'SetAutomapVisibilityTable' in h
 assert 'NativeAutomapUiStateIndex = 10U' in r
 assert 'IsNativeAutomapVisible()' in r
 assert 'ClearPublishedFrameBestEffort();' in r
 assert 'MarkerFrameFreshMilliseconds = 250U' in r
-assert 'automapSuppressedFrames' in h and 'automapSuppressedFrames' in p
+assert 'automapSuppressedFrames' in h and 'automapSuppressedFrames' in r
 print('1.0.0 native automap visibility gate / immediate close suppression: ok')

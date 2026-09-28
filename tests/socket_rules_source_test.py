@@ -12,7 +12,7 @@ assert 'GroundPropertyLive::AllowsMode(before[3],purpose)' in s
 assert 'before!=after' in s and 'finalHeader!=before || first!=second' in s
 assert 'if(!getter) return false;' in s
 assert 'item.socketsKnown=known' in s
-assert 'if(!known) break; // fail open' in s
+assert 'if(!known) break;' in s
 assert 'NextNativeProperty(table->rules,item)' in s
 assert 'if(c.sockets.enabled && !item.socketsKnown)' in h
 assert 'if(c.sockets.enabled && !item.socketsKnown) return MatchState::Unknown;' in h

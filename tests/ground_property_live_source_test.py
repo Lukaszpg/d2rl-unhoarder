@@ -23,7 +23,7 @@ assert 'scalarOut->qualityKnown=candidate.qualityKnown;' in s
 assert '&verifiedProperties);' in s
 assert s.count('verifiedQuantity,snapshot.get(),&verifiedProperties)')==2
 assert 'CachedGroundRuleItem(verifiedCode,verifiedClassId,' in s
-assert 'GroundRuleItem(result.code,unit,rules.get(),id)' in s
+assert 'GroundRuleItem(code,unit,rules.get(),id)' in s
 resolver=s[s.index('bool ResolveGroundRule('):s.index('// 0.1.99: backend selection')]
 assert 'RuleEngine::ResolveMatchingRulesFailOpen(table->rules,item,' in resolver
 assert 'MergeGroundRuleAction(output,rule);' in resolver

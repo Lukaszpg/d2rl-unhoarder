@@ -9,7 +9,7 @@ assert 'MinimapOverlayRenderer::Publish(markerFrame);' in p
 assert 'ForgetMinimapProjectionItem(item->runtimeId);' in p
 assert 'ForgetMinimapProjectionItem(info.runtimeId);' in p
 join=p[p.index('void __cdecl OnInWorldGameJoined'):p.index('void RegisterInWorldLifecycle')]
-assert join.index('ArmMinimapTracking();') < join.index('InitializeMinimapMarkerRenderer();') < join.index('TryAttachInWorldBackend();')
+assert join.index('ResetMinimapTracking();') < join.index('InitializeMinimapMarkerRenderer();') < join.index('TryAttachInWorldBackend();')
 assert 'MarkerFrameFreshMilliseconds = 250U' in r
 assert 'MinimapIconPolicy::MaximumSizePx' in r and 'const float radius=sizePx*0.5F;' in r
 assert 'AddConvexPolyFilled' in r

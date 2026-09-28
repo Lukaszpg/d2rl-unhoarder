@@ -9,7 +9,7 @@ assert 'L"filter.json"' in s
 assert 'L"loot-filter.json"' in s  # v1.0.0 migration fallback only
 assert 'L"loot-filter-probe.json"' in s  # probe-era migration fallback only
 assert 'GetModuleHandleW(L"loot-filter-probe.dll")' in s
-worker=s[s.index('void RuntimeWorkerLoop('):s.index('// The best currently verified downstream',s.index('void RuntimeWorkerLoop('))]
+worker=s[s.index('void RuntimeWorkerLoop('):s.index('void RuntimeWorkerStart(',s.index('void RuntimeWorkerLoop('))]
 assert 'VK_F9' in worker
 for key in ('VK_F6','VK_F7','VK_F8','VK_F10','VK_F11','VK_F12'):
     assert key not in worker,key

@@ -8,18 +8,13 @@
 #include "hover_label_style.hpp"
 #include "ground_quantity_label.hpp"
 #include "ground_visibility_policy.hpp"
-#include "world_probe_evidence.hpp"
-#include "world_probe_label_stack.hpp"
-#include "world_probe_upstream_calls.hpp"
-#include "hidden_pickup_trace_policy.hpp"
-#include "native_action_trace_policy.hpp"
 #include "native_pickup_guard_policy.hpp"
 #include "filter_rule_engine.hpp"
 #include "base_name_table.hpp"
 #include "item_type_table.hpp"
-#include "ground_property_candidate_compare.hpp"
-#include "minimap_world_position_probe_policy.hpp"
-#include "automap_projection_probe_policy.hpp"
+#include "ground_property_reader.hpp"
+#include "minimap_world_position.hpp"
+#include "automap_projection.hpp"
 #include "minimap_overlay_renderer.hpp"
 #include "minimap_icon_policy.hpp"
 #include "ground_property_live_policy.hpp"
@@ -27,18 +22,13 @@
 #include "ground_identified_policy.hpp"
 #include "filter_live_reload.hpp"
 #include "native_row_live_display_match.hpp"
-#include "hover_differential_policy.hpp"
 #include "ground_sound_registry.hpp"
 #include "named_sound_loader_identity.hpp"
 #include "native_row_string_layout.hpp"
-#include "native_row_label_correlation.hpp"
-#include "native_row_handoff_scan.hpp"
 #include "native_row_append_match.hpp"
-#include "native_row_latest_match.hpp"
-#include "native_row_bg_trial_policy.hpp"
+#include "native_row_bg_policy.hpp"
 #include "native_row_bg_live_policy.hpp"
 #include "native_row_font_color_policy.hpp"
-#include <D2RLPlugin/shared_events.h>
 // Suite-vendored PluginSDK-v4 declares ThreadServiceV1 and requires explicit service ID/version.
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
@@ -91,49 +81,18 @@ constexpr std::uint32_t CanonicalItemCode(std::uint32_t raw) noexcept {
 }
 
 constexpr std::uintptr_t GetItemCodeRva = 0x36EF50;
-constexpr std::uintptr_t InvestigatedCallerRva = 0x662A3D;
 constexpr std::array<std::uint8_t, 32> ExpectedGetItemCode{
     0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83,
     0xEC, 0x20, 0x48, 0x8B, 0xF9, 0x48, 0x85, 0xC9,
     0x75, 0x13, 0x88, 0x4C, 0x24, 0x30, 0x48, 0x8D,
     0x4C, 0x24, 0x30, 0xE8, 0x80, 0x83, 0xFF, 0xFF,
 };
-constexpr std::array<std::uintptr_t, 7> HistoricalLabelLimitAnchors{
-    0x1516EC1, 0x1516ED1, 0x1516F43,
-    0x1519A1B, 0x1519A52, 0x1519AAD, 0x1519AFE
-};
-// Live 93847 helper called by the historical label-record path at 0x1516ECC.
-// This is an observed collection helper, NOT a verified item-label renderer.
-constexpr std::uintptr_t CollectionHelperRva = 0x1517C70;
-constexpr std::uintptr_t CollectionCallRva = 0x1516ECC;
-constexpr std::array<std::uint8_t, 16> ExpectedCollectionHelper{
-    0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57,
-    0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xEC, 0x20
-};
-constexpr std::array<std::uint8_t, 5> ExpectedCollectionCaller{
-    0xE8, 0x9F, 0x0D, 0x00, 0x00
-};
 constexpr std::uint32_t DivineCode =
     static_cast<std::uint32_t>('d') |
     (static_cast<std::uint32_t>('i') << 8U) |
     (static_cast<std::uint32_t>('v') << 16U) |
     (static_cast<std::uint32_t>('o') << 24U);
-constexpr std::size_t MaximumPhases = 12;
-constexpr std::size_t MaximumRows = 512;
-constexpr std::size_t MaximumDumpRows = 80;
-constexpr ULONGLONG CaptureMilliseconds = 8'000;
-// A candidate display record: the suite patch metadata suggests a 0x144-byte
-// stride.  We copy at most this exact region, without following pointers.
-constexpr std::size_t RecordBytes = 0x144;
-constexpr std::size_t CandidateTextOffset = 0x28; // relative to arg3, unverified
 constexpr std::size_t CandidateTextMaximum = 96;
-constexpr std::size_t CandidateTextVariants = 16;
-constexpr std::uint64_t TextSamplingInterval = 7;
-// The known container is capped at 32 and prior patch metadata identifies a
-// 0x144-byte stride. Treat all 32 slots as *candidate* records, not a proven
-// item count. Only enumerate while an explicit collection capture is armed.
-// Formatter 0x1FA9F0 has SIX arguments: the 5th and 6th are stack-
-// passed by 0x15171E5. Never replace it with a four-argument thunk.
 constexpr std::uintptr_t LabelFormatterRva = 0x1FA9F0;
 // _ReturnAddress() points AFTER the 5-byte CALL, not at the CALL opcode.
 // Two verified call sites enter 0x1FA9F0 in the ground-label producer body.
@@ -165,57 +124,19 @@ constexpr std::array<std::uint8_t,5> ExpectedInnerNameCall{
 };
 constexpr std::size_t InnerNameBufferBytes = 0x80; // observed r8d=0x80
 constexpr std::size_t InnerNamePrefixBytes = 4; // text at record+0x28
-constexpr char LongDivineLabel[] = "FILTERED DIVINE ORB - LONG LABEL TEST";
-constexpr char ShortDivineLabel[] = "ORB";
-static_assert(sizeof(LongDivineLabel) <= CandidateTextMaximum);
-static_assert(sizeof(ShortDivineLabel) <= CandidateTextMaximum);
-static_assert(sizeof(LongDivineLabel) <= InnerNameBufferBytes - InnerNamePrefixBytes);
-// 0 disabled, 1 observe only, 2 long name, 3 short name.
-enum class GeometryMode : std::uint32_t { Off, Observe, Long, Short, Rules };
-constexpr std::size_t FormatterSlotsPerPhase = 8;
-// First, explicitly opt-in, same-length GROUND LABEL ONLY PoC.
-// classId=0x2C2 is observed for the Divine Orb in the 0.1.16 build 93847
-// capture. This is NOT a general item-code resolver, nor a portable ID.
-constexpr std::uint32_t DivineNativeClassId = 0x2C2;
-constexpr char OriginalDivineLabel[] = "Divine Orb";
-constexpr char ReplacementDivineLabel[] = "FILTER ORB";
-static_assert(sizeof(OriginalDivineLabel) == sizeof(ReplacementDivineLabel));
-constexpr std::size_t CandidateSlotCount = 32;
-constexpr std::uint64_t SlotSamplingInterval = 79;
+enum class GeometryMode : std::uint32_t { Off, Rules };
 
 using GetItemCodeFn = std::uint32_t(__fastcall*)(void*) noexcept;
-// The x64 ABI returns a scalar in RAX, if any. We forward all four register
-// arguments and the original RAX to avoid changing the caller's observable state.
-// Do not infer semantic types or dereference any argument in the observer.
-using CollectionHelperFn = std::uint64_t(__fastcall*)(
-    void*, void*, void*, std::uint64_t) noexcept;
 using LabelFormatterFn = std::uint8_t(__fastcall*)(
     void*, void*, void*, std::uint32_t, std::uint64_t, std::uint64_t) noexcept;
 LabelFormatterFn OriginalLabelFormatter{};
-std::atomic_bool FormatterHookInstalled{false};
+std::atomic_bool FormatterHookInstalled{};
 std::atomic<std::uint64_t> FormatterCalls{};
-std::atomic<std::uint64_t> FormatterContention{};
-// Disabled by default. The switch is explicit, reversible and game-session-only.
-std::atomic_bool RenameArmed{};
-std::atomic<std::uint64_t> RenameQualified{};
-std::atomic<std::uint64_t> RenameNonDivine{};
-std::atomic<std::uint64_t> RenameIdMismatch{};
-std::atomic<std::uint64_t> RenameTextMismatch{};
-std::atomic<std::uint64_t> RenameReadFailures{};
-std::atomic<std::uint64_t> RenameWrites{};
-// New opt-in code-matched label PoC: no Divine class ID or original name
-// comparison. Rule lookup uses the formatter unit and the proven helper
-// trampoline. Fixed-width substitution is intentional until geometry is solved.
-struct CodeNameRule {
-    std::uint32_t code;
-    const char* replacement;
-    std::size_t replacementBytes; // INCLUDING the trailing NUL
-};
-constexpr std::array<CodeNameRule, 1> CodeNameRules{{
-    {DivineCode, ReplacementDivineLabel, sizeof(ReplacementDivineLabel)},
-}};
-// Separate opt-in pre-measurement name writer hook, never co-armed with
-// the legacy after-measurement experiments. No manual geometry arithmetic.
+const D2RL::PluginContext* Context{};
+std::uintptr_t Base{};
+std::uint32_t ImageSize{};
+GetItemCodeFn OriginalGetItemCode{};
+std::atomic_bool HookInstalled{};
 using InnerNameWriterFn = std::uint64_t(__fastcall*)(
     void*, void*, std::uint32_t, void*) noexcept;
 InnerNameWriterFn OriginalInnerNameWriter{};
@@ -465,10 +386,11 @@ bool WritableRange(void* address,std::size_t bytes) noexcept {
         start+memory.RegionSize-target>=bytes;
 }
 
-// Declared before the ground-text status reporter; defined after capture setup.
+// Declared before the ground-text status reporter; defined below.
 void Emit(const char* message) noexcept;
 // Declared before 0.2.39 ground evidence drainers; defined with other text helpers.
 void CodeText(std::uint32_t code, char (&out)[5]) noexcept;
+bool PrintableItemCode(std::uint32_t code) noexcept;
 
 void ReportGroundGlyphStatus() noexcept {
     char msg[620]{};
@@ -507,42 +429,6 @@ void ReportGroundGlyphStatus() noexcept {
 
 
 
-std::atomic_bool CodeRenameArmed{};
-std::atomic<std::uint64_t> CodeRenameQualified{};
-std::atomic<std::uint64_t> CodeRenameIdMismatch{};
-std::atomic<std::uint64_t> CodeRenameLookups{};
-std::atomic<std::uint64_t> CodeRenameInvalid{};
-std::atomic<std::uint64_t> CodeRenameNoRule{};
-std::atomic<std::uint64_t> CodeRenameRuleMatches{};
-std::atomic<std::uint64_t> CodeRenameTextLengthMismatch{};
-std::atomic<std::uint64_t> CodeRenameReadFailures{};
-std::atomic<std::uint64_t> CodeRenameWrites{};
-// Opt-in code bridge: sample the *formatter native unit* using the game's
-// existing item-code helper trampoline. This is intentionally NOT enabled by
-// rename-arm and does not change the existing class-ID rename behavior.
-// Only one helper call per newly claimed (unit, record) observation, during an
-// explicit timed capture. Do not start calling this from every frame.
-std::atomic_bool CodeBridgeArmed{};
-std::atomic<std::uint64_t> CodeBridgeAttempts{};
-std::atomic<std::uint64_t> CodeBridgeSuccess{};
-std::atomic<std::uint64_t> CodeBridgeGuardReject{};
-std::atomic<std::uint64_t> CodeBridgeInvalid{};
-std::atomic<std::uint64_t> CodeBridgeDivine{};
-// The map was observed with class ID 0x2BA; its base code has NOT been
-// established. In particular, mp04 appears even with no map on the ground.
-constexpr std::uint32_t ObservedMapNativeClassId = 0x2BA;
-std::atomic<std::uint64_t> CodeBridgeMap{};
-std::atomic<std::uint64_t> CodeBridgeOther{};
-std::atomic<std::uint64_t> CodeBridgeDivineMismatch{};
-const D2RL::PluginContext* Context{};
-std::uintptr_t Base{};
-std::uint32_t ImageSize{};
-GetItemCodeFn OriginalGetItemCode{};
-std::atomic_bool HookInstalled{false};
-
-// Build 93847 / D2RLoader 1.3: native ItemStatCost `quantity` is stat 70.
-// Use the loader-owned GetUnitStat bridge, NEVER an unqualified direct
-// D2RCore call or another hook. This is initialized once after SoE attaches.
 constexpr std::int32_t GroundQuantityStatId=70;
 constexpr std::uintptr_t GroundQuantityReaderRva=0x2F5020;
 constexpr std::array<std::uint8_t,10> GroundQuantityBridgeLegacy{{
@@ -674,248 +560,6 @@ std::uint32_t GroundStackQuantity(const void* borrowedNativeUnit) noexcept {
 
 
 
-// Socket qualification observer retained from v0.2.50. Native stat 194 was
-// confirmed against SDK for ground mode-3 counts 0..6. The active v0.2.51
-// reader below also admits mode 5 ONLY through verified label presentation.
-// F8 observer remains opt-in, read-only, with no native item writes.
-constexpr std::int32_t SocketProbeCandidateStatId=194;
-constexpr std::size_t SocketProbeMaxItems=12;
-constexpr std::size_t SocketProbeMaxSamples=SocketProbeMaxItems*2;
-struct SocketProbeRow {
-    std::uint32_t code{},classId{},unitId{},mode{};
-    bool candidateKnown{},sdkMatched{},reported{},sdkReported{};
-    std::int32_t candidate{};
-    std::uint32_t sdkSockets{},sdkQuality{},sdkContainer{};
-};
-std::atomic_bool SocketProbeArmed{};
-std::mutex SocketProbeMutex;
-std::array<SocketProbeRow,SocketProbeMaxSamples> SocketProbeRows{};
-std::size_t SocketProbeCount{};
-std::atomic<std::uint32_t> SocketProbeContention{};
-
-void ArmSocketProbe() noexcept {
-    SocketProbeArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard lock(SocketProbeMutex);
-        SocketProbeRows.fill({});SocketProbeCount=0;
-    }
-    SocketProbeContention.store(0,std::memory_order_relaxed);
-    SocketProbeArmed.store(true,std::memory_order_release);
-    Emit("LOOT_SOCKET_PROBE_ARMED version=1.0.0 trigger=Ctrl+Shift+F8 "
-         "source=verified-ground-label-mode5-or-mode3 "
-         "candidate=item_numsockets-stat194 via qualified-GetUnitStat "
-         "sdk=post-pickup-runtime-id+code+classId "
-         "maxItems=12 maxModesPerItem=2 zeroIsCandidateNotVerified=1 "
-         "socketsJson=SUPPORTED activeRulesReadSeparate=1 pickupUnchanged=1");
-}
-
-// Called only from an existing verified label or native formatter record
-// path. The label owner provides exact code, expected runtime ID/classId.
-// Validate both UnitAny headers around the qualified stat call: do NOT treat
-// a transient mode-5 unit as a mode-3 pickup candidate.
-void ObserveSocketProbe(const void* unit,std::uint32_t code,
-    std::uint32_t id,std::uint32_t classId) noexcept {
-    if(!SocketProbeArmed.load(std::memory_order_acquire) || !unit || !id ||
-       !code || !Context || !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") return;
-    code=CanonicalItemCode(code);
-    std::array<std::uint32_t,4> before{},after{};
-    SIZE_T copied{};
-    if(!ReadProcessMemory(GetCurrentProcess(),unit,before.data(),
-           sizeof(before),&copied) || copied!=sizeof(before) ||
-       before[0]!=4 || before[1]!=classId || before[2]!=id ||
-       !GroundPropertyLive::AllowsMode(before[3],
-           GroundPropertyLive::Purpose::VerifiedLabel)) return;
-    // Fast duplicate/identity cap before any native getter call.
-    if(!SocketProbeMutex.try_lock()) {
-        SocketProbeContention.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    bool duplicate=false;
-    std::size_t identities=0;
-    for(std::size_t i=0;i<SocketProbeCount;++i) {
-        const auto& row=SocketProbeRows[i];
-        if(row.unitId==id && row.code==code && row.classId==classId) {
-            if(row.mode==before[3]) duplicate=true;
-        } else {
-            bool first=true;
-            for(std::size_t j=0;j<i;++j)
-                if(SocketProbeRows[j].unitId==row.unitId &&
-                   SocketProbeRows[j].code==row.code &&
-                   SocketProbeRows[j].classId==row.classId) {first=false;break;}
-            if(first) ++identities;
-        }
-    }
-    const bool alreadyPresent=std::any_of(SocketProbeRows.begin(),
-        SocketProbeRows.begin()+SocketProbeCount,
-        [=](const SocketProbeRow& row) {
-            return row.unitId==id && row.code==code && row.classId==classId;
-        });
-    const bool capacityFull=SocketProbeCount>=SocketProbeMaxSamples ||
-        (!alreadyPresent && identities>=SocketProbeMaxItems);
-    SocketProbeMutex.unlock();
-    if(duplicate || capacityFull) return;
-    const auto getter=GroundQuantityReader.load(std::memory_order_acquire);
-    bool candidateKnown=false;
-    std::int32_t candidate{};
-    if(getter) {
-        const auto value=getter(const_cast<void*>(unit),
-            SocketProbeCandidateStatId,0);
-        // Candidate range only, not a qualification. Known zero differs from
-        // absent bridge and should be checked against SDK's zero socketCount.
-        if(value>=0 && value<=15) {
-            candidate=value;candidateKnown=true;
-        }
-    }
-    copied=0;
-    if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),
-           sizeof(after),&copied) || copied!=sizeof(after) ||
-       before!=after) return;
-    if(!SocketProbeMutex.try_lock()) {
-        SocketProbeContention.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    duplicate=false;identities=0;bool alreadyPresentNow=false;
-    for(std::size_t i=0;i<SocketProbeCount;++i) {
-        const auto& row=SocketProbeRows[i];
-        if(row.unitId==id && row.code==code && row.classId==classId) {
-            alreadyPresentNow=true;
-            if(row.mode==before[3]) duplicate=true;
-        }
-        bool first=true;
-        for(std::size_t j=0;j<i;++j)
-            if(SocketProbeRows[j].unitId==row.unitId &&
-               SocketProbeRows[j].code==row.code &&
-               SocketProbeRows[j].classId==row.classId) {first=false;break;}
-        if(first) ++identities;
-    }
-    if(!duplicate && SocketProbeCount<SocketProbeMaxSamples &&
-       (alreadyPresentNow || identities<SocketProbeMaxItems)) {
-        auto& row=SocketProbeRows[SocketProbeCount++];
-        row.code=code;row.classId=classId;row.unitId=id;
-        row.mode=before[3];row.candidateKnown=candidateKnown;
-        row.candidate=candidate;
-    }
-    SocketProbeMutex.unlock();
-}
-
-void ObserveSocketProbeCarriedSdk(const D2RL::Items::ItemInfo* info) noexcept {
-    if(!info || info->structSize<D2RL::Items::ItemInfoRequiredSize ||
-       !info->runtimeId ||
-       info->container==D2RL::Items::ItemContainer::Ground ||
-       !SocketProbeMutex.try_lock()) return;
-    for(std::size_t i=0;i<SocketProbeCount;++i) {
-        auto& row=SocketProbeRows[i];
-        if(row.unitId==info->runtimeId &&
-           row.code==CanonicalItemCode(info->code) &&
-           row.classId==info->classId && !row.sdkMatched) {
-            row.sdkMatched=true;row.sdkSockets=info->socketCount;
-            row.sdkQuality=static_cast<std::uint32_t>(info->quality);
-            row.sdkContainer=static_cast<std::uint32_t>(info->container);
-        }
-    }
-    SocketProbeMutex.unlock();
-}
-
-void DrainSocketProbe() noexcept {
-    std::array<SocketProbeRow,SocketProbeMaxSamples> pending{};
-    std::size_t count{};
-    if(!SocketProbeMutex.try_lock())return;
-    for(std::size_t i=0;i<SocketProbeCount;++i) {
-        auto& row=SocketProbeRows[i];
-        if(!row.reported || (row.sdkMatched && !row.sdkReported)) {
-            pending[count++]=row;
-            row.reported=true;
-            if(row.sdkMatched) row.sdkReported=true;
-        }
-    }
-    SocketProbeMutex.unlock();
-    for(std::size_t i=0;i<count;++i) {
-        const auto& row=pending[i];
-        char code[5]{};CodeText(row.code,code);
-        char line[400]{};
-        if(row.sdkMatched) {
-            std::snprintf(line,sizeof(line),
-                "LOOT_SOCKET_PROBE_SDK_COMPARE version=1.0.0 "
-                "code='%.4s' unitId=%u classId=%u mode=%u "
-                "stat194=%d candidateKnown=%u sdkSockets=%u sdkQuality=%u "
-                "sdkContainer=%u result=%s postPickup=1 "
-                "mode5NeedsIndependentVerification=1 socketsJson=SUPPORTED",
-                code,row.unitId,row.classId,row.mode,row.candidate,
-                row.candidateKnown?1U:0U,row.sdkSockets,row.sdkQuality,
-                row.sdkContainer,!row.candidateKnown?"UNAVAILABLE":
-                    row.candidate==static_cast<std::int32_t>(row.sdkSockets)?
-                    "MATCH":"MISMATCH");
-        } else {
-            std::snprintf(line,sizeof(line),
-                "LOOT_SOCKET_PROBE_SAMPLE version=1.0.0 "
-                "code='%.4s' unitId=%u classId=%u mode=%u "
-                "stat194=%d candidateKnown=%u sdk=AWAITING_PICKUP "
-                "zeroIsCandidateNotVerified=1 socketsJson=SUPPORTED",
-                code,row.unitId,row.classId,row.mode,row.candidate,
-                row.candidateKnown?1U:0U);
-        }
-        Emit(line);
-    }
-    const auto contention=SocketProbeContention.exchange(0,
-        std::memory_order_relaxed);
-    if(contention) {
-        char line[140]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_SOCKET_PROBE_CONTENTION version=1.0.0 count=%u "
-            "samples-may-be-incomplete=1",contention);
-        Emit(line);
-    }
-}
-
-// Read only fields already verified by the 0.2.39 formatter/pickup paths:
-// UnitAny type at +0, classId at +4, id at +8; stat70 from an admitted
-// loader-owned reader. No unqualified ItemData/quality/ilvl/flag offsets.
-// Definitions appear later; the opt-in evidence probe only consumes known data.
-bool PrintableItemCode(std::uint32_t code) noexcept;
-
-// 0.2.39: on-demand, read-only ground item/property correlation evidence.
-// Native UnitAny +0x10 is a candidate pointer from 0.2.36 capture, NOT a
-// qualified ItemData pointer. One guarded hop ONLY during F8 evidence. No
-// pointer-like fields found in the target are ever chased. No rule changes.
-// The *same qualified native pointer* is used by label and pickup paths.
-// Do not interpret these bytes as ItemData/quality/level/flags until correlated
-// against known items and qualified native readers for build 93847.
-// Ctrl+Shift+F8 captures at most 12 distinct (code,id) ground formatter units;
-// captures have no expiration and never participate in visibility decisions.
-constexpr std::size_t GroundPropertyEvidenceCapacity=12;
-constexpr std::size_t GroundPropertyEvidenceBytes=0xC0;
-constexpr std::size_t GroundPropertyEvidenceFallbackBytes=0x80;
-constexpr std::size_t GroundPropertyCandidateBytes=0x100;
-// Do not encode guessed field meanings here. See the portable probe policy.
-enum class GroundPropertyCandidateStatus : std::uint32_t {
-    Unchecked=0, ZeroOrNoncanonical=1, BadPage=2, ReadFailed=3,
-    ReadOk=4, IdentityChanged=5
-};
-struct GroundPropertySdkEvidence {
-    bool matched{};
-    GroundCandidateProbe::Snapshot candidateSnapshot{};
-    std::uint32_t code{},runtimeId{},classId{},quality{},itemLevel{};
-    std::uint32_t sockets{},stateFlags{},container{};
-};
-struct GroundPropertyEvidence {
-    std::uint32_t code{},classId{},unitId{},mode{};
-    std::uint32_t bytesRead{};
-    std::array<std::uint8_t,GroundPropertyEvidenceBytes> bytes{};
-    // A scalar address is retained only within this bounded diagnostic queue.
-    // It is never logged, used for identity lookup, or consulted by rule eval.
-    std::uintptr_t candidateAddress{};
-    GroundPropertyCandidateStatus candidateStatus{
-        GroundPropertyCandidateStatus::Unchecked};
-    std::uint32_t candidateBytesRead{};
-    std::array<std::uint8_t,GroundPropertyCandidateBytes> candidateBytes{};
-    GroundPropertySdkEvidence sdk{};
-};
-std::atomic_bool GroundPropertyEvidenceArmed{};
-std::mutex GroundPropertyEvidenceMutex;
-std::array<GroundPropertyEvidence,GroundPropertyEvidenceCapacity>
-    GroundPropertyEvidenceRows{};
-std::size_t GroundPropertyEvidenceCount{},GroundPropertyEvidenceReported{};
-std::atomic<std::uint64_t> GroundPropertyEvidenceReadFailed{};
-std::atomic<std::uint64_t> GroundPropertyEvidenceContended{};
 
 bool GroundCandidatePageReadable(std::uintptr_t address,
     std::size_t bytes) noexcept {
@@ -936,39 +580,10 @@ bool GroundCandidatePageReadable(std::uintptr_t address,
         address-base<=page.RegionSize-bytes;
 }
 
-// v1.0.0 — qualified ground position feeding JSON-configured automap markers.
-// Based on SoE 0.18.244 native_contract.hpp portal-coordinate witness:
-//   UnitAny.pStaticPath +0x38; D2StaticPath.tGameCoord +0x10.
-// v0.2.63 qualified this layout for ground items on build 93847: the same
-// Divine Orb changed 5110,5015 -> 5072,5154 after pickup/move/redrop, with
-// exact mode-5/mode-3 agreement at both locations. No game-facing code writes
-// through this path; it remains a guarded read-only ground-position reader.
-constexpr std::size_t MinimapProbeCapacity=32;
-constexpr std::size_t MinimapUnitBytes=0x40;
-constexpr std::size_t MinimapPathBytes=0x28;
-enum class MinimapProbeStatus : std::uint8_t {
-    UnitReadFailed, NullPath, PathUnreadable,
-    PathChanged, ImplausibleCoords, CandidateCoord
-};
-struct MinimapProbeSample {
-    std::uint32_t code{},unitId{},classId{},mode{};
-    std::uint32_t x{},y{};
-    MinimapProbeStatus status{MinimapProbeStatus::UnitReadFailed};
-    std::array<std::uint8_t,16> coordWindow{}; // bytes at staticPath+0x10..0x1F
-};
-std::atomic_bool MinimapProbeArmed{};
-std::mutex MinimapProbeMutex;
-std::array<MinimapProbeSample,MinimapProbeCapacity> MinimapProbeRows{};
-std::size_t MinimapProbeCount{},MinimapProbeReported{};
-std::atomic<std::uint64_t> MinimapProbeContended{};
 
-// v1.0.0 — standalone native automap projection feeding a copied marker frame.
-// MapSense 2.0.2 independently qualified these build-93847 native contracts:
-//   D2R+0xD76E0 RenderAutomapUnit(unit, AutomapContext*)
-//   D2R+0xD4910 ProjectClientToAutomap(context, out, packedClientXY)
-// The loot filter ports only the small projection contract; MapSense is NOT a
-// runtime dependency. The hook forwards D2R exactly once and records bounded
-// diagnostic samples only after the local-player automap pass is proven.
+// Build 93847 production automap projection for JSON-configured item markers.
+// These contracts were qualified during development and are retained with
+// fingerprint validation; no diagnostic sample/capture buffers remain.
 constexpr std::uintptr_t AutomapRenderUnitRva=0xD76E0;
 constexpr std::uintptr_t ProjectClientToAutomapRva=0xD4910;
 constexpr std::uintptr_t GetLocalDataContextRva=0x8B2D0;
@@ -1014,14 +629,11 @@ constexpr std::size_t AutomapClipTopOffset=0x1C;
 constexpr std::size_t AutomapClipWidthOffset=0x20;
 constexpr std::size_t AutomapClipHeightOffset=0x24;
 constexpr std::uint64_t MinimapProjectionItemFreshMilliseconds=5000;
-constexpr std::uint64_t MinimapProjectionSampleIntervalMilliseconds=100;
 constexpr std::size_t MinimapProjectionItemCapacity=256;
-constexpr std::size_t MinimapProjectionSampleCapacity=96;
+constexpr std::size_t MinimapUnitBytes=0x40;
+constexpr std::size_t MinimapPathBytes=0x28;
 
-struct NativeAutomapPoint final {
-    std::int32_t x{};
-    std::int32_t y{};
-};
+struct NativeAutomapPoint final { std::int32_t x{},y{}; };
 using AutomapRenderUnitFn=void(__fastcall*)(void*,void*) noexcept;
 using ProjectClientToAutomapFn=NativeAutomapPoint*(__fastcall*)(
     void*,NativeAutomapPoint*,std::uint64_t) noexcept;
@@ -1034,13 +646,7 @@ GetLocalDataContextFn GetLocalDataContext{};
 GetLocalPlayerFn GetLocalPlayer{};
 std::atomic_bool AutomapProjectionHookInstalled{};
 std::atomic_bool AutomapProjectionArmed{};
-std::atomic<std::uint64_t> AutomapProjectionPasses{};
-std::atomic<std::uint64_t> AutomapProjectionProjectCalls{};
-std::atomic<std::uint64_t> AutomapProjectionFailures{};
-std::atomic<std::uint64_t> AutomapProjectionContention{};
-std::atomic<std::uint64_t> AutomapProjectionLastSampleTick{};
 std::atomic<std::uint64_t> AutomapMarkerFrameSequence{};
-std::atomic_bool AutomapMarkerFirstPublishLogged{};
 
 struct MinimapProjectionItem final {
     std::uint32_t code{},unitId{},classId{},mode{};
@@ -1053,62 +659,30 @@ struct MinimapProjectionItem final {
     float sizePx{MinimapIconPolicy::DefaultSizePx};
 };
 std::mutex MinimapProjectionItemMutex;
-std::array<MinimapProjectionItem,MinimapProjectionItemCapacity>
-    MinimapProjectionItems{};
+std::array<MinimapProjectionItem,MinimapProjectionItemCapacity> MinimapProjectionItems{};
 std::size_t MinimapProjectionItemCount{};
 
-struct MinimapProjectionSample final {
-    std::uint32_t code{},unitId{},classId{},mode{};
-    std::int32_t worldX{},worldY{};
-    AutomapProjectionProbe::Point client{};
-    AutomapProjectionProbe::Point screen{};
-    AutomapProjectionProbe::ClipRect clip{};
-    std::uint64_t itemAgeMs{};
-    std::uint32_t threadId{};
-    bool visible{};
-};
-std::mutex AutomapProjectionSampleMutex;
-std::array<MinimapProjectionSample,MinimapProjectionSampleCapacity>
-    AutomapProjectionSamples{};
-std::size_t AutomapProjectionSampleCount{},AutomapProjectionSampleReported{};
-
-void ResetAutomapProjectionProbe() noexcept {
+void ResetMinimapTracking() noexcept {
     AutomapProjectionArmed.store(false,std::memory_order_release);
     {
         std::lock_guard lock(MinimapProjectionItemMutex);
         MinimapProjectionItems.fill({});
         MinimapProjectionItemCount=0;
     }
-    {
-        std::lock_guard lock(AutomapProjectionSampleMutex);
-        AutomapProjectionSamples.fill({});
-        AutomapProjectionSampleCount=0;
-        AutomapProjectionSampleReported=0;
-    }
-    AutomapProjectionPasses.store(0,std::memory_order_relaxed);
-    AutomapProjectionProjectCalls.store(0,std::memory_order_relaxed);
-    AutomapProjectionFailures.store(0,std::memory_order_relaxed);
-    AutomapProjectionContention.store(0,std::memory_order_relaxed);
-    AutomapProjectionLastSampleTick.store(0,std::memory_order_relaxed);
     AutomapMarkerFrameSequence.store(0,std::memory_order_relaxed);
-    AutomapMarkerFirstPublishLogged.store(false,std::memory_order_relaxed);
     MinimapOverlayRenderer::Clear();
     AutomapProjectionArmed.store(true,std::memory_order_release);
 }
 
-void UpdateMinimapProjectionItem(const MinimapProbeSample& sample) noexcept {
-    if(sample.status!=MinimapProbeStatus::CandidateCoord || sample.unitId==0) return;
-    if(!MinimapProjectionItemMutex.try_lock()) {
-        AutomapProjectionContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
+void UpdateMinimapProjectionPosition(std::uint32_t code,std::uint32_t unitId,
+    std::uint32_t classId,std::uint32_t mode,std::uint32_t x,std::uint32_t y) noexcept {
+    if(unitId==0) return;
+    if(!MinimapProjectionItemMutex.try_lock()) return;
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     std::size_t slot=MinimapProjectionItemCount;
     for(std::size_t i=0;i<MinimapProjectionItemCount;++i) {
-        if(MinimapProjectionItems[i].unitId==sample.unitId &&
-           MinimapProjectionItems[i].code==sample.code) {
-            slot=i;break;
-        }
+        if(MinimapProjectionItems[i].unitId==unitId &&
+           MinimapProjectionItems[i].code==code) { slot=i;break; }
     }
     if(slot==MinimapProjectionItemCount) {
         if(MinimapProjectionItemCount<MinimapProjectionItemCapacity) {
@@ -1116,18 +690,16 @@ void UpdateMinimapProjectionItem(const MinimapProbeSample& sample) noexcept {
             MinimapProjectionItems[slot]={};
         } else {
             slot=0;
-            for(std::size_t i=1;i<MinimapProjectionItemCount;++i) {
+            for(std::size_t i=1;i<MinimapProjectionItemCount;++i)
                 if(MinimapProjectionItems[i].observedTick<
                    MinimapProjectionItems[slot].observedTick) slot=i;
-            }
             MinimapProjectionItems[slot]={};
         }
     }
     auto& item=MinimapProjectionItems[slot];
-    item.code=sample.code;item.unitId=sample.unitId;
-    item.classId=sample.classId;item.mode=sample.mode;
-    item.worldX=static_cast<std::int32_t>(sample.x);
-    item.worldY=static_cast<std::int32_t>(sample.y);
+    item.code=code;item.unitId=unitId;item.classId=classId;item.mode=mode;
+    item.worldX=static_cast<std::int32_t>(x);
+    item.worldY=static_cast<std::int32_t>(y);
     item.observedTick=now;
     MinimapProjectionItemMutex.unlock();
 }
@@ -1135,10 +707,7 @@ void UpdateMinimapProjectionItem(const MinimapProbeSample& sample) noexcept {
 void UpdateMinimapProjectionIconRule(std::uint32_t unitId,std::uint32_t code,
     const GroundRuleDecision* rule) noexcept {
     if(unitId==0) return;
-    if(!MinimapProjectionItemMutex.try_lock()) {
-        AutomapProjectionContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
+    if(!MinimapProjectionItemMutex.try_lock()) return;
     code=CanonicalItemCode(code);
     std::size_t slot=MinimapProjectionItemCount;
     for(std::size_t i=0;i<MinimapProjectionItemCount;++i) {
@@ -1152,10 +721,9 @@ void UpdateMinimapProjectionIconRule(std::uint32_t unitId,std::uint32_t code,
             MinimapProjectionItems[slot]={};
         } else {
             slot=0;
-            for(std::size_t i=1;i<MinimapProjectionItemCount;++i) {
+            for(std::size_t i=1;i<MinimapProjectionItemCount;++i)
                 if(MinimapProjectionItems[i].observedTick<
                    MinimapProjectionItems[slot].observedTick) slot=i;
-            }
             MinimapProjectionItems[slot]={};
         }
         MinimapProjectionItems[slot].unitId=unitId;
@@ -1182,17 +750,10 @@ void ClearMinimapProjectionIconStyles() noexcept {
 }
 
 void ForgetMinimapProjectionItem(std::uint32_t unitId) noexcept {
-    if(unitId==0) return;
-    if(!MinimapProjectionItemMutex.try_lock()) {
-        AutomapProjectionContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
+    if(unitId==0 || !MinimapProjectionItemMutex.try_lock()) return;
     bool removed{};
     for(std::size_t i=0;i<MinimapProjectionItemCount;) {
-        if(MinimapProjectionItems[i].unitId!=unitId) {
-            ++i;
-            continue;
-        }
+        if(MinimapProjectionItems[i].unitId!=unitId) { ++i;continue; }
         removed=true;
         if(i+1<MinimapProjectionItemCount)
             MinimapProjectionItems[i]=MinimapProjectionItems[MinimapProjectionItemCount-1];
@@ -1209,49 +770,20 @@ bool IsLocalPlayerAutomapPass(void* unit) noexcept {
         const auto dataContext=GetLocalDataContext();
         if(dataContext<0 || dataContext>=8) return false;
         return GetLocalPlayer(dataContext)==unit;
-    }
-    __except(EXCEPTION_EXECUTE_HANDLER) {
-        AutomapProjectionFailures.fetch_add(1,std::memory_order_relaxed);
-        return false;
-    }
-}
-
-void RecordAutomapProjectionSample(const MinimapProjectionSample& sample) noexcept {
-    if(!AutomapProjectionSampleMutex.try_lock()) {
-        AutomapProjectionContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    const bool duplicate=std::any_of(AutomapProjectionSamples.begin(),
-        AutomapProjectionSamples.begin()+AutomapProjectionSampleCount,
-        [&](const MinimapProjectionSample& old) {
-            return old.unitId==sample.unitId && old.worldX==sample.worldX &&
-                old.worldY==sample.worldY && old.screen.x==sample.screen.x &&
-                old.screen.y==sample.screen.y && old.clip.left==sample.clip.left &&
-                old.clip.top==sample.clip.top && old.clip.width==sample.clip.width &&
-                old.clip.height==sample.clip.height && old.visible==sample.visible;
-        });
-    if(!duplicate && AutomapProjectionSampleCount<MinimapProjectionSampleCapacity) {
-        AutomapProjectionSamples[AutomapProjectionSampleCount++]=sample;
-    }
-    AutomapProjectionSampleMutex.unlock();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 __declspec(noinline) void __fastcall HookAutomapRenderUnit(
         void* unit,void* automapContext) noexcept {
     const auto original=OriginalAutomapRenderUnit;
-    if(!original)return;
+    if(!original) return;
     original(unit,automapContext);
     if(!AutomapProjectionArmed.load(std::memory_order_acquire) ||
        !automapContext || !IsLocalPlayerAutomapPass(unit)) return;
-    AutomapProjectionPasses.fetch_add(1,std::memory_order_relaxed);
-
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     std::array<MinimapProjectionItem,MinimapProjectionItemCapacity> items{};
     std::size_t itemCount{};
-    if(!MinimapProjectionItemMutex.try_lock()) {
-        AutomapProjectionContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
+    if(!MinimapProjectionItemMutex.try_lock()) return;
     for(std::size_t i=0;i<MinimapProjectionItemCount;++i) {
         const auto& item=MinimapProjectionItems[i];
         if(!item.hasIcon || item.observedTick==0 || now<item.observedTick ||
@@ -1259,52 +791,36 @@ __declspec(noinline) void __fastcall HookAutomapRenderUnit(
         items[itemCount++]=item;
     }
     MinimapProjectionItemMutex.unlock();
-    if(!itemCount) {
-        MinimapOverlayRenderer::Clear();
-        return;
-    }
-
+    if(!itemCount) { MinimapOverlayRenderer::Clear();return; }
     __try {
         const auto* contextBytes=static_cast<const std::uint8_t*>(automapContext);
-        const AutomapProjectionProbe::ClipRect clip{
+        const AutomapProjection::ClipRect clip{
             *reinterpret_cast<const std::int32_t*>(contextBytes+AutomapClipLeftOffset),
             *reinterpret_cast<const std::int32_t*>(contextBytes+AutomapClipTopOffset),
             *reinterpret_cast<const std::int32_t*>(contextBytes+AutomapClipWidthOffset),
             *reinterpret_cast<const std::int32_t*>(contextBytes+AutomapClipHeightOffset)};
-        if(!AutomapProjectionProbe::PlausibleClip(clip) || !ProjectClientToAutomap) {
-            AutomapProjectionFailures.fetch_add(1,std::memory_order_relaxed);
-            MinimapOverlayRenderer::Clear();
-            return;
+        if(!AutomapProjection::PlausibleClip(clip) || !ProjectClientToAutomap) {
+            MinimapOverlayRenderer::Clear();return;
         }
-
         MinimapOverlayRenderer::MarkerFrame markerFrame{};
-        markerFrame.clip={
-            static_cast<float>(clip.left),
-            static_cast<float>(clip.top),
+        markerFrame.clip={static_cast<float>(clip.left),static_cast<float>(clip.top),
             static_cast<float>(static_cast<std::int64_t>(clip.left)+clip.width),
             static_cast<float>(static_cast<std::int64_t>(clip.top)+clip.height)};
         markerFrame.publishedTick=now;
         markerFrame.sequence=AutomapMarkerFrameSequence.fetch_add(
             1,std::memory_order_relaxed)+1;
-
         for(std::size_t i=0;i<itemCount;++i) {
             const auto& item=items[i];
-            AutomapProjectionProbe::Point client{};
-            if(!AutomapProjectionProbe::WorldSubtileToClient(
-                    item.worldX,item.worldY,client)) {
-                AutomapProjectionFailures.fetch_add(1,std::memory_order_relaxed);
+            AutomapProjection::Point client{};
+            if(!AutomapProjection::WorldSubtileToClient(item.worldX,item.worldY,client))
                 continue;
-            }
             NativeAutomapPoint projected{};
-            AutomapProjectionProjectCalls.fetch_add(1,std::memory_order_relaxed);
             if(ProjectClientToAutomap(automapContext,&projected,
-                    AutomapProjectionProbe::PackClientCoordinates(client))!=&projected) {
-                AutomapProjectionFailures.fetch_add(1,std::memory_order_relaxed);
+                    AutomapProjection::PackClientCoordinates(client))!=&projected)
                 continue;
-            }
-            const AutomapProjectionProbe::Point screen{projected.x,projected.y};
-            const bool visible=AutomapProjectionProbe::Contains(clip,screen);
-            if(visible && markerFrame.count<markerFrame.markers.size()) {
+            const AutomapProjection::Point screen{projected.x,projected.y};
+            if(AutomapProjection::Contains(clip,screen) &&
+               markerFrame.count<markerFrame.markers.size()) {
                 auto& marker=markerFrame.markers[markerFrame.count++];
                 marker.x=static_cast<float>(screen.x);
                 marker.y=static_cast<float>(screen.y);
@@ -1315,20 +831,12 @@ __declspec(noinline) void __fastcall HookAutomapRenderUnit(
                 marker.sizePx=item.sizePx;
             }
         }
-
-        if(markerFrame.count) {
-            MinimapOverlayRenderer::Publish(markerFrame);
-        } else {
-            MinimapOverlayRenderer::Clear();
-        }
-    }
-    __except(EXCEPTION_EXECUTE_HANDLER) {
-        AutomapProjectionFailures.fetch_add(1,std::memory_order_relaxed);
-        MinimapOverlayRenderer::Clear();
-    }
+        if(markerFrame.count) MinimapOverlayRenderer::Publish(markerFrame);
+        else MinimapOverlayRenderer::Clear();
+    } __except(EXCEPTION_EXECUTE_HANDLER) { MinimapOverlayRenderer::Clear(); }
 }
 
-bool InstallStandaloneAutomapProjectionObserver() noexcept {
+bool InstallStandaloneAutomapProjection() noexcept {
     AutomapProjectionHookInstalled.store(false,std::memory_order_release);
     OriginalAutomapRenderUnit=nullptr;
     ProjectClientToAutomap=nullptr;
@@ -1338,11 +846,8 @@ bool InstallStandaloneAutomapProjectionObserver() noexcept {
         Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=no-image-or-context hooks=0 mapSenseDependency=0");
         return false;
     }
-    // MapSense 2.x owns this same native rendezvous when loaded. Until it
-    // exposes a projection service, preserve coexistence by refusing our
-    // standalone hook rather than displacing or blind-chaining its owner.
     if(GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")!=nullptr) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=mapsense-loaded-shared-rendezvous hooks=0 mapSenseDependency=0 coexistence=preserved projectionService=not-yet-exposed");
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
         return false;
     }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
@@ -1351,44 +856,27 @@ bool InstallStandaloneAutomapProjectionObserver() noexcept {
     };
     if(!check(ProjectClientToAutomapRva,ExpectedProjectClientToAutomap) ||
        !check(GetLocalDataContextRva,ExpectedGetLocalDataContext) ||
-       !check(GetLocalPlayerRva,ExpectedGetLocalPlayer)) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=dependency-fingerprint hooks=0 mapSenseDependency=0");
+       !check(GetLocalPlayerRva,ExpectedGetLocalPlayer) ||
+       !check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=native-contract-fingerprint hooks=0");
         return false;
     }
-    if(!check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=render-entry-fingerprint-or-foreign-owner hooks=0 mapSenseDependency=0 noBlindChain=1");
-        return false;
-    }
-    ProjectClientToAutomap=reinterpret_cast<ProjectClientToAutomapFn>(
-        Base+ProjectClientToAutomapRva);
-    GetLocalDataContext=reinterpret_cast<GetLocalDataContextFn>(
-        Base+GetLocalDataContextRva);
+    ProjectClientToAutomap=reinterpret_cast<ProjectClientToAutomapFn>(Base+ProjectClientToAutomapRva);
+    GetLocalDataContext=reinterpret_cast<GetLocalDataContextFn>(Base+GetLocalDataContextRva);
     GetLocalPlayer=reinterpret_cast<GetLocalPlayerFn>(Base+GetLocalPlayerRva);
-    if(!Context->InstallInlineHook(AutomapRenderUnitRva,
-            ExpectedAutomapRenderUnit.data(),
+    if(!Context->InstallInlineHook(AutomapRenderUnitRva,ExpectedAutomapRenderUnit.data(),
             static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()),
-            HookAutomapRenderUnit,&OriginalAutomapRenderUnit) ||
-       !OriginalAutomapRenderUnit) {
-        ProjectClientToAutomap=nullptr;
-        GetLocalDataContext=nullptr;
-        GetLocalPlayer=nullptr;
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=loader-hook-registration hooks=0 mapSenseDependency=0");
+            HookAutomapRenderUnit,&OriginalAutomapRenderUnit) || !OriginalAutomapRenderUnit) {
+        ProjectClientToAutomap=nullptr;GetLocalDataContext=nullptr;GetLocalPlayer=nullptr;
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=loader-hook-registration hooks=0");
         return false;
     }
     AutomapProjectionHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_MINIMAP_PROJECTION_READY version=1.0.0 hook=D2R+0xD76E0 "
-         "project=D2R+0xD4910 localContext=D2R+0x8B2D0 localPlayer=D2R+0x9A480 "
-         "abi=RenderAutomapUnit(unit,context)+ProjectClientToAutomap(context,out,packedXY) "
-         "worldToClient='x=16*(worldX-worldY),y=8*(worldX+worldY)' "
-         "clip=context+0x18,+0x1C,+0x20,+0x24 target=json-minimapIcon-rules "
-         "mapSenseDependency=0 standalone=1 coexistence=fail-closed-if-mapsense-loaded "
-         "originalForwardedOnce=1 drawing=renderer-separate gameplayWrites=0");
+    Emit("LOOT_MINIMAP_PROJECTION_READY version=1.0.0 hook=D2R+0xD76E0 project=D2R+0xD4910 worldPosition=qualified-static-path renderer=standalone mapSenseDependency=0");
     return true;
 }
 
-void __cdecl LogMinimapRendererDiagnostic(const char* message) noexcept {
-    Emit(message);
-}
+void __cdecl LogMinimapRendererDiagnostic(const char* message) noexcept { Emit(message); }
 
 bool ConfigureNativeAutomapVisibilityGate() noexcept {
     MinimapOverlayRenderer::SetAutomapVisibilityTable(nullptr);
@@ -1403,15 +891,12 @@ bool ConfigureNativeAutomapVisibilityGate() noexcept {
     if(!check(NativeUiOpenStateWitnessRva,ExpectedNativeUiOpenStateWitness) ||
        !check(NativeUiCloseStateWitnessRva,ExpectedNativeUiCloseStateWitness) ||
        !check(NativeUiToggleStateWitnessRva,ExpectedNativeUiToggleStateWitness)) {
-        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=1.0.0 reason=ui-state-fingerprint drawing=0 no-timeout-only-fallback=1");
+        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=1.0.0 reason=ui-state-fingerprint drawing=0");
         return false;
     }
     MinimapOverlayRenderer::SetAutomapVisibilityTable(
-        reinterpret_cast<const volatile std::uint8_t*>(
-            Base+NativeUiStateTableRva));
-    Emit("LOOT_MINIMAP_AUTOMAP_GATE_READY version=1.0.0 "
-         "table=D2R+0x2A2ADA0 automapState=10 witnesses=0xCD7FB,0xC7DF1,0xCDE3C "
-         "readOnly=1 closeSuppression=immediate-present-frame staleTimeoutMs=250");
+        reinterpret_cast<const volatile std::uint8_t*>(Base+NativeUiStateTableRva));
+    Emit("LOOT_MINIMAP_AUTOMAP_GATE_READY version=1.0.0 table=D2R+0x2A2ADA0 automapState=10 readOnly=1");
     return true;
 }
 
@@ -1420,645 +905,55 @@ bool InitializeMinimapMarkerRenderer() noexcept {
     if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&InitializeMinimapMarkerRenderer),&self) || !self) {
-        Emit("LOOT_MINIMAP_RENDERER_REFUSED version=1.0.0 backend=none reason=self-module-unresolved projectionContinues=1 drawing=0");
+        Emit("LOOT_MINIMAP_RENDERER_REFUSED version=1.0.0 backend=none reason=self-module-unresolved");
         return false;
     }
-    if(!ConfigureNativeAutomapVisibilityGate()) {
-        Emit("LOOT_MINIMAP_RENDERER_REFUSED version=1.0.0 backend=none reason=automap-visibility-gate-unqualified projectionContinues=1 drawing=0");
-        return false;
-    }
+    if(!ConfigureNativeAutomapVisibilityGate()) return false;
     MinimapOverlayRenderer::SetDllModule(self);
     MinimapOverlayRenderer::SetLogCallback(&LogMinimapRendererDiagnostic);
     return MinimapOverlayRenderer::Initialize();
 }
 
-void DrainAutomapProjectionProbe() noexcept {
-    std::array<MinimapProjectionSample,MinimapProjectionSampleCapacity> pending{};
-    std::size_t count{},total{};bool full{};
-    {
-        std::lock_guard lock(AutomapProjectionSampleMutex);
-        for(std::size_t i=AutomapProjectionSampleReported;
-                i<AutomapProjectionSampleCount;++i)
-            pending[count++]=AutomapProjectionSamples[i];
-        AutomapProjectionSampleReported=AutomapProjectionSampleCount;
-        total=AutomapProjectionSampleCount;
-        full=AutomapProjectionSampleCount==MinimapProjectionSampleCapacity;
-    }
-    for(std::size_t i=0;i<count;++i) {
-        const auto& row=pending[i];
-        char code[5]{};CodeText(row.code,code);
-        char line[520]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_MINIMAP_PROJECTION_SAMPLE version=1.0.0 code='%.4s' unitId=%u classId=%u mode=%u "
-            "world=(%d,%d) client=(%d,%d) automap=(%d,%d) "
-            "clip=(%d,%d,%d,%d) visible=%u itemAgeMs=%llu tid=%u "
-            "projection=D2R+0xD4910 rendezvous=D2R+0xD76E0 mapSenseDependency=0 drawing=json-minimapIcon-rules",
-            code,row.unitId,row.classId,row.mode,row.worldX,row.worldY,
-            row.client.x,row.client.y,row.screen.x,row.screen.y,
-            row.clip.left,row.clip.top,row.clip.width,row.clip.height,
-            row.visible?1U:0U,
-            static_cast<unsigned long long>(row.itemAgeMs),row.threadId);
-        Emit(line);
-    }
-    if(count) {
-        char line[400]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_MINIMAP_PROJECTION_STATUS version=1.0.0 samples=%zu passes=%llu projectCalls=%llu "
-            "failures=%llu contention=%llu target=json-minimapIcon-rules itemFreshMs=%llu sampleIntervalMs=%llu "
-            "mapSenseDependency=0 drawing=json-minimapIcon-rules minimapIconJson=SUPPORTED",
-            total,
-            static_cast<unsigned long long>(AutomapProjectionPasses.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(AutomapProjectionProjectCalls.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(AutomapProjectionFailures.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(AutomapProjectionContention.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(MinimapProjectionItemFreshMilliseconds),
-            static_cast<unsigned long long>(MinimapProjectionSampleIntervalMilliseconds));
-        Emit(line);
-        const auto renderer=MinimapOverlayRenderer::GetDiagnostics();
-        char rendererLine[420]{};
-        std::snprintf(rendererLine,sizeof(rendererLine),
-            "LOOT_MINIMAP_RENDERER_STATUS version=1.0.0 backend=%s present=%llu queueCaptures=%llu "
-            "initAttempts=%llu initFailures=%llu renderedFrames=%llu publishedFrames=%llu "
-            "drawnMarkers=%llu automapSuppressedFrames=%llu lastInitFailureStage=%u hooksInstalled=%u queueReady=%u rendererReady=%u",
-            MinimapOverlayRenderer::ActiveBackendName(),
-            static_cast<unsigned long long>(renderer.presentCalls),
-            static_cast<unsigned long long>(renderer.directQueueCaptures),
-            static_cast<unsigned long long>(renderer.rendererInitAttempts),
-            static_cast<unsigned long long>(renderer.rendererInitFailures),
-            static_cast<unsigned long long>(renderer.renderedFrames),
-            static_cast<unsigned long long>(renderer.publishedFrames),
-            static_cast<unsigned long long>(renderer.drawnMarkers),
-            static_cast<unsigned long long>(renderer.automapSuppressedFrames),
-            renderer.lastInitFailureStage,
-            renderer.hooksInstalled?1U:0U,
-            renderer.commandQueueReady?1U:0U,
-            renderer.rendererInitialized?1U:0U);
-        Emit(rendererLine);
-    }
-    if(full && count)Emit("LOOT_MINIMAP_PROJECTION_FULL version=1.0.0 "
-        "samples=96 reset=Ctrl+Shift+F6 diagnosticSamplingFull=1 markerProjectionContinues=1 drawing=1");
-}
-
-
-void ArmMinimapTracking() noexcept {
-    ResetAutomapProjectionProbe();
-    MinimapProbeArmed.store(true,std::memory_order_release);
-}
-
 void ObserveMinimapItemPosition(const void* nativeUnit,std::uint32_t rawCode,
     std::uint32_t unitId,std::uint32_t classId) noexcept {
-    if(!MinimapProbeArmed.load(std::memory_order_acquire) ||
-       !nativeUnit || !unitId || !PrintableItemCode(rawCode)) return;
-    MinimapProbeSample sample{};
-    sample.code=CanonicalItemCode(rawCode);
-    sample.unitId=unitId;sample.classId=classId;
+    if(!AutomapProjectionArmed.load(std::memory_order_acquire) || !nativeUnit ||
+       !unitId || !PrintableItemCode(rawCode)) return;
     std::array<std::uint8_t,MinimapUnitBytes> first{},last{};
     std::array<std::uint8_t,MinimapPathBytes> pathFirst{},pathLast{};
     SIZE_T copied{};
-    if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,first.data(),
-            first.size(),&copied) || copied!=first.size())
-        sample.status=MinimapProbeStatus::UnitReadFailed;
-    else {
-        std::uint32_t type{},nativeClass{},nativeId{},mode{};
-        std::memcpy(&type,first.data(),4);
-        std::memcpy(&nativeClass,first.data()+4,4);
-        std::memcpy(&nativeId,first.data()+8,4);
-        std::memcpy(&mode,first.data()+12,4);
-        sample.mode=mode;
-        if(type!=4 || nativeClass!=classId || nativeId!=unitId ||
-           (mode!=3 && mode!=5))return;
-        std::uintptr_t pathAddress{};
-        std::memcpy(&pathAddress,first.data()+0x38,sizeof(pathAddress));
-        if(pathAddress==0)sample.status=MinimapProbeStatus::NullPath;
-        else if(!GroundCandidatePageReadable(pathAddress,MinimapPathBytes))
-            sample.status=MinimapProbeStatus::PathUnreadable;
-        else {
-            copied=0;
-            if(!ReadProcessMemory(GetCurrentProcess(),
-                    reinterpret_cast<const void*>(pathAddress),
-                    pathFirst.data(),pathFirst.size(),&copied) ||
-                copied!=pathFirst.size())
-                sample.status=MinimapProbeStatus::PathUnreadable;
-            else {
-                copied=0;
-                const bool pathAgain=ReadProcessMemory(GetCurrentProcess(),
-                    reinterpret_cast<const void*>(pathAddress),
-                    pathLast.data(),pathLast.size(),&copied) &&
-                    copied==pathLast.size();
-                copied=0;
-                const bool unitAgain=ReadProcessMemory(GetCurrentProcess(),
-                    nativeUnit,last.data(),last.size(),&copied) &&
-                    copied==last.size();
-                if(!pathAgain || !unitAgain ||
-                   std::memcmp(pathFirst.data(),pathLast.data(),
-                       pathFirst.size())!=0 ||
-                   std::memcmp(first.data(),last.data(),0x10)!=0 ||
-                   std::memcmp(first.data()+0x38,last.data()+0x38,
-                       sizeof(pathAddress))!=0)
-                    sample.status=MinimapProbeStatus::PathChanged;
-                else {
-                    const auto candidate=MinimapWorldPositionProbe::Decode(
-                        pathFirst.data(),pathFirst.size());
-                    sample.x=candidate.x;sample.y=candidate.y;
-                    std::memcpy(sample.coordWindow.data(),
-                        pathFirst.data()+0x10,sample.coordWindow.size());
-                    sample.status=candidate.plausible?
-                        MinimapProbeStatus::CandidateCoord:
-                        MinimapProbeStatus::ImplausibleCoords;
-                }
-            }
-        }
-    }
-    // Publish copied world coordinates into the standalone automap projection registry.
-    UpdateMinimapProjectionItem(sample);
-}
-
-
-
-
-void ArmGroundPropertyEvidence() noexcept {
-    GroundPropertyEvidenceArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard lock(GroundPropertyEvidenceMutex);
-        GroundPropertyEvidenceRows.fill({});
-        GroundPropertyEvidenceCount=0;
-        GroundPropertyEvidenceReported=0;
-    }
-    GroundPropertyEvidenceReadFailed.store(0,std::memory_order_relaxed);
-    GroundPropertyEvidenceContended.store(0,std::memory_order_relaxed);
-    GroundPropertyEvidenceArmed.store(true,std::memory_order_release);
-    Emit("LOOT_GROUND_PROPERTY_EVIDENCE_BEGIN version=1.0.0 "
-         "trigger=Ctrl+Shift+F8 limit=12 nativeUnitWindow=0xC0 "
-         "candidatePointerOffset=0x10 candidateWindow=0x100 "
-         "candidateMeaning=UNVERIFIED readOnly=1 oneHop=1 "
-         "noItemWrites=1 rulesUnchanged=1 pickupGuardUnchanged=1 "
-         "captureExpiry=none");
-}
-
-void ObserveGroundPropertyEvidence(const void* nativeUnit,
-    std::uint32_t code,const std::uint32_t (&header)[4]) noexcept {
-    if (!GroundPropertyEvidenceArmed.load(std::memory_order_acquire) ||
-        !nativeUnit || !PrintableItemCode(code) ||
-        header[0]!=4 || header[2]==0 || header[3]!=3) return;
-    if(!GroundPropertyEvidenceMutex.try_lock()) {
-        GroundPropertyEvidenceContended.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    const auto duplicate=std::any_of(GroundPropertyEvidenceRows.begin(),
-        GroundPropertyEvidenceRows.begin()+GroundPropertyEvidenceCount,
-        [=](const GroundPropertyEvidence& sample) {
-            return sample.unitId==header[2] && sample.code==code;
-        });
-    const bool full=GroundPropertyEvidenceCount>=GroundPropertyEvidenceCapacity;
-    GroundPropertyEvidenceMutex.unlock();
-    if(duplicate || full) return;
-    GroundPropertyEvidence sample{};
-    sample.code=code;sample.classId=header[1];
-    sample.unitId=header[2];sample.mode=header[3];
-    SIZE_T copied{};
-    if(ReadProcessMemory(GetCurrentProcess(),nativeUnit,sample.bytes.data(),
-        sample.bytes.size(),&copied) && copied==sample.bytes.size())
-        sample.bytesRead=static_cast<std::uint32_t>(copied);
-    else {
-        copied=0;
-        if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,
-            sample.bytes.data(),GroundPropertyEvidenceFallbackBytes,&copied) ||
-            copied!=GroundPropertyEvidenceFallbackBytes) {
-            GroundPropertyEvidenceReadFailed.fetch_add(1,
-                std::memory_order_relaxed);
-            return;
-        }
-        sample.bytesRead=static_cast<std::uint32_t>(copied);
-    }
-    // The 0.2.36 log showed an instance-varying aligned qword at +0x10;
-    // reading a single bounded target is diagnostic, not a type assertion.
-    constexpr std::size_t candidateOffset=0x10;
-    static_assert(candidateOffset+sizeof(std::uintptr_t)<=
-        GroundPropertyEvidenceFallbackBytes);
-    std::memcpy(&sample.candidateAddress,
-        sample.bytes.data()+candidateOffset,sizeof(sample.candidateAddress));
-    if(sample.candidateAddress<0x10000 ||
-        (sample.candidateAddress&7U)!=0 ||
-        sample.candidateAddress>
-            std::numeric_limits<std::uintptr_t>::max()-GroundPropertyCandidateBytes)
-        sample.candidateStatus=GroundPropertyCandidateStatus::ZeroOrNoncanonical;
-    else {
-        constexpr std::array<std::size_t,3> lengths{{0x100,0x80,0x40}};
-        bool pageOk=false;
-        for(const auto len:lengths) {
-            if(!GroundCandidatePageReadable(sample.candidateAddress,len))
-                continue;
-            pageOk=true;copied=0;
-            if(ReadProcessMemory(GetCurrentProcess(),
-                    reinterpret_cast<const void*>(sample.candidateAddress),
-                    sample.candidateBytes.data(),len,&copied) &&
-                    copied==len) {
-                sample.candidateBytesRead=static_cast<std::uint32_t>(len);
-                sample.candidateStatus=GroundPropertyCandidateStatus::ReadOk;
-                break;
-            }
-        }
-        if(sample.candidateStatus!=GroundPropertyCandidateStatus::ReadOk)
-            sample.candidateStatus=pageOk ?
-                GroundPropertyCandidateStatus::ReadFailed :
-                GroundPropertyCandidateStatus::BadPage;
-    }
-    // Confirm identity AND candidate pointer still match the pre-read unit;
-    // never log a cross-item byte set as coherent evidence.
-    std::array<std::uint8_t,0x18> after{};
+    if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,first.data(),first.size(),&copied) ||
+       copied!=first.size()) return;
+    std::uint32_t type{},nativeClass{},nativeId{},mode{};
+    std::memcpy(&type,first.data(),4);std::memcpy(&nativeClass,first.data()+4,4);
+    std::memcpy(&nativeId,first.data()+8,4);std::memcpy(&mode,first.data()+12,4);
+    if(type!=4 || nativeClass!=classId || nativeId!=unitId || (mode!=3 && mode!=5)) return;
+    std::uintptr_t pathAddress{};
+    std::memcpy(&pathAddress,first.data()+0x38,sizeof(pathAddress));
+    if(!pathAddress || !GroundCandidatePageReadable(pathAddress,MinimapPathBytes)) return;
     copied=0;
-    if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,after.data(),
-            after.size(),&copied) || copied!=after.size() ||
-        std::memcmp(after.data(),sample.bytes.data(),after.size())!=0) {
-        GroundPropertyEvidenceReadFailed.fetch_add(1,
-            std::memory_order_relaxed);
-        return;
-    }
-    if(!GroundPropertyEvidenceMutex.try_lock()) {
-        GroundPropertyEvidenceContended.fetch_add(1,
-            std::memory_order_relaxed);
-        return;
-    }
-    const bool stillArmed=GroundPropertyEvidenceArmed.load(
-        std::memory_order_relaxed);
-    const bool seen=std::any_of(GroundPropertyEvidenceRows.begin(),
-        GroundPropertyEvidenceRows.begin()+GroundPropertyEvidenceCount,
-        [=](const GroundPropertyEvidence& row) {
-            return row.unitId==sample.unitId && row.code==sample.code;
-        });
-    if(stillArmed && !seen &&
-       GroundPropertyEvidenceCount<GroundPropertyEvidenceCapacity) {
-        GroundPropertyEvidenceRows[GroundPropertyEvidenceCount++]=sample;
-        if(GroundPropertyEvidenceCount==GroundPropertyEvidenceCapacity)
-            GroundPropertyEvidenceArmed.store(false,
-                std::memory_order_release);
-    }
-    GroundPropertyEvidenceMutex.unlock();
-}
-
-// Optional authoritative post-pickup comparison. SDK ItemInfo belongs to
-// inventory/cursor and is copied on the SDK callback thread. Only a matching
-// runtimeId AND canonical item code is paired with an earlier ground sample.
-// This DOES NOT attest that any byte offset inside candidate data means quality.
-void ObserveGroundPropertyCarriedSdk(const D2RL::Items::ItemInfo* info) noexcept {
-    if(!info || info->structSize<D2RL::Items::ItemInfoRequiredSize ||
-       info->runtimeId==0 ||
-       info->container==D2RL::Items::ItemContainer::Ground ||
-       !GroundPropertyEvidenceMutex.try_lock()) return;
-    for(std::size_t i=0;i<GroundPropertyEvidenceCount;++i) {
-        auto& row=GroundPropertyEvidenceRows[i];
-        if(row.unitId==info->runtimeId &&
-           row.code==CanonicalItemCode(info->code) && !row.sdk.matched) {
-            row.sdk.matched=true;
-            row.sdk.code=info->code;
-            row.sdk.runtimeId=info->runtimeId;
-            row.sdk.classId=info->classId;
-            row.sdk.quality=static_cast<std::uint32_t>(info->quality);
-            row.sdk.itemLevel=info->itemLevel;
-            row.sdk.sockets=info->socketCount;
-            row.sdk.stateFlags=info->stateFlags;
-            row.sdk.container=static_cast<std::uint32_t>(info->container);
-            // Copy the evidence snapshot while holding the same mutex as the
-            // SDK identity match. Never dereference candidateAddress here.
-            // A failed/short native read remains explicitly unavailable.
-            if(row.candidateStatus==GroundPropertyCandidateStatus::ReadOk)
-                row.sdk.candidateSnapshot=GroundCandidateProbe::Decode(
-                    row.candidateBytes.data(),row.candidateBytesRead);
-            break;
-        }
-    }
-    GroundPropertyEvidenceMutex.unlock();
-}
-
-// Worker-only emission. No formatting, I/O, game callbacks, or native pointer
-// retention occurs on the formatter thread. Worker never dereferences addr.
-void DrainGroundPropertyEvidence() noexcept {
-    std::array<GroundPropertyEvidence,GroundPropertyEvidenceCapacity> pending{};
-    std::size_t count{};
-    bool complete{};
-    {
-        std::lock_guard lock(GroundPropertyEvidenceMutex);
-        for(std::size_t i=GroundPropertyEvidenceReported;
-            i<GroundPropertyEvidenceCount;++i)
-            pending[count++]=GroundPropertyEvidenceRows[i];
-        GroundPropertyEvidenceReported=GroundPropertyEvidenceCount;
-        complete=GroundPropertyEvidenceCount==GroundPropertyEvidenceCapacity;
-    }
-    for(std::size_t i=0;i<count;++i) {
-        const auto& sample=pending[i];
-        char codeText[5]{};
-        CodeText(sample.code,codeText);
-        char message[420]{};
-        std::snprintf(message,sizeof(message),
-            "LOOT_GROUND_PROPERTY_SAMPLE version=1.0.0 "
-            "code='%.4s' classId=%u unitId=%u mode=%u "
-            "readBytes=%u source=verified-inner-writer "
-            "quality=UNKNOWN ilvl=UNKNOWN sockets=UNKNOWN "
-            "ethereal=UNKNOWN identified=UNKNOWN ruleInputsUnchanged=1",
-            codeText,sample.classId,sample.unitId,sample.mode,
-            sample.bytesRead);
-        Emit(message);
-        for(std::size_t offset=0;offset<sample.bytesRead;offset+=32) {
-            char hex[32*3+1]{};
-            const auto len=std::min<std::size_t>(32,
-                sample.bytesRead-offset);
-            for(std::size_t j=0;j<len;++j)
-                std::snprintf(hex+j*3,sizeof(hex)-j*3,
-                    "%02X ",static_cast<unsigned>(sample.bytes[offset+j]));
-            std::snprintf(message,sizeof(message),
-                "LOOT_GROUND_PROPERTY_BYTES version=1.0.0 "
-                "code='%.4s' unitId=%u unitOffset=0x%02zX hex='%s' "
-                "offsetsUnqualified=1",codeText,sample.unitId,offset,hex);
-            Emit(message);
-        }
-        std::snprintf(message,sizeof(message),
-            "LOOT_GROUND_PROPERTY_CANDIDATE version=1.0.0 "
-            "code='%.4s' unitId=%u pointerField=unit+0x10 "
-            "status=%u readBytes=%u pointerValue=REDACTED "
-            "itemDataMeaning=UNVERIFIED decoder=none ruleInputsUnchanged=1",
-            codeText,sample.unitId,
-            static_cast<unsigned>(sample.candidateStatus),
-            sample.candidateBytesRead);
-        Emit(message);
-        // Two candidate scalar positions from the 0.2.38 log. Report raw
-        // values as evidence; never fill RuleEngine::Item from them.
-        const auto candidates=sample.candidateStatus==
-            GroundPropertyCandidateStatus::ReadOk ?
-            GroundCandidateProbe::Decode(sample.candidateBytes.data(),
-                sample.candidateBytesRead) : GroundCandidateProbe::Snapshot{};
-        if(candidates.available) {
-            std::snprintf(message,sizeof(message),
-                "LOOT_GROUND_PROPERTY_CANDIDATE_FIELDS version=1.0.0 "
-                "code='%.4s' unitId=%u qualityAt00=%u levelAt38=%u "
-                "rawFlagsAt18=0x%X candidateOnly=1 "
-                "groundSnapshot=1 sdkConfirmed=0 rulesUnchanged=1",
-                codeText,sample.unitId,candidates.qualityCandidate,
-                candidates.levelCandidate,candidates.rawFlagsCandidate);
-            Emit(message);
-        }
-        for(std::size_t offset=0;offset<sample.candidateBytesRead;offset+=32) {
-            char hex[32*3+1]{};
-            const auto len=std::min<std::size_t>(32,
-                sample.candidateBytesRead-offset);
-            for(std::size_t j=0;j<len;++j)
-                std::snprintf(hex+j*3,sizeof(hex)-j*3,
-                    "%02X ",static_cast<unsigned>(sample.candidateBytes[offset+j]));
-            std::snprintf(message,sizeof(message),
-                "LOOT_GROUND_PROPERTY_CANDIDATE_BYTES version=1.0.0 "
-                "code='%.4s' unitId=%u candidateOffset=0x%02zX hex='%s' "
-                "offsetsUnqualified=1",codeText,sample.unitId,offset,hex);
-            Emit(message);
-        }
-    }
-    if(complete && count)
-        Emit("LOOT_GROUND_PROPERTY_EVIDENCE_FULL version=1.0.0 "
-             "limit=12 rearm=Ctrl+Shift+F8 readerNotPromoted=1");
-}
-
-void DrainGroundPropertySdkEvidence() noexcept {
-    std::array<GroundPropertySdkEvidence,GroundPropertyEvidenceCapacity> pending{};
-    std::size_t count{};
-    {
-        std::lock_guard lock(GroundPropertyEvidenceMutex);
-        for(std::size_t i=0;i<GroundPropertyEvidenceCount;++i) {
-            auto& row=GroundPropertyEvidenceRows[i];
-            if(row.sdk.matched && row.sdk.runtimeId) {
-                pending[count++]=row.sdk;
-                row.sdk.runtimeId=0; // reported, do not repeat
-            }
-        }
-    }
-    for(std::size_t i=0;i<count;++i) {
-        const auto& sdk=pending[i];
-        char codeText[5]{};
-        CodeText(sdk.code,codeText);
-        char message[430]{};
-        std::snprintf(message,sizeof(message),
-            "LOOT_GROUND_PROPERTY_SDK_MATCH version=1.0.0 "
-            "code='%.4s' runtimeId=%u classId=%u "
-            "quality=%u ilvl=%u sockets=%u stateFlags=0x%X "
-            "identified=%u ethereal=%u container=%u "
-            "match=runtime-id-plus-code postPickupOnly=1 "
-            "candidateOffsetsUnqualified=1 filterUnchanged=1",
-            codeText,sdk.runtimeId,sdk.classId,sdk.quality,
-            sdk.itemLevel,sdk.sockets,sdk.stateFlags,
-            (sdk.stateFlags&D2RL::Items::ItemStateIdentified)?1U:0U,
-            (sdk.stateFlags&D2RL::Items::ItemStateEthereal)?1U:0U,
-            sdk.container);
-        Emit(message);
-        // Compare the F8 *ground-time* snapshot with SDK post-pickup facts.
-        // Don't print zero as a value if a candidate read was unavailable.
-        // This F8 capture compares raw flags only; the separately guarded
-        // active ethereal decoder uses just the selected 0x00400000 bit.
-        const auto comparison=GroundCandidateProbe::Compare(
-            sdk.candidateSnapshot,sdk.quality,sdk.itemLevel);
-        char quality[18]{},level[18]{},flags[18]{};
-        if(comparison.available) {
-            std::snprintf(quality,sizeof(quality),"%u",
-                sdk.candidateSnapshot.qualityCandidate);
-            std::snprintf(level,sizeof(level),"%u",
-                sdk.candidateSnapshot.levelCandidate);
-            std::snprintf(flags,sizeof(flags),"0x%X",
-                sdk.candidateSnapshot.rawFlagsCandidate);
-        } else {
-            std::snprintf(quality,sizeof(quality),"UNKNOWN");
-            std::snprintf(level,sizeof(level),"UNKNOWN");
-            std::snprintf(flags,sizeof(flags),"UNKNOWN");
-        }
-        std::snprintf(message,sizeof(message),
-            "LOOT_GROUND_PROPERTY_SDK_COMPARE version=1.0.0 "
-            "code='%.4s' runtimeId=%u candidateQualityAt00=%s "
-            "sdkQuality=%u qualityResult=%s candidateLevelAt38=%s "
-            "sdkIlvl=%u levelResult=%s candidateFlagsAt18=%s "
-            "flagsMeaning=UNVERIFIED snapshot=ground-time "
-            "sdk=post-pickup readOnly=1 rulesUnchanged=1",
-            codeText,sdk.runtimeId,quality,sdk.quality,
-            !comparison.available?"UNAVAILABLE":
-                comparison.qualityEqualsSdk?"MATCH":"MISMATCH",
-            level,sdk.itemLevel,
-            !comparison.available?"UNAVAILABLE":
-                comparison.levelEqualsSdk?"MATCH":"MISMATCH",flags);
-        Emit(message);
-    }
-}
-
-// Auto-armed, bounded 0.2.48 ground-label latency evidence. No new native
-// hooks and NO logging or allocation in renderer/formatter/game-thread hooks.
-// The worker drains copied scalars and QPC timestamps every ~200 ms. This
-// measures first PLUGIN observation, not the unhooked actual item-drop event.
-constexpr std::uint32_t SacredArmorCode =
-    static_cast<std::uint32_t>('u') |
-    (static_cast<std::uint32_t>('a') << 8U) |
-    (static_cast<std::uint32_t>('r') << 16U);
-enum class LootLatencyStage : std::uint8_t {
-    ObserveFormatter, ObserveSoE, ReadBegin, ReadUnknown, ReadOk,
-    MatchSound, MatchStyle, MatchBulk, QueueSound, NativeSound,
-    StyleText, BulkPaint, HoverPaint, Count
-};
-constexpr std::array<const char*,static_cast<std::size_t>(LootLatencyStage::Count)>
-    LootLatencyStageNames{{
-        "OBSERVE_FORMATTER", "OBSERVE_SOE", "READ_BEGIN", "READ_UNKNOWN",
-        "READ_OK", "MATCH_SOUND", "MATCH_STYLE", "MATCH_BULK",
-        "QUEUE_SOUND", "NATIVE_SOUND_RETURN", "STYLE_TEXT_READY",
-        "BULK_PAINT_FORWARDED", "HOVER_PAINT_FORWARDED"}};
-struct LootLatencyItem final {
-    std::uint32_t id{},code{};
-    std::int64_t firstQpc{};
-    std::uint32_t readAttempts{},unknownReads{};
-    bool haveReadValue{};
-    std::uint32_t lastQuality{},lastIlvl{};
-    // Log the first failed ground-header gate and bounded state changes,
-    // rather than suppressing all 84 early rejections as one READ_UNKNOWN.
-    std::array<char,48> lastUnknownGate{};
-    std::uint32_t unknownGateTransitions{};
-    std::uint64_t phases{};
-};
-struct LootLatencyEvent final {
-    std::int64_t qpc{};
-    std::uint32_t id{},code{},readAttempts{},unknownReads{};
-    std::uint64_t elapsedUs{},readDurationUs{};
-    LootLatencyStage stage{};
-    std::uint32_t quality{},ilvl{};
-    std::array<char,48> detail{};
-};
-constexpr std::size_t LootLatencyMaxItems=12;
-constexpr std::size_t LootLatencyMaxEvents=384;
-std::atomic_bool LootLatencyArmed{};
-std::mutex LootLatencyMutex{};
-std::array<LootLatencyItem,LootLatencyMaxItems> LootLatencyItems{};
-std::array<LootLatencyEvent,LootLatencyMaxEvents> LootLatencyEvents{};
-std::size_t LootLatencyItemCount{},LootLatencyEventCount{};
-std::atomic<std::uint32_t> LootLatencyLost{};
-
-void ArmLootLatency() noexcept {
-    // Temporarily disarm before resetting session-owned arrays. A render
-    // callback might finish its previous transaction; only copied data lives
-    // here, so never wait on a native item pointer or hold a native hook lock.
-    LootLatencyArmed.store(false,std::memory_order_release);
-    { std::lock_guard lock(LootLatencyMutex);
-      LootLatencyItems.fill({});LootLatencyEvents.fill({});
-      LootLatencyItemCount=0;LootLatencyEventCount=0; }
-    LootLatencyLost.store(0,std::memory_order_relaxed);
-    LootLatencyArmed.store(true,std::memory_order_release);
-    Emit("LOOT_LATENCY_BEGIN version=1.0.0 hotkey=Ctrl+Shift+F7 "
-         "codes=uar,divo maxDistinctItems=12 maxEvents=384 "
-         "clock=QueryPerformanceCounter origin=first-plugin-observation "
-         "not-native-drop-event=1 logIo=worker-only readOnly=1");
-}
-void TraceLootLatency(std::uint32_t rawCode,std::uint32_t id,
-    LootLatencyStage stage,const char* detail="",
-    std::uint64_t readDurationUs=0,std::uint32_t quality=0,
-    std::uint32_t ilvl=0) noexcept {
-    if (!LootLatencyArmed.load(std::memory_order_acquire) || !id) return;
-    const auto code=CanonicalItemCode(rawCode);
-    if(code!=SacredArmorCode && code!=DivineCode)return;
-    LARGE_INTEGER stamp{},frequency{};
-    if(!QueryPerformanceCounter(&stamp) ||
-       !QueryPerformanceFrequency(&frequency) || frequency.QuadPart<=0) return;
-    if(!LootLatencyMutex.try_lock()) {
-        LootLatencyLost.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    LootLatencyItem* item=nullptr;
-    for(std::size_t i=0;i<LootLatencyItemCount;++i)
-        if(LootLatencyItems[i].id==id && LootLatencyItems[i].code==code) {
-            item=&LootLatencyItems[i];break;
-        }
-    if(!item && LootLatencyItemCount<LootLatencyMaxItems) {
-        item=&LootLatencyItems[LootLatencyItemCount++];
-        item->id=id;item->code=code;item->firstQpc=stamp.QuadPart;
-    }
-    if(!item) { LootLatencyMutex.unlock();return; }
-    if(stage==LootLatencyStage::ReadBegin) ++item->readAttempts;
-    if(stage==LootLatencyStage::ReadUnknown) ++item->unknownReads;
-    // The first FAILED read and the first SUCCESSFUL later retry are both
-    // captured. READ_OK is additionally emitted whenever the verified scalar
-    // value changes for the same ground identity. This distinguishes a slow
-    // reader from a valid-but-not-final quality value without logging every
-    // render pass.
-    const auto bit=1ULL<<static_cast<unsigned>(stage);
-    bool readValueChanged=false;
-    bool unknownGateChanged=false;
-    if(stage==LootLatencyStage::ReadUnknown &&
-       item->unknownGateTransitions<12U) {
-        const char* why=detail?detail:"";
-        if(item->unknownGateTransitions==0U ||
-           std::strncmp(item->lastUnknownGate.data(),why,
-               item->lastUnknownGate.size()-1U)!=0) {
-            std::snprintf(item->lastUnknownGate.data(),
-                item->lastUnknownGate.size(),"%s",why);
-            ++item->unknownGateTransitions;
-            unknownGateChanged=true;
-        }
-    }
-    if(stage==LootLatencyStage::ReadOk) {
-        readValueChanged=item->haveReadValue &&
-            (item->lastQuality!=quality || item->lastIlvl!=ilvl);
-        if(!item->haveReadValue || readValueChanged) {
-            item->haveReadValue=true;
-            item->lastQuality=quality;
-            item->lastIlvl=ilvl;
-        }
-    }
-    if(((item->phases&bit)!=0 && !readValueChanged &&
-        !unknownGateChanged) ||
-       LootLatencyEventCount>=LootLatencyMaxEvents) {
-        if(LootLatencyEventCount>=LootLatencyMaxEvents)
-            LootLatencyLost.fetch_add(1,std::memory_order_relaxed);
-        LootLatencyMutex.unlock();return;
-    }
-    item->phases|=bit;
-    auto& e=LootLatencyEvents[LootLatencyEventCount++];
-    e.qpc=stamp.QuadPart;e.id=id;e.code=code;e.stage=stage;
-    e.readAttempts=item->readAttempts;e.unknownReads=item->unknownReads;
-    e.elapsedUs=stamp.QuadPart>=item->firstQpc ?
-        static_cast<std::uint64_t>((stamp.QuadPart-item->firstQpc)*
-            1000000LL/frequency.QuadPart) : 0;
-    e.readDurationUs=readDurationUs;e.quality=quality;e.ilvl=ilvl;
-    if(readValueChanged)
-        std::snprintf(e.detail.data(),e.detail.size(),"verified-value-changed");
-    else if(detail) std::snprintf(e.detail.data(),e.detail.size(),"%s",detail);
-    LootLatencyMutex.unlock();
-}
-void DrainLootLatency() noexcept {
-    std::array<LootLatencyEvent,LootLatencyMaxEvents> events{};
-    std::size_t count{};
-    if(!LootLatencyMutex.try_lock())return;
-    count=LootLatencyEventCount;
-    if(count)std::copy_n(LootLatencyEvents.begin(),count,events.begin());
-    LootLatencyEventCount=0;
-    LootLatencyMutex.unlock();
-    for(std::size_t i=0;i<count;++i) {
-        const auto& e=events[i];
-        char code[5]{};CodeText(e.code,code);
-        char line[415]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_LATENCY_STAGE version=1.0.0 stage=%s code='%.4s' "
-            "unitId=%u qpc=%lld sinceFirstObserveUs=%llu "
-            "readDurationUs=%llu quality=%u ilvl=%u "
-            "readAttempts=%u unknownReads=%u detail=%s "
-            "observationNotDrop=1",
-            LootLatencyStageNames[static_cast<std::size_t>(e.stage)],
-            code,e.id,static_cast<long long>(e.qpc),
-            static_cast<unsigned long long>(e.elapsedUs),
-            static_cast<unsigned long long>(e.readDurationUs),
-            e.quality,e.ilvl,e.readAttempts,e.unknownReads,e.detail.data());
-        Emit(line);
-    }
-    const auto lost=LootLatencyLost.exchange(0,std::memory_order_relaxed);
-    if(lost) {
-        char line[150]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_LATENCY_DROPPED version=1.0.0 count=%u "
-            "note=contention-or-full-event-buffer",lost);
-        Emit(line);
-    }
+    if(!ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<const void*>(pathAddress),
+            pathFirst.data(),pathFirst.size(),&copied) || copied!=pathFirst.size()) return;
+    copied=0;
+    const bool pathAgain=ReadProcessMemory(GetCurrentProcess(),
+        reinterpret_cast<const void*>(pathAddress),pathLast.data(),pathLast.size(),&copied) &&
+        copied==pathLast.size();
+    copied=0;
+    const bool unitAgain=ReadProcessMemory(GetCurrentProcess(),nativeUnit,last.data(),
+        last.size(),&copied) && copied==last.size();
+    if(!pathAgain || !unitAgain || pathFirst!=pathLast ||
+       std::memcmp(first.data(),last.data(),0x10)!=0 ||
+       std::memcmp(first.data()+0x38,last.data()+0x38,sizeof(pathAddress))!=0) return;
+    const auto coordinates=MinimapWorldPosition::Decode(pathFirst.data(),pathFirst.size());
+    if(!coordinates.available || !coordinates.plausible) return;
+    UpdateMinimapProjectionPosition(CanonicalItemCode(rawCode),unitId,classId,mode,
+        coordinates.x,coordinates.y);
 }
 
 // Build 93847 native ground reader promoted after exact id+code post-pickup
 // SDK comparisons (quality 3/6/4, ilvl 84/84/99). Read-only; no handles are
 // forged from a native pointer; only the qualified ethereal bit is decoded
 // when the first potentially matching rule requests it.
-// Every active read uses the same bounded one-hop source as the F8 probe.
+// Every active read uses the qualified bounded one-hop native item-data source.
 // One unreadable field invalidates ALL property-dependent rules, including
 // later generic hide fallbacks, rather than treating missing values as zero.
 std::atomic<std::uint64_t> GroundPropertyLiveReads{};
@@ -2093,10 +988,10 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
     if (!ReadProcessMemory(GetCurrentProcess(),nativeUnit,before.data(),
             before.size(),&copied) || copied!=before.size())
         return fail("unit-header-read-failed");
-    const auto type=GroundCandidateProbe::ReadLe32(before.data());
-    const auto classId=GroundCandidateProbe::ReadLe32(before.data()+4);
-    const auto id=GroundCandidateProbe::ReadLe32(before.data()+8);
-    const auto mode=GroundCandidateProbe::ReadLe32(before.data()+12);
+    const auto type=GroundPropertyReader::ReadLe32(before.data());
+    const auto classId=GroundPropertyReader::ReadLe32(before.data()+4);
+    const auto id=GroundPropertyReader::ReadLe32(before.data()+8);
+    const auto mode=GroundPropertyReader::ReadLe32(before.data()+12);
     if(type!=4 || id!=expectedId || classId!=expectedClassId ||
        !GroundPropertyLive::AllowsMode(mode,purpose))
         return fail("ground-identity-mismatch");
@@ -2120,31 +1015,31 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
             reinterpret_cast<const void*>(address),check.data(),
             check.size(),&copied) || copied!=check.size())
         return fail("item-data-second-read-failed");
-    if(GroundCandidateProbe::ReadLe32(itemData.data())!=
-           GroundCandidateProbe::ReadLe32(check.data()) ||
-       GroundCandidateProbe::ReadLe32(itemData.data()+0x38)!=
-           GroundCandidateProbe::ReadLe32(check.data()+0x38))
+    if(GroundPropertyReader::ReadLe32(itemData.data())!=
+           GroundPropertyReader::ReadLe32(check.data()) ||
+       GroundPropertyReader::ReadLe32(itemData.data()+0x38)!=
+           GroundPropertyReader::ReadLe32(check.data()+0x38))
         return fail("quality-or-level-changed-during-read");
     // Flag snapshot is required only when a potentially matching flag rule
     // requests it. Quality/ilvl-only rules avoid the flag gate entirely.
     if((includeEthereal || includeIdentified) &&
-       GroundCandidateProbe::ReadLe32(itemData.data()+0x18)!=
-           GroundCandidateProbe::ReadLe32(check.data()+0x18))
+       GroundPropertyReader::ReadLe32(itemData.data()+0x18)!=
+           GroundPropertyReader::ReadLe32(check.data()+0x18))
         return fail("item-flags-changed-during-read");
-    const auto quality=GroundCandidateProbe::ReadLe32(itemData.data());
-    const auto level=GroundCandidateProbe::ReadLe32(itemData.data()+0x38);
+    const auto quality=GroundPropertyReader::ReadLe32(itemData.data());
+    const auto level=GroundPropertyReader::ReadLe32(itemData.data()+0x38);
     auto scalars=GroundPropertyLive::Validate(quality,level);
     if(includeEthereal && scalars.qualityKnown && scalars.itemLevelKnown) {
         scalars.etherealKnown=true;
         scalars.ethereal=GroundEthereal::FromNativeFlags(
-            GroundCandidateProbe::ReadLe32(itemData.data()+0x18));
+            GroundPropertyReader::ReadLe32(itemData.data()+0x18));
         if(mode==GroundPropertyLive::PresentingMode)
             GroundEtherealMode5Reads.fetch_add(1,std::memory_order_relaxed);
     }
     if(includeIdentified && scalars.qualityKnown && scalars.itemLevelKnown) {
         scalars.identifiedKnown=true;
         scalars.identified=GroundIdentified::FromNativeFlags(
-            GroundCandidateProbe::ReadLe32(itemData.data()+0x18));
+            GroundPropertyReader::ReadLe32(itemData.data()+0x18));
         if(mode==GroundPropertyLive::PresentingMode)
             GroundIdentifiedMode5Reads.fetch_add(1,std::memory_order_relaxed);
     }
@@ -2155,278 +1050,8 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
     return scalars;
 }
 
-// The opt-in ethereal/identified probe remains available independently of
-// active JSON rule reads. Each active bit is decoded only after
-// both native item-data snapshots and identity have passed their guards.
-// SDK ground/post-pickup correlation is still available for verification.
-constexpr std::size_t EtherealProbeMaxItems=12;
-constexpr std::size_t EtherealProbeMaxSamples=EtherealProbeMaxItems*2;
-struct EtherealProbeRow {
-    std::uint32_t code{},unitId{},classId{},mode{};
-    std::uint32_t flagsAt18{},qualityAt00{},levelAt38{};
-    std::uint32_t sdkStateFlags{},sdkQuality{},sdkContainer{};
-    bool rawKnown{},sdkMatched{},reported{},sdkReported{};
-};
-std::atomic_bool EtherealProbeArmed{};
-std::mutex EtherealProbeMutex;
-std::array<EtherealProbeRow,EtherealProbeMaxSamples> EtherealProbeRows{};
-std::size_t EtherealProbeCount{};
-std::atomic<std::uint32_t> EtherealProbeContended{};
 
-void ArmEtherealProbe() noexcept {
-    EtherealProbeArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard lock(EtherealProbeMutex);
-        EtherealProbeRows.fill({});EtherealProbeCount=0;
-    }
-    EtherealProbeContended.store(0,std::memory_order_relaxed);
-    EtherealProbeArmed.store(true,std::memory_order_release);
-    Emit("LOOT_ETHEREAL_PROBE_ARMED version=1.0.0 trigger=Ctrl+Shift+F8 "
-         "source=verified-ground-label-mode5-or-mode3 "
-         "candidate=itemData+0x18 raw-flags-no-bit-assumption "
-         "sdk=post-pickup-runtimeId+code+classId stateFlags "
-         "maxItems=12 maxModesPerItem=2 "
-         "etherealJson=SUPPORTED mask=0x00400000 readOnly=1 pickupUnchanged=1");
-    // Reuse the SAME guarded flags samples and carried-SDK identity pairing;
-    // independent identified diagnostics, no second scan or extra native hook.
-    Emit("LOOT_IDENTIFIED_PROBE_ARMED version=1.0.0 trigger=Ctrl+Shift+F8 "
-         "source=shared-guarded-ethereal-flags-capture modes=verified-label-5+3 "
-         "candidate=itemData+0x18 bit=0x00000010 QUALIFIED "
-         "sdk=post-pickup-runtimeId+code+classId stateFlags "
-         "maxItems=12 maxModesPerItem=2 identifiedJson=SUPPORTED mask=0x00000010 "
-         "readOnly=1 pickupUnchanged=1");
-}
-
-void ObserveEtherealProbe(const void* unit,std::uint32_t code,
-    std::uint32_t expectedId,std::uint32_t expectedClassId) noexcept {
-    if(!EtherealProbeArmed.load(std::memory_order_acquire) ||
-       !unit || !code || !expectedId || !Context ||
-       !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") return;
-    code=CanonicalItemCode(code);
-    std::array<std::uint8_t,0x18> before{},after{};
-    SIZE_T copied{};
-    if(!ReadProcessMemory(GetCurrentProcess(),unit,before.data(),
-            before.size(),&copied) || copied!=before.size()) return;
-    const auto type=GroundCandidateProbe::ReadLe32(before.data());
-    const auto classId=GroundCandidateProbe::ReadLe32(before.data()+4);
-    const auto id=GroundCandidateProbe::ReadLe32(before.data()+8);
-    const auto mode=GroundCandidateProbe::ReadLe32(before.data()+12);
-    if(type!=4 || id!=expectedId || classId!=expectedClassId ||
-       !GroundPropertyLive::AllowsMode(mode,
-           GroundPropertyLive::Purpose::VerifiedLabel)) return;
-    // Reject duplicate captures before reading candidate data; never hold a
-    // mutex during ReadProcessMemory or an engine/SDK callback.
-    if(!EtherealProbeMutex.try_lock()) {
-        EtherealProbeContended.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    bool duplicate=false,seenIdentity=false;
-    std::size_t identities=0;
-    for(std::size_t i=0;i<EtherealProbeCount;++i) {
-        const auto& row=EtherealProbeRows[i];
-        if(row.unitId==id && row.code==code && row.classId==classId) {
-            seenIdentity=true;
-            if(row.mode==mode)duplicate=true;
-        }
-        bool first=true;
-        for(std::size_t j=0;j<i;++j)
-            if(EtherealProbeRows[j].unitId==row.unitId &&
-               EtherealProbeRows[j].code==row.code &&
-               EtherealProbeRows[j].classId==row.classId) {
-                first=false;break;
-            }
-        if(first)++identities;
-    }
-    const bool full=EtherealProbeCount>=EtherealProbeMaxSamples ||
-        (!seenIdentity && identities>=EtherealProbeMaxItems);
-    EtherealProbeMutex.unlock();
-    if(duplicate || full)return;
-    std::uintptr_t address{};
-    std::memcpy(&address,before.data()+0x10,sizeof(address));
-    constexpr std::size_t length=0x40;
-    std::array<std::uint8_t,length> first{},second{};
-    bool known=GroundCandidatePageReadable(address,length);
-    if(known) {
-        copied=0;
-        known=ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(address),first.data(),
-            first.size(),&copied) && copied==first.size();
-    }
-    copied=0;
-    if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),
-        after.size(),&copied) || copied!=after.size() || before!=after)
-        return; // transient/reused unit is not a valid ground sample
-    if(known) {
-        copied=0;
-        known=ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(address),second.data(),
-            second.size(),&copied) && copied==second.size();
-    }
-    std::uint32_t raw{},quality{},level{};
-    if(known) {
-        raw=GroundCandidateProbe::ReadLe32(first.data()+0x18);
-        quality=GroundCandidateProbe::ReadLe32(first.data());
-        level=GroundCandidateProbe::ReadLe32(first.data()+0x38);
-        known=raw==GroundCandidateProbe::ReadLe32(second.data()+0x18) &&
-              quality==GroundCandidateProbe::ReadLe32(second.data()) &&
-              level==GroundCandidateProbe::ReadLe32(second.data()+0x38) &&
-              quality>=1 && quality<=9 && level>=1 && level<=99;
-    }
-    if(!EtherealProbeMutex.try_lock()) {
-        EtherealProbeContended.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    duplicate=false;seenIdentity=false;identities=0;
-    for(std::size_t i=0;i<EtherealProbeCount;++i) {
-        const auto& row=EtherealProbeRows[i];
-        if(row.unitId==id && row.code==code && row.classId==classId) {
-            seenIdentity=true;
-            if(row.mode==mode)duplicate=true;
-        }
-        bool firstIdentity=true;
-        for(std::size_t j=0;j<i;++j)
-            if(EtherealProbeRows[j].unitId==row.unitId &&
-               EtherealProbeRows[j].code==row.code &&
-               EtherealProbeRows[j].classId==row.classId) {
-                firstIdentity=false;break;
-            }
-        if(firstIdentity)++identities;
-    }
-    if(!duplicate && EtherealProbeCount<EtherealProbeMaxSamples &&
-       (seenIdentity || identities<EtherealProbeMaxItems)) {
-        auto& row=EtherealProbeRows[EtherealProbeCount++];
-        row.code=code;row.unitId=id;row.classId=classId;row.mode=mode;
-        row.rawKnown=known;
-        if(known) {
-            row.flagsAt18=raw;row.qualityAt00=quality;row.levelAt38=level;
-        }
-    }
-    EtherealProbeMutex.unlock();
-}
-
-void ObserveEtherealProbeCarriedSdk(
-    const D2RL::Items::ItemInfo* info) noexcept {
-    if(!info || info->structSize<D2RL::Items::ItemInfoRequiredSize ||
-       !info->runtimeId ||
-       info->container==D2RL::Items::ItemContainer::Ground ||
-       !EtherealProbeMutex.try_lock())return;
-    for(std::size_t i=0;i<EtherealProbeCount;++i) {
-        auto& row=EtherealProbeRows[i];
-        if(row.unitId==info->runtimeId &&
-           row.code==CanonicalItemCode(info->code) &&
-           row.classId==info->classId && !row.sdkMatched) {
-            row.sdkMatched=true;row.sdkStateFlags=info->stateFlags;
-            row.sdkQuality=static_cast<std::uint32_t>(info->quality);
-            row.sdkContainer=static_cast<std::uint32_t>(info->container);
-        }
-    }
-    EtherealProbeMutex.unlock();
-}
-
-void DrainEtherealProbe() noexcept {
-    std::array<EtherealProbeRow,EtherealProbeMaxSamples> pending{};
-    std::size_t count{};
-    if(!EtherealProbeMutex.try_lock())return;
-    for(std::size_t i=0;i<EtherealProbeCount;++i) {
-        auto& row=EtherealProbeRows[i];
-        if(!row.reported || (row.sdkMatched && !row.sdkReported)) {
-            pending[count++]=row;row.reported=true;
-            if(row.sdkMatched)row.sdkReported=true;
-        }
-    }
-    EtherealProbeMutex.unlock();
-    for(std::size_t i=0;i<count;++i) {
-        const auto& row=pending[i];
-        char code[5]{};CodeText(row.code,code);
-        char line[515]{};
-        if(row.sdkMatched) {
-            const bool nativeEthereal=GroundEthereal::FromNativeFlags(
-                row.flagsAt18);
-            const bool sdkEthereal=(row.sdkStateFlags &
-                D2RL::Items::ItemStateEthereal)!=0U;
-            const char* maskCompare=!row.rawKnown ? "UNAVAILABLE" :
-                (nativeEthereal==sdkEthereal ? "MATCH" : "MISMATCH");
-            std::snprintf(line,sizeof(line),
-                "LOOT_ETHEREAL_PROBE_SDK_COMPARE version=1.0.0 "
-                "code='%.4s' unitId=%u classId=%u mode=%u "
-                "rawFlagsAt18=0x%08X candidateKnown=%u "
-                "qualityAt00=%u ilvlAt38=%u "
-                "sdkStateFlags=0x%08X sdkEthereal=%u sdkQuality=%u "
-                "sdkContainer=%u selectedMask=0x00400000 "
-                "nativeEthereal=%u selectedMaskSdkCompare=%s "
-                "rawRemainingBits=UNQUALIFIED postPickup=1 "
-                "etherealJson=SUPPORTED mask=0x00400000",
-                code,row.unitId,row.classId,row.mode,row.flagsAt18,
-                row.rawKnown?1U:0U,row.qualityAt00,row.levelAt38,
-                row.sdkStateFlags,
-                (row.sdkStateFlags&D2RL::Items::ItemStateEthereal)?1U:0U,
-                row.sdkQuality,row.sdkContainer,
-                nativeEthereal?1U:0U,maskCompare);
-        } else {
-            std::snprintf(line,sizeof(line),
-                "LOOT_ETHEREAL_PROBE_SAMPLE version=1.0.0 "
-                "code='%.4s' unitId=%u classId=%u mode=%u "
-                "rawFlagsAt18=0x%08X candidateKnown=%u "
-                "qualityAt00=%u ilvlAt38=%u "
-                "sdk=AWAITING_PICKUP bitMeaning=UNQUALIFIED "
-                "etherealJson=SUPPORTED mask=0x00400000",
-                code,row.unitId,row.classId,row.mode,row.flagsAt18,
-                row.rawKnown?1U:0U,row.qualityAt00,row.levelAt38);
-        }
-        Emit(line);
-        // The probe separately corroborates the active bit decoder; both
-        // identified and unidentified unique Sacred Armors matched ground
-        // control has established either the bit or its ground-time stability.
-        // Never promote this comparison to JSON filtering in this build.
-        char identifiedLine[515]{};
-        constexpr std::uint32_t CandidateIdentifiedBit=
-            GroundIdentified::NativeIdentifiedMask;
-        const bool candidateIdentified=
-            (row.flagsAt18&CandidateIdentifiedBit)!=0U;
-        if(row.sdkMatched) {
-            const bool sdkIdentified=(row.sdkStateFlags &
-                D2RL::Items::ItemStateIdentified)!=0U;
-            const char* compare=!row.rawKnown ? "UNAVAILABLE" :
-                (candidateIdentified==sdkIdentified ? "MATCH" : "MISMATCH");
-            std::snprintf(identifiedLine,sizeof(identifiedLine),
-                "LOOT_IDENTIFIED_PROBE_SDK_COMPARE version=1.0.0 "
-                "code='%.4s' unitId=%u classId=%u mode=%u "
-                "rawFlagsAt18=0x%08X candidateKnown=%u "
-                "candidateMask=0x00000010 candidateIdentified=%u "
-                "sdkStateFlags=0x%08X sdkIdentified=%u "
-                "sdkQuality=%u sdkContainer=%u candidateVsSdk=%s "
-                "bitMeaning=QUALIFIED postPickup=1 identifiedJson=SUPPORTED mask=0x00000010",
-                code,row.unitId,row.classId,row.mode,row.flagsAt18,
-                row.rawKnown?1U:0U,candidateIdentified?1U:0U,
-                row.sdkStateFlags,sdkIdentified?1U:0U,
-                row.sdkQuality,row.sdkContainer,compare);
-        } else {
-            std::snprintf(identifiedLine,sizeof(identifiedLine),
-                "LOOT_IDENTIFIED_PROBE_SAMPLE version=1.0.0 "
-                "code='%.4s' unitId=%u classId=%u mode=%u "
-                "rawFlagsAt18=0x%08X candidateKnown=%u "
-                "candidateMask=0x00000010 candidateIdentified=%u "
-                "sdk=AWAITING_PICKUP bitMeaning=UNQUALIFIED "
-                "identifiedJson=SUPPORTED mask=0x00000010",
-                code,row.unitId,row.classId,row.mode,row.flagsAt18,
-                row.rawKnown?1U:0U,candidateIdentified?1U:0U);
-        }
-        Emit(identifiedLine);
-    }
-    const auto contention=EtherealProbeContended.exchange(0,
-        std::memory_order_relaxed);
-    if(contention) {
-        char line[180]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_ETHEREAL_PROBE_CONTENTION version=1.0.0 count=%u "
-            "samples-may-be-incomplete=1",contention);
-        Emit(line);
-    }
-}
-
-// The same loader-owned, qualified GetUnitStat bridge as stack quantity;
-// no native pointer is retained, no direct/unqualified D2R call is made.
-// The early mode-5 exception is restricted by the caller's VerifiedLabel
-// purpose and the same stable type/class/ID/mode header as the quality read.
+constexpr std::int32_t GroundSocketStatId=194;
 std::atomic<std::uint64_t> GroundSocketRuleReads{};
 std::atomic<std::uint64_t> GroundSocketRuleUnknown{};
 std::atomic<std::uint64_t> GroundSocketMode5Reads{};
@@ -2447,14 +1072,14 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
        before[2]!=expectedId ||
        !GroundPropertyLive::AllowsMode(before[3],purpose)) return false;
     const auto first=getter(const_cast<void*>(nativeUnit),
-        SocketProbeCandidateStatId,0);
+        GroundSocketStatId,0);
     copied=0;
     if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,after.data(),
         sizeof(after),&copied) || copied!=sizeof(after) ||
        before!=after) return false;
     // Two matching scalar reads protect against a transient stat result.
     const auto second=getter(const_cast<void*>(nativeUnit),
-        SocketProbeCandidateStatId,0);
+        GroundSocketStatId,0);
     copied=0;
     std::array<std::uint32_t,4> finalHeader{};
     if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,finalHeader.data(),
@@ -2471,124 +1096,58 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
     const FilterRuleTable* table,std::uint32_t expectedId=0,
     GroundPropertyLive::Purpose purpose=
         GroundPropertyLive::Purpose::StrictGround) noexcept {
-    RuleEngine::Item item{}; item.code=CanonicalItemCode(code);
-    // Capture a temporarily unavailable ground unit BEFORE the native
-    // quality reader can run. Otherwise a first failed observation would
-    // be invisible in the timeline and falsely look like slow reading.
-    const bool propertyPotential=expectedId && table &&
-        (table->usesQuality || table->usesItemLevel || table->usesSockets ||
-         table->usesEthereal || table->usesIdentified) &&
-        RuleEngine::NextNativeProperty(table->rules,item)!=
-            RuleEngine::NextProperty::None;
-    if (!nativeUnit) {
-        if(propertyPotential)TraceLootLatency(item.code,expectedId,
-            LootLatencyStage::ReadUnknown,"native-unit-null");
-        return item;
-    }
+    RuleEngine::Item item{};
+    item.code=CanonicalItemCode(code);
+    if (!nativeUnit) return item;
+
     std::array<std::uint32_t,4> header{};
     SIZE_T copied{};
-    const bool headerRead=ReadProcessMemory(GetCurrentProcess(),
-        nativeUnit,header.data(),sizeof(header),&copied) &&
-        copied==sizeof(header);
-    if (!headerRead || header[0]!=4 ||
-        !GroundPropertyLive::AllowsMode(header[3],purpose) ||
-        !header[2] || (expectedId && header[2]!=expectedId)) {
-        if(propertyPotential) {
-            if(!headerRead)TraceLootLatency(item.code,expectedId,
-                LootLatencyStage::ReadUnknown,"unit-header-read-failed");
-            else {
-                // Existing admission policy stays unchanged. The 0.2.45
-                // trace showed 84 pre-reader rejections over 714 ms; copy
-                // bounded header scalars (never pointers) to identify whether
-                // a transition in type/mode/ID explains that interval.
-                char gate[48]{};
-                std::snprintf(gate,sizeof(gate),
-                    "gate t=%u m=%u id=%u exp=%u",header[0],header[3],
-                    header[2],expectedId);
-                TraceLootLatency(item.code,expectedId,
-                    LootLatencyStage::ReadUnknown,gate);
-            }
-        }
+    if (!ReadProcessMemory(GetCurrentProcess(),nativeUnit,header.data(),
+            sizeof(header),&copied) || copied!=sizeof(header) ||
+        header[0]!=4 || !GroundPropertyLive::AllowsMode(header[3],purpose) ||
+        !header[2] || (expectedId && header[2]!=expectedId))
         return item;
-    }
-    item.classIdKnown=true; item.classId=header[1];
+
+    item.classIdKnown=true;
+    item.classId=header[1];
     if (table && table->usesQuantity &&
         GroundQuantityReader.load(std::memory_order_acquire)) {
         const auto quantity=GroundStackQuantity(nativeUnit);
-        item.quantityKnown=true; item.quantity=quantity>1?quantity:1;
+        item.quantityKnown=true;
+        item.quantity=quantity>1?quantity:1;
     }
-    // Evaluate only the first relevant missing property, then re-evaluate
-    // the ordered rules. A first code-only rule never invokes a reader.
-    // Four lazy property groups at most: quality/ilvl, sockets, ethereal and identified.
-    // A code-only match never invokes any native property reader.
+
+    // Read only the first native property needed by the current ordered rule,
+    // then re-evaluate. Unknown native values stop property-dependent matching
+    // so a later broad Hide cannot turn an unreadable item into a false match.
     for(unsigned propertyGroup=0;propertyGroup<4 && table;++propertyGroup) {
         const auto next=RuleEngine::NextNativeProperty(table->rules,item);
         if(next==RuleEngine::NextProperty::None) break;
+
         if(next==RuleEngine::NextProperty::Ethereal) {
             GroundEtherealRuleReads.fetch_add(1,std::memory_order_relaxed);
-            TraceLootLatency(item.code,header[2],LootLatencyStage::ReadBegin,
-                header[3]==GroundPropertyLive::PresentingMode ?
-                    "mode5-ethereal-verified-label" : "requires-ethereal");
-            LARGE_INTEGER readStart{},readStop{},readFreq{};
-            const bool timeRead=LootLatencyArmed.load(std::memory_order_relaxed) &&
-                QueryPerformanceCounter(&readStart) &&
-                QueryPerformanceFrequency(&readFreq) && readFreq.QuadPart>0;
-            const char* reason="unknown";
             const auto fields=ReadNativeGroundQualityLevel(nativeUnit,
-                header[2],header[1],purpose,&reason,true);
-            const bool haveReadEnd=timeRead && QueryPerformanceCounter(&readStop);
-            const std::uint64_t readDuration=haveReadEnd &&
-                readStop.QuadPart>=readStart.QuadPart ?
-                static_cast<std::uint64_t>((readStop.QuadPart-readStart.QuadPart)*
-                    1000000LL/readFreq.QuadPart) : 0;
-            TraceLootLatency(item.code,header[2],
-                fields.etherealKnown ? LootLatencyStage::ReadOk :
-                LootLatencyStage::ReadUnknown,
-                fields.etherealKnown ? (fields.ethereal ?
-                    "ethereal-true" : "ethereal-false") : reason,
-                readDuration,fields.quality,fields.itemLevel);
+                header[2],header[1],purpose,nullptr,true);
             if(!fields.etherealKnown) {
-                GroundEtherealRuleUnknown.fetch_add(1,
-                    std::memory_order_relaxed);
-                break; // unknown cannot mean nonethereal or bypass Show
+                GroundEtherealRuleUnknown.fetch_add(1,std::memory_order_relaxed);
+                break;
             }
             item.etherealKnown=true;
             item.ethereal=fields.ethereal;
-            // This same guarded snapshot also validates quality and ilvl;
-            // preserve them for any later rule without another native read.
             item.qualityKnown=fields.qualityKnown;
             item.quality=fields.quality;
             item.itemLevelKnown=fields.itemLevelKnown;
             item.itemLevel=fields.itemLevel;
             continue;
         }
+
         if(next==RuleEngine::NextProperty::Identified) {
             GroundIdentifiedRuleReads.fetch_add(1,std::memory_order_relaxed);
-            TraceLootLatency(item.code,header[2],LootLatencyStage::ReadBegin,
-                header[3]==GroundPropertyLive::PresentingMode ?
-                    "mode5-identified-verified-label" : "requires-identified");
-            LARGE_INTEGER readStart{},readStop{},readFreq{};
-            const bool timeRead=LootLatencyArmed.load(std::memory_order_relaxed) &&
-                QueryPerformanceCounter(&readStart) &&
-                QueryPerformanceFrequency(&readFreq) && readFreq.QuadPart>0;
-            const char* reason="unknown";
             const auto fields=ReadNativeGroundQualityLevel(nativeUnit,
-                header[2],header[1],purpose,&reason,false,true);
-            const bool haveReadEnd=timeRead && QueryPerformanceCounter(&readStop);
-            const std::uint64_t readDuration=haveReadEnd &&
-                readStop.QuadPart>=readStart.QuadPart ?
-                static_cast<std::uint64_t>((readStop.QuadPart-readStart.QuadPart)*
-                    1000000LL/readFreq.QuadPart) : 0;
-            TraceLootLatency(item.code,header[2],
-                fields.identifiedKnown ? LootLatencyStage::ReadOk :
-                LootLatencyStage::ReadUnknown,
-                fields.identifiedKnown ? (fields.identified ?
-                    "identified-true" : "identified-false") : reason,
-                readDuration,fields.quality,fields.itemLevel);
+                header[2],header[1],purpose,nullptr,false,true);
             if(!fields.identifiedKnown) {
-                GroundIdentifiedRuleUnknown.fetch_add(1,
-                    std::memory_order_relaxed);
-                break; // Unknown does not mean unidentified; no later hide.
+                GroundIdentifiedRuleUnknown.fetch_add(1,std::memory_order_relaxed);
+                break;
             }
             item.identifiedKnown=true;
             item.identified=fields.identified;
@@ -2598,52 +1157,37 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
             item.itemLevel=fields.itemLevel;
             continue;
         }
+
         if(next==RuleEngine::NextProperty::Sockets) {
             GroundSocketRuleReads.fetch_add(1,std::memory_order_relaxed);
             std::uint32_t count{};
             const bool known=ReadNativeGroundSockets(nativeUnit,header[2],
                 header[1],purpose,count);
-            if(!known) GroundSocketRuleUnknown.fetch_add(1,
-                std::memory_order_relaxed);
+            if(!known) GroundSocketRuleUnknown.fetch_add(1,std::memory_order_relaxed);
             item.socketsKnown=known;
             if(known) item.sockets=count;
-            if(!known) break; // fail open; never fall through to broad hide
+            if(!known) break;
             continue;
         }
-        if(table && (table->usesQuality || table->usesItemLevel) &&
+
+        if((table->usesQuality || table->usesItemLevel) &&
            RuleEngine::NeedsNativeQualityLevel(table->rules,item)) {
-        GroundPropertyLiveReads.fetch_add(1,std::memory_order_relaxed);
-        TraceLootLatency(item.code,header[2],LootLatencyStage::ReadBegin,
-            header[3]==GroundPropertyLive::PresentingMode ?
-                "mode5-verified-label" : "requires-quality-or-item-level");
-        LARGE_INTEGER readStart{},readStop{},readFreq{};
-        const bool timeRead=LootLatencyArmed.load(std::memory_order_relaxed) &&
-            QueryPerformanceCounter(&readStart) &&
-            QueryPerformanceFrequency(&readFreq) && readFreq.QuadPart>0;
-        const char* readReason="unknown";
-        const auto fields=ReadNativeGroundQualityLevel(
-            nativeUnit,header[2],header[1],purpose,&readReason);
-        const bool haveReadEnd=timeRead && QueryPerformanceCounter(&readStop);
-        const std::uint64_t readDuration=haveReadEnd &&
-            readStop.QuadPart>=readStart.QuadPart ?
-            static_cast<std::uint64_t>((readStop.QuadPart-readStart.QuadPart)*
-                1000000LL/readFreq.QuadPart) : 0;
-        TraceLootLatency(item.code,header[2],
-            fields.qualityKnown && fields.itemLevelKnown ?
-            LootLatencyStage::ReadOk : LootLatencyStage::ReadUnknown,
-            readReason,readDuration,fields.quality,fields.itemLevel);
-        if((table->usesQuality && !fields.qualityKnown) ||
-           (table->usesItemLevel && !fields.itemLevelKnown))
-            GroundPropertyLiveUnknown.fetch_add(1,std::memory_order_relaxed);
-        item.qualityKnown=fields.qualityKnown;
-        item.quality=fields.quality;
-        item.itemLevelKnown=fields.itemLevelKnown;
-        item.itemLevel=fields.itemLevel;
-        if(!fields.qualityKnown || !fields.itemLevelKnown) break;
-        } // qualified quality/ilvl reader
-    } // ordered property groups
+            GroundPropertyLiveReads.fetch_add(1,std::memory_order_relaxed);
+            const auto fields=ReadNativeGroundQualityLevel(
+                nativeUnit,header[2],header[1],purpose);
+            if((table->usesQuality && !fields.qualityKnown) ||
+               (table->usesItemLevel && !fields.itemLevelKnown))
+                GroundPropertyLiveUnknown.fetch_add(1,std::memory_order_relaxed);
+            item.qualityKnown=fields.qualityKnown;
+            item.quality=fields.quality;
+            item.itemLevelKnown=fields.itemLevelKnown;
+            item.itemLevel=fields.itemLevel;
+            if(!fields.qualityKnown || !fields.itemLevelKnown) break;
+        }
+    }
     return item;
 }
+
 RuleEngine::Item CachedGroundRuleItem(std::uint32_t code,
     std::uint32_t classId,std::uint32_t quantity,
     const FilterRuleTable* table,
@@ -2751,115 +1295,9 @@ using GetSoEInteropFn = const SoE::Interop::InWorldLabelApiV1*(__cdecl*)() noexc
 using GetSoEStyleFn = const SoE::Interop::InWorldLabelStyleApiV2*(__cdecl*)() noexcept;
 using GetSoERenderScopeFn = const SoE::Interop::InWorldRenderScopeApiV3*(__cdecl*)() noexcept;
 std::atomic<const SoE::Interop::InWorldRenderScopeApiV3*> InWorldRenderScopeApi{};
-std::atomic<std::uint64_t> InWorldScopeGlyphCalls{};
-std::atomic<std::uint64_t> InWorldScopePainterCalls{};
-std::atomic<std::uint64_t> InWorldScopeRgbaSamples{};
-std::atomic<std::uint64_t> InWorldScopeMatchingRule{};
-std::atomic<std::uint32_t> InWorldScopeLastId{};
-std::atomic<std::uint32_t> InWorldScopeLastCode{};
-std::mutex InWorldScopeSampleMutex{};
-std::array<float,4> InWorldScopeLastRgba{};
-std::atomic<ULONGLONG> InWorldScopeFirstHoverMs{};
-std::atomic_bool InWorldScopeReported{};
-void ResetInWorldScopeProbe() noexcept;
-void ReportInWorldScopeProbe() noexcept;
-
-// 0.1.99: event-correlated, automatically timed read-only renderer comparison.
-// V1 supplies a matching-item heartbeat; drawing can happen AFTER V3 exits.
-// Only existing glyph-B/ground-paint hooks are sampled. No new hooks or SoE changes.
-constexpr ULONGLONG HoverDiffMaximumMs = HoverDiffPolicy::MaximumMs;
-constexpr std::size_t HoverDiffMaxSites = 32;
-constexpr std::size_t HoverDiffStackFrames = 10;
-constexpr std::size_t HoverDiffMaxStacks = 2;
-using HoverDiffPhase = HoverDiffPolicy::Phase;
-enum class HoverDiffRenderer : std::uint8_t { Glyph, Painter };
-struct HoverDiffSite final {
-    std::uintptr_t callerRva{};
-    DWORD thread{};
-    std::uint64_t hoverSamples{};
-    std::uint64_t awaySamples{};
-    float firstX{}, firstY{};
-    std::array<float,4> firstRgba{};
-    bool rgbaValid{};
-};
-// 0.1.99: bounded 32-unit glyph coordinate bins. Hover-vs-away counts
-// are only correlation: native draw labels, other UI, and cursor changes may
-// all contribute. No name or item is attributed on coordinates alone.
-constexpr float HoverDiffTileSize=32.0f;
-constexpr std::size_t HoverDiffMaxTiles=512;
-constexpr std::size_t HoverDiffPrintTiles=32;
-struct HoverDiffTile final {
-    std::int32_t binX{},binY{};
-    std::uint32_t hover{},away{};
-    float sampleX{},sampleY{};
-    // 0.1.99: collect a bounded color witness from glyph-B during hover;
-    // these are renderer input values, not proof that a tile belongs to the item.
-    std::array<float,4> hoverRgba{};
-    bool hoverRgbaValid{};
-};
-struct HoverDiffStack final {
-    std::array<std::uintptr_t,HoverDiffStackFrames> frames{};
-    std::uint16_t count{};
-    DWORD thread{};
-    std::uintptr_t callerRva{};
-};
-struct HoverDiffRendererState final {
-    std::mutex mutex{};
-    std::array<HoverDiffSite,HoverDiffMaxSites> sites{};
-    std::array<HoverDiffTile,HoverDiffMaxTiles> tiles{};
-    std::size_t tileCount{};
-    std::uint64_t invalidTileCoords{};
-    std::uint64_t tileOverflow{};
-    std::array<std::array<HoverDiffStack,HoverDiffMaxStacks>,2> stacks{};
-    std::array<std::size_t,2> stackCounts{};
-    std::size_t siteCount{};
-    std::atomic<std::uint64_t> observed{};
-    std::atomic<std::uint64_t> hover{};
-    std::atomic<std::uint64_t> away{};
-    std::atomic<std::uint64_t> transition{};
-    std::atomic<std::uint64_t> contention{};
-    std::atomic<std::uint64_t> overflow{};
-};
-HoverDiffRendererState HoverDiffGlyph{};
-HoverDiffRendererState HoverDiffPainter{};
-std::atomic<ULONGLONG> HoverDiffBeginMs{};
-std::atomic<ULONGLONG> HoverDiffLastMatchingMs{};
-std::atomic<std::uint64_t> HoverDiffMatches{};
-std::atomic<std::uint64_t> HoverDiffOtherItemCallbacks{};
-std::atomic<std::uint32_t> HoverDiffItemId{};
-std::atomic<std::uint32_t> HoverDiffCode{};
-std::atomic<std::uint64_t> HoverDiffEpoch{1};
-std::atomic_bool HoverDiffCompleted{};
-// 0.1.99 diagnostic-only, fail-closed RGB proof-of-concept. The geometry is
-// learned from a complete first-hover/away comparison, never hard-coded.
-// It is NOT a production item-ownership proof: other UI can overlap the region.
-// Keep the experimental tile-based RGB path as inert provenance research.
-// 0.1.86 visually proved its 32-unit horizontal training cluster can cover
-// only part of a hidden-hover item name (e.g. DIVINE O colored, RB native).
-// Do not arm it automatically or forward partial-color glyphs. Reenable only
-// after the full label is qualified by native item/element ownership.
-constexpr bool HoverRgbTrialEnabled = false;
-std::atomic_bool HoverRgbTrialReady{};
-std::atomic<std::int32_t> HoverRgbTrialMinX{};
-std::atomic<std::int32_t> HoverRgbTrialMaxX{};
-std::atomic<std::int32_t> HoverRgbTrialRowY{};
-std::atomic<std::uint32_t> HoverRgbTrialItemId{};
-std::atomic<std::uint32_t> HoverRgbTrialCode{};
-std::atomic<std::uint64_t> HoverRgbTrialRegionHits{};
-std::atomic<std::uint64_t> HoverRgbTrialForwarded{};
-std::atomic<std::uint64_t> HoverRgbTrialRejectedColor{};
-std::atomic<std::uint64_t> HoverRgbTrialNoRule{};
-std::atomic<std::uint64_t> HoverRgbTrialNotFresh{};
-std::atomic<std::uint64_t> HoverRgbTrialWrongItem{};
-void ResetHoverDifferentialProbe() noexcept;
 // Opt-in read-only native row observation. No row or rectangle hook at startup.
-void ResetNativeRowRuntime() noexcept;
 void ResetNativeRowLiveSession() noexcept;
 void EnableAutomaticNativeHover() noexcept;
-
-void ObserveHoverDifferentialDraw(HoverDiffRenderer renderer,
-    std::uintptr_t caller, float x=0.0f, float y=0.0f,
-    const float* rgba=nullptr) noexcept;
 
 std::atomic_bool InWorldStyleAttached{false};
 std::atomic<std::uint64_t> InWorldStyleCalls{};
@@ -2928,9 +1366,6 @@ bool __cdecl OnSoEInWorldStyle(const SoE::Interop::InWorldLabelEventV1* event,
     const auto* rule=ResolveGroundRule(snapshot.get(),observed,resolvedRule) ?
         &resolvedRule : nullptr;
     UpdateMinimapProjectionIconRule(event->unitId,code,rule);
-    if(rule && (rule->hasTextColor || rule->hasBackground))
-        TraceLootLatency(code,event->unitId,LootLatencyStage::MatchStyle,
-            "soe-v2-style-rule-match",0,observed.quality,observed.itemLevel);
     // Quantity is independent of JSON rules: e.g. an unfiltered stack of
     // consumables still gets "3x ". Stat 0/1 retains vanilla display.
     const auto quantity=GroundStackQuantity(event->nativeUnit);
@@ -2938,11 +1373,6 @@ bool __cdecl OnSoEInWorldStyle(const SoE::Interop::InWorldLabelEventV1* event,
         HoverStyle::PaletteSelector(rule->textColor):'\0';
     if (rule && rule->hasTextColor && !palette)
         InWorldStyleUnsupportedColor.fetch_add(1,std::memory_order_relaxed);
-    if (rule && InWorldRenderScopeApi.load(std::memory_order_acquire)) {
-        ULONGLONG unstarted{};
-        (void)InWorldScopeFirstHoverMs.compare_exchange_strong(
-            unstarted,GetTickCount64(),std::memory_order_acq_rel);
-    }
     const auto source=std::string_view(event->source,event->sourceLength);
     const auto name=rule && rule->hasName ?
         std::string_view(rule->name.data(),rule->bytes-1U):std::string_view{};
@@ -2963,9 +1393,6 @@ bool __cdecl OnSoEInWorldStyle(const SoE::Interop::InWorldLabelEventV1* event,
             code,source,std::string_view(replacement,
                 static_cast<std::size_t>(end-replacement)));
     InWorldStyleWrites.fetch_add(1,std::memory_order_relaxed);
-    if(rule && rule->hasTextColor)
-        TraceLootLatency(code,event->unitId,LootLatencyStage::StyleText,
-            "soe-v2-replacement-ready");
     return true;
 }
 
@@ -3041,7 +1468,7 @@ void TryAttachInWorldBackend() noexcept {
             Emit(styleReady ?
                 "LOOT_INWORLD_STYLE_READY version=1.0.0 mode=soe-interop-v2 labelText=name+native-palette only backgroundRGBA=unqualified nativeHooksAdded=0" :
                 "LOOT_INWORLD_STYLE_UNAVAILABLE version=1.0.0 old-SoE-or-registration-refused hidden-hover-pass-through=1");
-            Emit("LOOT_INWORLD_BACKEND version=1.0.0 mode=soe-interop-v1 owner=soe hook=0xC0420 probeHooksAdded=0 textObserve=1 style=optional-v2");
+            Emit("LOOT_INWORLD_BACKEND version=1.0.0 mode=soe-interop-v1 owner=soe hook=0xC0420 extraHooksAdded=0 textObserve=1 style=optional-v2");
             return;
         }
         // A loaded SoE may own the hook even if its API is absent/not ready.
@@ -3078,7 +1505,7 @@ void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
     if (!event || event->kind != D2RL::Lifecycle::GameplayEventKind::GameJoined)
         return;
     // Refresh the copied ground-item marker registry for the new game session.
-    ArmMinimapTracking();
+    ResetMinimapTracking();
     if(AutomapProjectionHookInstalled.load(std::memory_order_acquire) &&
        std::string_view(MinimapOverlayRenderer::ActiveBackendName())=="none")
         (void)InitializeMinimapMarkerRenderer();
@@ -3181,143 +1608,6 @@ void ReportInWorldStatus() noexcept {
         static_cast<unsigned long long>(InWorldStyleGuarded.load()));
     Emit(message);
 }
-CollectionHelperFn OriginalCollectionHelper{};
-std::atomic_bool CollectionHookInstalled{false};
-std::atomic<std::uint64_t> CollectionTotal{};
-std::atomic<std::uint64_t> CollectionContended{};
-
-std::atomic<int> ActivePhase{-1};
-std::atomic<ULONGLONG> Deadline{};
-std::mutex PhasesMutex;
-// Claims a single pre-call snapshot for each phase.  These atomics are reset
-// only when the capture is no longer armed and after outstanding callbacks are
-// guarded by the phase mutex.
-std::array<std::atomic_bool, MaximumPhases> BeforeClaimed{};
-
-struct Row {
-    std::uintptr_t callerRva{};
-    std::uint32_t code{};
-    std::uint32_t hits{};
-    std::uintptr_t firstItem{};
-    std::uintptr_t lastItem{};
-    std::uint32_t threadId{};
-};
-struct TextVariant {
-    char escaped[CandidateTextMaximum * 4 + 1]{};
-    std::uint32_t samples{};
-};
-struct SlotCandidate {
-    bool readable{};
-    bool terminated{};
-    // Raw prefix bytes plus bounded text bytes, never followed pointers.
-    std::array<std::uint8_t, CandidateTextOffset> prefix{};
-    std::array<std::uint8_t, CandidateTextMaximum> text{};
-};
-struct SlotSurvey {
-    bool attempted{};
-    std::uint32_t readable{};
-    std::uint32_t textCandidates{};
-    std::uint64_t atHelperHit{};
-    std::array<SlotCandidate, CandidateSlotCount> slots{};
-};
-struct CollectionSample {
-    // Snapshot at the first call before and after the collection helper,
-    // then a late periodic post-call survey. This DOES NOT establish which
-    // candidate records are currently rendered versus stale spare entries.
-    SlotSurvey firstBeforeSlots{};
-    SlotSurvey firstAfterSlots{};
-    SlotSurvey lastAfterSlots{};
-    std::uint32_t surveyClaimFailures{};
-    std::uint32_t surveyPeriodicFailures{};
-    std::uint32_t surveyUpdates{};
-    // A first-hit pre/post read of 0x144 bytes at the *argument storage*,
-    // never a pointer followed from that storage. Not a verified item record.
-    bool beforeArg3Ok{};
-    bool afterArg3Ok{};
-    std::array<std::uint8_t, RecordBytes> beforeArg3{};
-    std::array<std::uint8_t, RecordBytes> afterArg3{};
-    std::uint32_t preClaimFailures{};
-    std::uint32_t candidateReadFailures{};
-    std::uint32_t textSamples{};
-    std::uint32_t invalidTextSamples{};
-    std::uint32_t variantOverflow{};
-    std::array<TextVariant, CandidateTextVariants> variants{};
-    std::size_t variantCount{};
-    // Retain 0.1.9's 64-byte post-call snapshots for compatibility.
-    bool arg1SnapshotOk{};
-    bool arg3SnapshotOk{};
-    std::array<std::uint64_t, 8> arg1Snapshot{};
-    std::array<std::uint64_t, 8> arg3Snapshot{};
-    std::uint64_t hits{};
-    std::uint64_t firstLimit{};
-    std::uint64_t lastLimit{};
-    std::uint64_t minimumLimit{};
-    std::uint64_t maximumLimit{};
-    std::uintptr_t firstCaller{};
-    std::uintptr_t lastCaller{};
-    std::uintptr_t firstArg1{};
-    std::uintptr_t firstArg2{};
-    std::uintptr_t firstArg3{};
-    std::uint32_t firstThread{};
-    std::uint32_t stackCount{};
-    std::array<std::uintptr_t, 8> stack{};
-};
-struct FormatterObservation {
-    bool claimed{};
-    bool preOk{};
-    bool postOk{};
-    bool unitOk{};
-    bool codeAttempted{};
-    bool codeGuardPassed{};
-    bool codeValid{};
-    std::uint32_t codeValue{};
-    std::uintptr_t nativeUnit{};
-    std::uintptr_t dest{};
-    std::uintptr_t record{};
-    std::uintptr_t caller{};
-    std::uint32_t hits{};
-    std::uint32_t threadId{};
-    std::uint32_t fourthArg{};
-    std::uint64_t fifthArg{};
-    std::uint64_t sixthArg{};
-    std::uint8_t result{};
-    std::uint32_t nativeFirst6[6]{};
-    std::array<std::uint8_t, RecordBytes> pre{};
-    std::array<std::uint8_t, RecordBytes> post{};
-};
-struct FormatterPhase {
-    std::uint64_t calls{}; // qualified source-site + paired record calls
-    std::uint64_t sourceCallHits{};
-    std::uint64_t seen{}; // every formatter entry during an active phase
-    std::uint64_t sourceSiteHits{}; // both verified return addresses
-    std::uint64_t pairedHits{}; // destination == record + 0x24
-    std::uintptr_t firstReturnAddress{}; // any formatter entry, for diagnostics
-    std::uint64_t skipped{};
-    std::size_t rowCount{};
-    std::array<FormatterObservation, FormatterSlotsPerPhase> rows{};
-};
-struct Phase {
-    char name[32]{};
-    std::array<Row, MaximumRows> rows{};
-    std::size_t rowCount{};
-    std::uint64_t calls{};
-    std::uint64_t retained{};
-    std::uint64_t contended{};
-    std::uint64_t overflow{};
-    std::uint32_t stackCount{};
-    std::array<std::uintptr_t, 8> divineStack{};
-    CollectionSample collection{};
-    FormatterPhase formatter{};
-    GeometryMode geometryMode{GeometryMode::Off};
-};
-std::array<Phase, MaximumPhases> Phases{};
-std::size_t PhaseCount{};
-std::atomic<std::uint64_t> GlobalContended{};
-
-// Independent, explicit capture output.  D2RLoader owns pluginLogPath; never
-// overwrite it or rely on the loader flushing its log on crash/exit.
-
-
 constexpr D2RL::PluginInfo Info{
     .infoSize = D2RL::PluginInfoSize,
     .apiVersion = D2RL_PLUGIN_API_VERSION,
@@ -3331,16 +1621,11 @@ constexpr D2RL::PluginInfo Info{
              D2RL::PluginFlags::ModScopedOnly,
 };
 
-// Only loader lifecycle / configuration paths emit messages; neither native
-// hover hook writes files or logs. Legacy capture callers remain no-ops.
-void CaptureLine(const char*) noexcept {}
-void FlushCapture() noexcept {}
+// Native hooks do not write files or emit verbose sampling logs.
 void Emit(const char* message) noexcept {
     if (!Context || !message) return;
 
-    // Production logging only. Historical reverse-engineering probes still
-    // exist in source where they document qualified native contracts, but
-    // their verbose sample/status output is no longer routed to the loader.
+    // Production logging only: startup, refusal, compatibility, and reload state.
     const bool warning =
         std::strstr(message,"LOOT_RULES_REFUSED") ||
         std::strstr(message,"LOOT_FILTER_REFUSED") ||
@@ -3396,354 +1681,6 @@ bool MatchesCode(std::uint32_t code, std::string_view selected) noexcept {
     std::string_view compact(chars, 4);
     while (!compact.empty() && compact.back() == ' ') compact.remove_suffix(1);
     return selected == compact;
-}
-
-// 0.1.52: separate, short-lived, read-only TOOLTIP ROUTE diagnostic.
-// We do NOT claim 0x36EF50 creates tooltips: it is a verified one-argument
-// item-code accessor that previous captures showed in hover/inventory stacks.
-// Capture bounded native return-address stacks for the Divine Orb only,
-// while a user performs exactly one UI action. This is NOT a native drop hook.
-constexpr ULONGLONG TooltipRouteCaptureMs=12'000;
-constexpr std::size_t TooltipRouteMaxSignatures=20;
-constexpr std::size_t TooltipRouteMaxFrames=12;
-std::atomic_bool TooltipRouteArmed{false};
-std::atomic<ULONGLONG> TooltipRouteDeadline{};
-std::atomic<std::uint64_t> TooltipRouteHits{};
-std::atomic<std::uint64_t> TooltipRouteContended{};
-std::atomic<std::uint64_t> TooltipRouteSkipped{};
-std::atomic<std::uint64_t> TooltipRouteOverflow{};
-std::array<char,24> TooltipRoutePhase{};
-struct TooltipRouteSignature {
-    std::array<std::uintptr_t,TooltipRouteMaxFrames> frames{};
-    std::uint32_t frameCount{};
-    std::uintptr_t callerRva{};
-    std::uint32_t threadId{};
-    std::uint32_t itemIdCandidate{};
-    std::uint64_t hits{};
-};
-std::mutex TooltipRouteMutex;
-std::array<TooltipRouteSignature,TooltipRouteMaxSignatures> TooltipRouteRows{};
-std::size_t TooltipRouteCount{};
-
-void ObserveTooltipRoute(void* item,std::uint32_t code,
-    std::uintptr_t caller) noexcept {
-    if (code!=DivineCode ||
-        !TooltipRouteArmed.load(std::memory_order_relaxed) ||
-        GetTickCount64()>=TooltipRouteDeadline.load(std::memory_order_relaxed)) return;
-    const auto hit=TooltipRouteHits.fetch_add(1,std::memory_order_relaxed)+1;
-    // Bound the unwind work to approximately eight samples per 60fps second.
-    if ((hit-1)%8!=0) {TooltipRouteSkipped.fetch_add(1,std::memory_order_relaxed);return;}
-    if(!TooltipRouteMutex.try_lock()) {
-        TooltipRouteContended.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    std::lock_guard<std::mutex> hold(TooltipRouteMutex,std::adopt_lock);
-    if(!TooltipRouteArmed.load(std::memory_order_relaxed) ||
-       GetTickCount64()>=TooltipRouteDeadline.load(std::memory_order_relaxed)) return;
-    PVOID nativeFrames[TooltipRouteMaxFrames]{};
-    const auto depth=CaptureStackBackTrace(0,
-        static_cast<DWORD>(TooltipRouteMaxFrames),nativeFrames,nullptr);
-    std::array<std::uintptr_t,TooltipRouteMaxFrames> frames{};
-    for(std::uint32_t i=0;i<depth;++i) {
-        const auto absolute=reinterpret_cast<std::uintptr_t>(nativeFrames[i]);
-        frames[i]=(absolute>=Base && absolute-Base<ImageSize)?absolute-Base:0;
-    }
-    const auto callerRva=caller>=Base && caller-Base<ImageSize?caller-Base:0;
-    TooltipRouteSignature* existing{};
-    for(std::size_t i=0;i<TooltipRouteCount;++i) {
-        auto& record=TooltipRouteRows[i];
-        if(record.callerRva!=callerRva || record.frameCount!=depth) continue;
-        // Frame 0 may point into this observer; discriminate by the native
-        // caller chain from frame 2 onward, not by plugin code addresses.
-        bool equal=true;
-        for(std::uint32_t j=2;j<depth;++j)
-            if(record.frames[j]!=frames[j]) {equal=false;break;}
-        if(equal) {existing=&record;break;}
-    }
-    if(!existing) {
-        if(TooltipRouteCount>=TooltipRouteMaxSignatures) {
-            TooltipRouteOverflow.fetch_add(1,std::memory_order_relaxed);return;
-        }
-        existing=&TooltipRouteRows[TooltipRouteCount++];
-        *existing={};
-        existing->frames=frames;
-        existing->frameCount=depth;
-        existing->callerRva=callerRva;
-        existing->threadId=GetCurrentThreadId();
-        if(item) {
-            std::uint32_t header[4]{};
-            SIZE_T copied{};
-            if(ReadProcessMemory(GetCurrentProcess(),item,header,
-                sizeof(header),&copied) && copied==sizeof(header) && header[0]==4)
-                existing->itemIdCandidate=header[2];
-        }
-    }
-    ++existing->hits;
-}
-
-void StartTooltipRoute(std::string_view phase) noexcept {
-    if(phase!="hidden" && phase!="inventory" && phase!="idle" &&
-       phase!="visible") {
-        Emit("LOOT_TOOLTIP_REFUSED usage: tooltip-route-start idle|hidden|inventory|visible");return;
-    }
-    if(!HookInstalled.load(std::memory_order_acquire) ||
-       !OriginalGetItemCode || !Context || !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") {
-        Emit("LOOT_TOOLTIP_REFUSED code-helper-not-qualified-or-build-mismatch");return;
-    }
-    TooltipRouteArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> guard(TooltipRouteMutex);
-        TooltipRouteRows.fill({});TooltipRouteCount=0;
-        TooltipRouteHits.store(0);TooltipRouteSkipped.store(0);
-        TooltipRouteContended.store(0);TooltipRouteOverflow.store(0);
-        TooltipRoutePhase.fill(0);
-        std::memcpy(TooltipRoutePhase.data(),phase.data(),phase.size());
-        TooltipRouteDeadline.store(GetTickCount64()+TooltipRouteCaptureMs,
-            std::memory_order_release);
-        TooltipRouteArmed.store(true,std::memory_order_release);
-    }
-    char message[350]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_TOOLTIP_ROUTE_ARMED version=1.0.0 phase='%s' durationMs=%llu code='divo' nativeSource=0x36EF50-trampoline capture=caller+bounded-return-stack labelsRequired=0 modifications=0",
-        TooltipRoutePhase.data(),
-        static_cast<unsigned long long>(TooltipRouteCaptureMs));
-    Emit(message);
-}
-
-void ReportTooltipRoute(bool stop) noexcept {
-    if(stop) TooltipRouteArmed.store(false,std::memory_order_release);
-    std::lock_guard<std::mutex> guard(TooltipRouteMutex);
-    char message[460]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_TOOLTIP_ROUTE_BEGIN version=1.0.0 phase='%s' armed=%u divoHelperCalls=%llu sampled=%llu routes=%zu overflow=%llu contended=%llu source=item-code-accessor-not-tooltip-constructor",
-        TooltipRoutePhase.data(),TooltipRouteArmed.load()?1U:0U,
-        static_cast<unsigned long long>(TooltipRouteHits.load()),
-        static_cast<unsigned long long>(TooltipRouteHits.load()-TooltipRouteSkipped.load()),
-        TooltipRouteCount,
-        static_cast<unsigned long long>(TooltipRouteOverflow.load()),
-        static_cast<unsigned long long>(TooltipRouteContended.load()));
-    Emit(message);
-    for(std::size_t i=0;i<TooltipRouteCount;++i) {
-        const auto& r=TooltipRouteRows[i];
-        std::snprintf(message,sizeof(message),
-            "LOOT_TOOLTIP_ROUTE phase='%s' route=%zu caller=D2R+0x%llX sampledHits=%llu frames=%u tid=%u itemIdCandidate=%u",
-            TooltipRoutePhase.data(),i,
-            static_cast<unsigned long long>(r.callerRva),
-            static_cast<unsigned long long>(r.hits),r.frameCount,
-            r.threadId,r.itemIdCandidate);
-        Emit(message);
-        for(std::uint32_t j=0;j<r.frameCount;++j) {
-            std::snprintf(message,sizeof(message),
-                "LOOT_TOOLTIP_FRAME phase='%s' route=%zu index=%u return=%s0x%llX",
-                TooltipRoutePhase.data(),i,j,r.frames[j]?"D2R+":"non-D2R-or-unresolved:",
-                static_cast<unsigned long long>(r.frames[j]));
-            Emit(message);
-        }
-    }
-    Emit("LOOT_TOOLTIP_ROUTE_END note=compare-hidden-inventory-idle-return-chains;no-native-tooltip-writes;no-drop-hook");
-    FlushCapture();
-}
-
-// v0.1.52 — isolated observer of the COMMON hover/inventory producer at
-// D2R+0xC7670.  The two observed native call sites supply RCX=output context
-// and RDX=source object; no claim that the function is a tooltip renderer.
-// Preserve the other integer register arguments as opaque pass-through values.
-// This opt-in experiment does not touch the output, RDX item, or game data.
-// The existing ReadSafe implementation appears later in the translation unit.
-bool ReadSafe(std::uintptr_t rva,void* output,std::size_t count) noexcept;
-constexpr std::uintptr_t TooltipProducerRva=0xC7670;
-using TooltipProducerFn=void*(__fastcall*)(void*,void*,void*,void*) noexcept;
-TooltipProducerFn OriginalTooltipProducer{};
-std::atomic_bool TooltipProducerInstalled{false};
-std::atomic_bool TooltipProducerArmed{false};
-std::atomic<ULONGLONG> TooltipProducerDeadline{};
-std::atomic<std::uint64_t> TooltipProducerCalls{};
-std::atomic<std::uint64_t> TooltipProducerSamples{};
-std::atomic<std::uint64_t> TooltipProducerContended{};
-std::atomic<std::uint64_t> TooltipProducerOverflow{};
-// Every call to each of the four static xrefs is counted even if the
-// less frequent caller never coincides with the 1-in-8 snapshot sample.
-constexpr std::array<std::uintptr_t,4> TooltipProducerReturns{{
-    0x14FA04,0x14FC51,0x15BBE9,0x1509E1F}};
-std::array<std::atomic<std::uint64_t>,4> TooltipProducerSiteCalls{};
-std::atomic<std::uint64_t> TooltipProducerOtherCalls{};
-std::array<char,24> TooltipProducerPhase{};
-constexpr std::size_t TooltipProducerMaxRows=12;
-struct TooltipProducerRow {
-    std::uintptr_t callerRva{};
-    std::uint32_t tid{};
-    std::uint32_t outputHeader[4]{};
-    std::uint32_t sourceHeader[4]{};
-    std::uintptr_t resultPointer{};
-    std::uint64_t hits{};
-    std::uint64_t sampled{};
-    bool outputReadable{};
-    bool sourceReadable{};
-};
-std::mutex TooltipProducerMutex;
-std::array<TooltipProducerRow,TooltipProducerMaxRows> TooltipProducerRows{};
-std::size_t TooltipProducerRowCount{};
-
-bool TooltipProducerReadHeader(void* p,std::uint32_t (&dest)[4]) noexcept {
-    if (!p) return false;
-    SIZE_T read{};
-    return ReadProcessMemory(GetCurrentProcess(),p,dest,sizeof(dest),&read) &&
-           read==sizeof(dest);
-}
-
-void* __fastcall HookTooltipProducer(void* output,void* source,
-    void* opaqueR8,void* opaqueR9) noexcept {
-    const auto absolute=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    const auto caller=(absolute>=Base && absolute-Base<ImageSize)?absolute-Base:0;
-    // Call original ONCE with all four integer argument registers forwarded.
-    // Do not call any other hooked helper while its native frame is active.
-    const auto result=OriginalTooltipProducer(output,source,opaqueR8,opaqueR9);
-    if(!TooltipProducerArmed.load(std::memory_order_relaxed) ||
-       GetTickCount64()>=TooltipProducerDeadline.load(std::memory_order_relaxed))
-        return result;
-    const auto hits=TooltipProducerCalls.fetch_add(1,std::memory_order_relaxed)+1;
-    bool known=false;
-    for(std::size_t i=0;i<TooltipProducerReturns.size();++i)
-        if(caller==TooltipProducerReturns[i]) {
-            TooltipProducerSiteCalls[i].fetch_add(1,std::memory_order_relaxed);
-            known=true;break;
-        }
-    if(!known) TooltipProducerOtherCalls.fetch_add(1,std::memory_order_relaxed);
-    // Sample at most every eighth call, never log on the native hook thread.
-    if((hits-1)%8) return result;
-    if(!TooltipProducerMutex.try_lock()) {
-        TooltipProducerContended.fetch_add(1,std::memory_order_relaxed);
-        return result;
-    }
-    {
-        std::lock_guard<std::mutex> lock(TooltipProducerMutex,std::adopt_lock);
-        if(!TooltipProducerArmed.load(std::memory_order_relaxed)) return result;
-        TooltipProducerSamples.fetch_add(1,std::memory_order_relaxed);
-        TooltipProducerRow* row{};
-        for(std::size_t i=0;i<TooltipProducerRowCount;++i)
-            if(TooltipProducerRows[i].callerRva==caller) {
-                row=&TooltipProducerRows[i];break;
-            }
-        if(!row) {
-            if(TooltipProducerRowCount>=TooltipProducerMaxRows) {
-                TooltipProducerOverflow.fetch_add(1,std::memory_order_relaxed);
-                return result;
-            }
-            row=&TooltipProducerRows[TooltipProducerRowCount++];
-            *row={};row->callerRva=caller;row->tid=GetCurrentThreadId();
-            row->outputReadable=TooltipProducerReadHeader(output,row->outputHeader);
-            row->sourceReadable=TooltipProducerReadHeader(source,row->sourceHeader);
-            row->resultPointer=reinterpret_cast<std::uintptr_t>(result);
-        }
-        ++row->hits;
-        ++row->sampled;
-    }
-    return result;
-}
-
-void ArmTooltipProducer() noexcept {
-    if(TooltipProducerInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_TOOLTIP_PRODUCER_READY version=1.0.0 installed=1 observer-only=1");
-        return;
-    }
-    const auto build=Context?D2RL::GetBuildName(Context):nullptr;
-    constexpr std::array<std::uint8_t,18> nativeEntry{{
-        0x4C,0x8B,0xDC,0x55,0x53,0x56,0x57,0x49,
-        0x8D,0x6B,0xA8,0x48,0x81,0xEC,0x38,0x01,0x00,0x00}};
-    // The two direct native callers in the user's build 93847 log.
-    constexpr std::array<std::uint8_t,5> ground{{0xE8,0x1F,0x7A,0xF7,0xFF}};
-    constexpr std::array<std::uint8_t,5> inventory{{0xE8,0x87,0xBA,0xF6,0xFF}};
-    std::array<std::uint8_t,5> groundRead{},inventoryRead{};
-    if(!Context || !build || std::string_view(build)!="93847" ||
-       !ReadSafe(0x14FC4C,groundRead.data(),groundRead.size()) ||
-       !ReadSafe(0x15BBE4,inventoryRead.data(),inventoryRead.size()) ||
-       groundRead!=ground || inventoryRead!=inventory ||
-       !Context->CheckExpectedBytes(TooltipProducerRva,nativeEntry.data(),
-            static_cast<std::uint32_t>(nativeEntry.size()))) {
-        Emit("LOOT_TOOLTIP_PRODUCER_REFUSED version=1.0.0 build-or-native-entry-or-callsite-mismatch no-fallback=1");
-        return;
-    }
-    if(!Context->InstallInlineHook(TooltipProducerRva,nativeEntry.data(),
-         static_cast<std::uint32_t>(nativeEntry.size()),HookTooltipProducer,
-         &OriginalTooltipProducer) || !OriginalTooltipProducer) {
-        Emit("LOOT_TOOLTIP_PRODUCER_REFUSED version=1.0.0 loader-hook-install-failed no-fallback=1");
-        return;
-    }
-    TooltipProducerInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_TOOLTIP_PRODUCER_READY version=1.0.0 target=D2R+0xC7670 groundReturn=0x14FC51 inventoryReturn=0x15BBE9 ABI=RCX-output,RDX-source,R8/R9-opaque-pass-through return=RAX readOnly=1 opt-in-capture=1 not-confirmed-tooltip-constructor=1");
-}
-
-void StartTooltipProducer(std::string_view phase) noexcept {
-    if(phase!="idle" && phase!="hidden" && phase!="inventory" && phase!="visible") {
-        Emit("LOOT_TOOLTIP_PRODUCER_REFUSED usage: tooltip-producer-start idle|hidden|inventory|visible");return;
-    }
-    if(!TooltipProducerInstalled.load(std::memory_order_acquire) ||
-       !OriginalTooltipProducer) {
-        Emit("LOOT_TOOLTIP_PRODUCER_REFUSED install-tooltip-producer-observe-first");return;
-    }
-    TooltipProducerArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(TooltipProducerMutex);
-        TooltipProducerRows.fill({});TooltipProducerRowCount=0;
-        TooltipProducerCalls.store(0);TooltipProducerSamples.store(0);
-        TooltipProducerContended.store(0);TooltipProducerOverflow.store(0);
-        for(auto& count:TooltipProducerSiteCalls) count.store(0);
-        TooltipProducerOtherCalls.store(0);
-        TooltipProducerPhase.fill(0);
-        std::memcpy(TooltipProducerPhase.data(),phase.data(),phase.size());
-        TooltipProducerDeadline.store(GetTickCount64()+12000,std::memory_order_release);
-        TooltipProducerArmed.store(true,std::memory_order_release);
-    }
-    char message[240]{};
-    std::snprintf(message,sizeof(message),
-       "LOOT_TOOLTIP_PRODUCER_ARMED version=1.0.0 phase='%s' durationMs=12000 readOnly=1",
-       TooltipProducerPhase.data());
-    Emit(message);
-}
-
-void ReportTooltipProducer(bool stop) noexcept {
-    if(stop) TooltipProducerArmed.store(false,std::memory_order_release);
-    std::lock_guard<std::mutex> lock(TooltipProducerMutex);
-    char message[520]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_TOOLTIP_PRODUCER_BEGIN version=1.0.0 phase='%s' installed=%u armed=%u calls=%llu sampled=%llu rows=%zu contended=%llu overflow=%llu no-tooltip-writes=1",
-        TooltipProducerPhase.data(),TooltipProducerInstalled.load()?1U:0U,
-        TooltipProducerArmed.load()?1U:0U,
-        static_cast<unsigned long long>(TooltipProducerCalls.load()),
-        static_cast<unsigned long long>(TooltipProducerSamples.load()),
-        TooltipProducerRowCount,
-        static_cast<unsigned long long>(TooltipProducerContended.load()),
-        static_cast<unsigned long long>(TooltipProducerOverflow.load()));
-    Emit(message);
-    for(std::size_t i=0;i<TooltipProducerReturns.size();++i) {
-        std::snprintf(message,sizeof(message),
-           "LOOT_TOOLTIP_PRODUCER_CALLS phase='%s' returnRva=D2R+0x%llX allCalls=%llu",
-           TooltipProducerPhase.data(),
-           static_cast<unsigned long long>(TooltipProducerReturns[i]),
-           static_cast<unsigned long long>(TooltipProducerSiteCalls[i].load()));
-        Emit(message);
-    }
-    std::snprintf(message,sizeof(message),
-       "LOOT_TOOLTIP_PRODUCER_CALLS phase='%s' returnRva=other allCalls=%llu",
-       TooltipProducerPhase.data(),
-       static_cast<unsigned long long>(TooltipProducerOtherCalls.load()));
-    Emit(message);
-    for(std::size_t i=0;i<TooltipProducerRowCount;++i) {
-        const auto& r=TooltipProducerRows[i];
-        std::snprintf(message,sizeof(message),
-            "LOOT_TOOLTIP_PRODUCER_SITE phase='%s' returnRva=D2R+0x%llX hits=%llu tid=%u outReadable=%u outHeader=%08X,%08X,%08X,%08X sourceReadable=%u sourceHeader=%08X,%08X,%08X,%08X result=0x%llX",
-            TooltipProducerPhase.data(),
-            static_cast<unsigned long long>(r.callerRva),
-            static_cast<unsigned long long>(r.hits),r.tid,
-            r.outputReadable?1U:0U,r.outputHeader[0],r.outputHeader[1],
-            r.outputHeader[2],r.outputHeader[3],
-            r.sourceReadable?1U:0U,r.sourceHeader[0],r.sourceHeader[1],
-            r.sourceHeader[2],r.sourceHeader[3],
-            static_cast<unsigned long long>(r.resultPointer));
-        Emit(message);
-    }
-    Emit("LOOT_TOOLTIP_PRODUCER_END compare-idle-hidden-inventory;no-native-writes;not-a-drop-event");
-    FlushCapture();
 }
 
 // Still no native item reads: the original qualified helper does all item access.
@@ -3808,35 +1745,6 @@ std::atomic<std::uint64_t> NativeRowAppendCommittedSequence{};
 using NativeRowRendererFn=void(__fastcall*)(void*) noexcept;
 NativeRowRendererFn OriginalNativeRowRenderer{};
 std::atomic_bool NativeRowRendererHookInstalled{};
-enum class NativeRowPhase : unsigned { Off=0, Hidden=1, Away=2, Inventory=3, Visible=4 };
-constexpr std::size_t NativeRowPhaseCount=4;
-constexpr std::size_t NativeRowMaxRecords=192;
-constexpr std::size_t NativeRowPrintRecords=32;
-// Crash-response safety bounds. This shared UI hook still needs live validation:
-// take at most eight snapshots per phase, never more often than 180 ms, and
-// never run the historical automatic static-code dump concurrently.
-constexpr ULONGLONG NativeRowCaptureMs=2'500;
-constexpr ULONGLONG NativeRowSampleIntervalMs=180;
-constexpr std::uint32_t NativeRowMaxSamplesPerPhase=8;
-std::atomic<ULONGLONG> NativeRowNextSampleAt{};
-std::atomic<std::uint32_t> NativeRowSamplesTaken{};
-std::atomic<NativeRowPhase> NativeRowActivePhase{NativeRowPhase::Off};
-std::atomic<ULONGLONG> NativeRowDeadline{};
-std::atomic<std::uint64_t> NativeRowCalls{};
-std::atomic<std::uint64_t> NativeRowCallerMismatch{};
-std::atomic<std::uint64_t> NativeRowLockContention{};
-// Deliberate 0.2.0 visual PoC only: Divine Orb, hidden phase, explicit
-// command, same-thread latest append + native baseline. Not a production
-// renderer-ownership API. The original row is restored before returning.
-std::atomic_bool NativeRowBgTrialEnabled{};
-std::atomic<std::uint64_t> NativeRowBgRuleGeneration{};
-std::atomic<std::uint64_t> NativeRowBgAttempts{},NativeRowBgQualified{};
-std::atomic<std::uint64_t> NativeRowBgWrites{},NativeRowBgRestored{};
-std::atomic<std::uint64_t> NativeRowBgRejectedChain{},NativeRowBgRejectedCode{};
-std::atomic<std::uint64_t> NativeRowBgRejectedRule{},NativeRowBgRejectedColor{};
-std::atomic<std::uint64_t> NativeRowBgRejectedBusy{},NativeRowBgRestoreAnomaly{};
-std::atomic<std::uint32_t> NativeRowBgLastUnitId{};
-std::atomic<std::uint64_t> NativeRowBgLastAppendSeq{};
 std::atomic_flag NativeRowBgDrawGate=ATOMIC_FLAG_INIT;
 thread_local bool NativeRowBgInsideRenderer=false;
 // Automatic, persistent per-game JSON backgroundColor, enabled after GameJoined
@@ -3849,7 +1757,6 @@ std::atomic<std::uint64_t> NativeRowBgLiveRestored{},NativeRowBgLiveRejected{};
 std::atomic<std::uint64_t> NativeRowBgLiveNoRule{},NativeRowBgLiveRejectedColor{};
 std::atomic<std::uint64_t> NativeRowBgLiveBusy{},NativeRowBgLiveRestoreAnomaly{};
 std::atomic<std::uint32_t> NativeRowBgLiveLastUnitId{},NativeRowBgLiveLastCode{};
-std::atomic_bool NativeRowFontProbeEnabled{};
 // Automatic native glyph color. NO new hooks or item writes. Only glyph-B
 // nested inside an already-qualified, background-colored native row is eligible.
 std::atomic_bool NativeRowFontColorEnabled{};
@@ -3868,7 +1775,6 @@ std::array<std::atomic<std::uint32_t>,4> NativeRowFontColorLastForwardedBits{};
 
 void ResetNativeRowLiveSession() noexcept {
     NativeRowFontColorEnabled.store(false,std::memory_order_release);
-    NativeRowFontProbeEnabled.store(false,std::memory_order_release);
     NativeRowBgLiveEnabled.store(false,std::memory_order_release);
     NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
 }
@@ -3917,22 +1823,7 @@ struct NativeRowTextWitness final {
     std::array<std::uint8_t,64> raw{};
 };
 
-constexpr std::size_t NativeRowMaxDistinctUnits=8;
 constexpr std::size_t NativeRowLabelMaxBytes=64;
-constexpr ULONGLONG NativeRowLabelFreshMs=500;
-struct NativeRowLabelEvent final {
-    std::uint32_t unitId{},classId{},code{},sourceLength{};
-    ULONGLONG tick{};
-    std::int64_t qpc{};
-    std::uint64_t sequence{};
-    DWORD thread{};
-    // Read-only SoE V3 call performed synchronously INSIDE the V1 callback.
-    // 0=no V3 API, 1=scope-empty, 2=scope-active. Never retain nativeUnit.
-    std::uint8_t builderScopeState{};
-    bool builderScopeMatches{};
-    std::uint32_t builderScopeUnitId{};
-    std::array<std::uint8_t,NativeRowLabelMaxBytes> source{};
-};
 struct NativeRowLiveLabel final {
     std::uint64_t epoch{},sequence{},rulesGeneration{};
     std::uint32_t unitId{},classId{},code{},sourceLength{};
@@ -3957,91 +1848,12 @@ struct NativeRowLiveLabel final {
 };
 thread_local NativeRowLiveLabel NativeRowLiveLatestLabel{};
 thread_local std::uint64_t NativeRowLiveNextLabelSeq{};
-struct NativeRowLabelSnapshot final {
-    NativeRowLabelEvent latest{};
-    std::uint32_t distinctUnitIds{};
-    std::uint64_t callbacks{};
-    bool captured{};
-};
-struct NativeRowLabelPhase final {
-    std::mutex mutex{};
-    std::array<NativeRowLabelEvent,NativeRowMaxDistinctUnits> units{};
-    std::size_t uniqueCount{};
-    std::uint64_t callbacks{},overflow{},withoutText{},nextSequence{};
-    std::uint64_t builderScopedMatches{},builderScopedMisses{},builderNoScope{};
-    NativeRowLabelEvent latest{};
-};
-std::array<NativeRowLabelPhase,NativeRowPhaseCount> NativeRowLabelPhases{};
-std::atomic<std::uint64_t> NativeRowLabelEventContention{};
-std::atomic<std::uint64_t> NativeRowLabelSnapshotContention{};
-
-// Fail-closed source-event witness. Standalone backend has no borrowed source
-// text, which is logged as unavailable rather than fabricated. Only collect
-// while a manual 2.5-second phase is actually active. No hook I/O or blocking.
-void ObserveNativeRowLabelEvent(std::int32_t type,
-    std::uint32_t classId,std::uint32_t unitId,std::uint32_t rawCode,
-    const char* source,std::uint32_t sourceLength) noexcept {
-    const auto phase=NativeRowActivePhase.load(std::memory_order_acquire);
-    if (phase==NativeRowPhase::Off || type!=4 || !unitId || sourceLength>255)
-        return;
-    const auto now=GetTickCount64();
-    if (now>=NativeRowDeadline.load(std::memory_order_acquire)) return;
-    auto& bucket=NativeRowLabelPhases[static_cast<std::size_t>(phase)-1U];
-    if (!bucket.mutex.try_lock()) {
-        NativeRowLabelEventContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    std::unique_lock<std::mutex> lock(bucket.mutex,std::adopt_lock);
-    if (NativeRowActivePhase.load(std::memory_order_acquire)!=phase ||
-        now>=NativeRowDeadline.load(std::memory_order_acquire)) return;
-    NativeRowLabelEvent event{};
-    event.unitId=unitId;
-    event.classId=classId;
-    event.code=CanonicalItemCode(rawCode);
-    event.thread=GetCurrentThreadId();
-    event.tick=now;
-    LARGE_INTEGER eventQpc{};
-    if (QueryPerformanceCounter(&eventQpc)) event.qpc=eventQpc.QuadPart;
-    event.sequence=++bucket.nextSequence;
-    if (const auto* scope=InWorldRenderScopeApi.load(std::memory_order_acquire);
-        scope && scope->getCurrentItem) {
-        SoE::Interop::InWorldActiveItemV3 active{};
-        active.structSize=sizeof(active);
-        if (scope->getCurrentItem(&active)) {
-            event.builderScopeState=2;
-            event.builderScopeUnitId=active.unitId;
-            event.builderScopeMatches=active.unitType==type &&
-                active.classId==classId && active.unitId==unitId;
-            if (event.builderScopeMatches) ++bucket.builderScopedMatches;
-            else ++bucket.builderScopedMisses;
-        } else {event.builderScopeState=1;++bucket.builderNoScope;}
-    }
-    if (source && sourceLength) {
-        event.sourceLength=sourceLength;
-        std::memcpy(event.source.data(),source,
-            std::min<std::size_t>(event.sourceLength,event.source.size()));
-    } else ++bucket.withoutText;
-    ++bucket.callbacks;
-    bucket.latest=event;
-    NativeRowLabelEvent* unit=nullptr;
-    for(std::size_t i=0;i<bucket.uniqueCount;++i) {
-        if (bucket.units[i].unitId==unitId && bucket.units[i].code==event.code) {
-            unit=&bucket.units[i];break;
-        }
-    }
-    if(!unit && bucket.uniqueCount<bucket.units.size())
-        unit=&bucket.units[bucket.uniqueCount++];
-    if(unit) *unit=event;
-    else ++bucket.overflow;
-}
-
-// Live fast path observes every SoE V1 item callback, independently from the
-// diagnostic's 256-append/8-render window. Only immutable bytes are retained.
+// Live fast path observes SoE V1 item callbacks and retains only immutable
+// identity/property bytes needed to qualify the matching native row.
 void ObserveNativeRowLiveLabel(std::int32_t type,
     std::uint32_t classId,std::uint32_t unitId,std::uint32_t rawCode,
     const void* nativeUnit,const char* source,std::uint32_t sourceLength) noexcept {
-    if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire) &&
-        !NativeRowFontProbeEnabled.load(std::memory_order_acquire)) return;
+    if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire)) return;
     NativeRowLiveLatestLabel={}; // invalid inputs invalidate old identity
     if (type!=4 || !unitId || !source || !sourceLength ||
         sourceLength>NativeRowLabelMaxBytes) return;
@@ -4125,80 +1937,6 @@ void ObserveNativeRowLiveReplacement(std::uint32_t classId,
     std::memcpy(event.display.data(),rendered.data(),rendered.size());
 }
 
-NativeRowLabelSnapshot ReadNativeRowLabelSnapshot(NativeRowPhase phase) noexcept {
-    NativeRowLabelSnapshot out{};
-    if (phase==NativeRowPhase::Off) return out;
-    auto& bucket=NativeRowLabelPhases[static_cast<std::size_t>(phase)-1U];
-    if (!bucket.mutex.try_lock()) {
-        NativeRowLabelSnapshotContention.fetch_add(1,std::memory_order_relaxed);
-        return out;
-    }
-    std::unique_lock<std::mutex> lock(bucket.mutex,std::adopt_lock);
-    out.latest=bucket.latest;
-    out.distinctUnitIds=static_cast<std::uint32_t>(bucket.uniqueCount);
-    out.callbacks=bucket.callbacks;
-    out.captured=true;
-    return out;
-}
-
-struct NativeRowRecord final {
-    std::uintptr_t address{};
-    std::array<std::int32_t,4> firstRect{};
-    std::array<std::int32_t,4> lastRect{};
-    std::array<std::uint32_t,4> firstColorBits{};
-    std::array<std::uint32_t,4> lastColorBits{};
-    std::array<std::uint8_t,0x50> firstTextHeaders{},lastTextHeaders{};
-    std::array<NativeRowTextWitness,2> firstText{},lastText{};
-    std::uint64_t calls{};
-    std::uint32_t textHeaderTransitions{};
-    std::uint32_t colorTransitions{};
-    std::uint32_t geometryTransitions{};
-    DWORD thread{};
-    ULONGLONG firstTick{},lastTick{};
-    NativeRowLabelSnapshot firstLabel{},lastLabel{};
-};
-// Eight per-invocation snapshots, not just first/last of the reusable slot.
-// Carries copied event values, copied row text and diagnostics, no borrowed
-// pointers and no native UI writes. V3 is tested at THIS renderer invocation.
-struct NativeRowChainSample final {
-    std::uintptr_t element{};
-    std::uint32_t order{};
-    ULONGLONG tick{};
-    std::int64_t qpc{};
-    DWORD thread{};
-    std::array<std::int32_t,4> rect{};
-    std::array<std::uint32_t,4> colorBits{};
-    NativeRowTextWitness text{};
-    NativeRowLabelSnapshot event{};
-    std::uint8_t rendererScopeState{};
-    std::uint32_t rendererScopeUnitId{};
-    bool rendererScopeMatchesEvent{};
-    // Read-only full-stride candidate scan: 0=not attempted, 1=readable,
-    // 2=inaccessible, 3=no candidate item ID. Never authorizes a native write.
-    std::uint8_t handoffReadState{};
-    std::uint32_t previousEventUnitId{};
-    std::uint64_t appendFence{},rendererMatchedAppendSeq{};
-    std::uintptr_t rendererComponent{},rendererQueueData{};
-    std::uint64_t rendererQueueCount{};
-    // 0=not observed,1=live component+0x168 agrees with last append,
-    // 2=descriptor mismatch,3=unreadable,4=no preceding append,5=busy.
-    std::uint8_t rendererVectorState{};
-    NativeRowHandoffScan::Matches candidateIdFields{};
-    NativeRowHandoffScan::Matches previousIdFields{};
-};
-struct NativeRowBucket final {
-    std::mutex mutex{};
-    std::array<NativeRowChainSample,NativeRowMaxSamplesPerPhase> chain{};
-    std::size_t chainSize{};
-    std::uint32_t lastCapturedEventUnitId{};
-    std::array<NativeRowRecord,NativeRowMaxRecords> records{};
-    std::size_t size{};
-    std::uint64_t calls{},readFailures{},contention{},overflow{};
-    std::uint64_t invalidColor{},otherCallers{};
-};
-// Capture only the append's pre/post 0x18-byte vector descriptor and its
-// freshly constructed row. No adjacent slot traversal, heap scanning, or
-// reliance on item text for binding. All pointers are per-phase diagnostics.
 struct NativeStyledTextVector final {
     std::uintptr_t data{};
     std::uint64_t count{},capacity{};
@@ -4227,41 +1965,10 @@ struct NativeRowLiveAppend final {
 };
 thread_local NativeRowLiveAppend NativeRowLiveLastAppend{};
 thread_local std::uint64_t NativeRowLiveNextAppendSeq{};
-struct NativeRowAppendEvent final {
-    std::uint64_t sequence{};
-    std::uintptr_t component{},data{},row{};
-    std::uint64_t beforeCount{},afterCount{},capacity{};
-    std::int64_t qpc{};
-    DWORD thread{};
-    NativeRowLabelSnapshot label{};
-    NativeRowTextWitness text{};
-    std::uint32_t appendScopeUnitId{};
-    std::uint8_t appendScopeState{}; // 0=API absent, 1=empty, 2=active
-    bool vectorValid{},rowReadable{};
-};
-struct NativeRowAppendBucket final {
-    std::mutex mutex{};
-    std::array<NativeRowAppendEvent,NativeRowAppendMaxEvents> events{};
-    std::size_t size{};
-    std::uint64_t qualified{},inaccessible{},unexpectedCount{},
-        unreadableRow{},contended{},overflow{};
-};
-std::array<NativeRowAppendBucket,NativeRowPhaseCount> NativeRowAppendBuckets{};
-std::atomic<std::uint64_t> NativeRowAppendCallerMismatch{};
-std::atomic<std::uint64_t> NativeRowAppendContention{};
-std::array<std::atomic<std::uint64_t>,NativeRowPhaseCount>
-    NativeRowAppendContentionByPhase{};
-std::array<std::atomic<std::uint32_t>,NativeRowPhaseCount>
-    NativeRowAppendAttemptsByPhase{};
 bool ReadNativeStyledVector(void*,NativeStyledTextVector&) noexcept;
 void __fastcall HookNativeRowAppend(void*,const void*,const void*,
     const void*,const void*) noexcept;
-std::array<NativeRowBucket,NativeRowPhaseCount> NativeRowBuckets{};
-constexpr std::array<const char*,NativeRowPhaseCount> NativeRowPhaseNames{{
-    "hidden","away","inventory","visible"
-}};
-
-// Bounded, opt-in, read-only text candidate. Do not chase pointers until
+// Bounded native-row text reader. Do not chase pointers until
 // the 32-byte candidate has a plausible MSVC string length and capacity.
 // We do not retain the pointer; the preview is copied synchronously.
 bool ReadNativeRowTextBytes(std::uintptr_t address,
@@ -4329,13 +2036,6 @@ NativeRowTextWitness InspectNativeRowTextCandidate(
     return result;
 }
 
-std::array<NativeRowTextWitness,2> InspectNativeRowTextHeaders(
-    const std::array<std::uint8_t,0x50>& header,
-    std::uintptr_t elementAddress) noexcept {
-    return {{ InspectNativeRowTextCandidate(header,0x00,elementAddress),
-              InspectNativeRowTextCandidate(header,0x28,elementAddress) }};
-}
-
 // A single, bounded native heap read while the engine has passed us its row
 // pointer synchronously. Refuse cross-region buffers and page guards.
 // These are raw candidate fields, NOT yet a verified hovered-item identity.
@@ -4360,103 +2060,6 @@ bool SnapshotNativeRow(void* element,
     std::memcpy(color.data(),snapshot.data()+0x168,sizeof(color));
     std::memcpy(textHeaders.data(),snapshot.data(),textHeaders.size());
     return true;
-}
-
-// Second, optional bounded native row copy, only after the 0x178-byte
-// existing snapshot has succeeded and ONLY for one of the eight samples.
-// The render-element stride comes from validated 93847 caller instructions.
-// No pointer chasing or arbitrary memory/heap scan: exactly one row, one page
-// region, one synchronous read before calling the original renderer.
-bool ReadNativeRowHandoffBytes(void* element,
-    std::array<std::uint8_t,NativeRowHandoffScan::RowStride>& out) noexcept {
-    if (!element) return false;
-    const auto address=reinterpret_cast<std::uintptr_t>(element);
-    MEMORY_BASIC_INFORMATION region{};
-    if (!VirtualQuery(element,&region,sizeof(region)) ||
-        region.State!=MEM_COMMIT ||
-        (region.Protect&(PAGE_GUARD|PAGE_NOACCESS))) return false;
-    const auto protection=region.Protect&0xFFU;
-    const bool readable=protection==PAGE_READONLY ||
-        protection==PAGE_READWRITE || protection==PAGE_WRITECOPY ||
-        protection==PAGE_EXECUTE_READ ||
-        protection==PAGE_EXECUTE_READWRITE ||
-        protection==PAGE_EXECUTE_WRITECOPY;
-    if (!readable) return false;
-    const auto start=reinterpret_cast<std::uintptr_t>(region.BaseAddress);
-    if (address<start || out.size()>region.RegionSize ||
-        address-start>region.RegionSize-out.size()) return false;
-    std::memcpy(out.data(),element,out.size());
-    return true;
-}
-
-// Keep native renderer detour shallow (MSVC C1061 regression avoidance).
-void PopulateNativeRowHandoffEvidence(void* element,
-    NativeRowChainSample& trace) noexcept {
-    if (!trace.event.latest.unitId) {
-        trace.handoffReadState=3;
-        return;
-    }
-    std::array<std::uint8_t,NativeRowHandoffScan::RowStride> rowBytes{};
-    if (!ReadNativeRowHandoffBytes(element,rowBytes)) {
-        trace.handoffReadState=2;
-        return;
-    }
-    trace.handoffReadState=1;
-    trace.candidateIdFields=NativeRowHandoffScan::FindAlignedId(
-        rowBytes.data(),rowBytes.size(),trace.event.latest.unitId);
-    if (trace.previousEventUnitId &&
-        trace.previousEventUnitId!=trace.event.latest.unitId)
-        trace.previousIdFields=NativeRowHandoffScan::FindAlignedId(
-            rowBytes.data(),rowBytes.size(),trace.previousEventUnitId);
-}
-
-// Read-only invocation-time witness: match only a COMPLETED, PRECEDING
-// append on the current thread and the exact row address. The renderer does
-// not expose a component argument; this confirms the selected append's
-// component STILL owns this vector at render time, not that D2R passes the
-// item pointer into the renderer. Zero stack-trace or UI-global speculation.
-void WitnessRendererAppendVector(std::size_t index,
-    NativeRowChainSample& trace) noexcept {
-    const auto& live=NativeRowAppendBuckets[index];
-    auto& bucket=const_cast<NativeRowAppendBucket&>(live);
-    if (!bucket.mutex.try_lock()) {
-        trace.rendererVectorState=5;
-        NativeRowAppendContention.fetch_add(1,std::memory_order_relaxed);
-        NativeRowAppendContentionByPhase[index].fetch_add(
-            1,std::memory_order_relaxed);
-        return;
-    }
-    std::uintptr_t component{},data{};
-    std::uint64_t count{},beforeCount{},sequence{};
-    std::int64_t latestQpc{};
-    for(std::size_t i=0;i<bucket.size;++i) {
-        const auto& e=bucket.events[i];
-        if (!e.vectorValid || !e.sequence || e.sequence>trace.appendFence ||
-            e.row!=trace.element || e.thread!=trace.thread ||
-            !NativeRowLatestMatch::Precedes(e.qpc,trace.qpc)) continue;
-        if (NativeRowLatestMatch::Later(e.sequence,e.qpc,
-                sequence,latestQpc)) {
-            component=e.component;data=e.data;
-            count=e.afterCount;beforeCount=e.beforeCount;
-            sequence=e.sequence;latestQpc=e.qpc;
-        }
-    }
-    bucket.mutex.unlock();
-    if (!sequence) {trace.rendererVectorState=4;return;}
-    trace.rendererMatchedAppendSeq=sequence;
-    trace.rendererComponent=component;
-    NativeStyledTextVector current{};
-    if (!ReadNativeStyledVector(reinterpret_cast<void*>(component),current)) {
-        trace.rendererVectorState=3;return;
-    }
-    trace.rendererQueueData=current.data;
-    trace.rendererQueueCount=current.count;
-    trace.rendererVectorState=
-        current.data==data && current.count==count &&
-        NativeRowAppendMatch::ValidNewRow(current.data,beforeCount,
-            current.count,current.capacity) &&
-        current.data+(count-1)*NativeRowHandoffScan::RowStride==trace.element
-        ? 1 : 2;
 }
 
 bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept;
@@ -4549,126 +2152,6 @@ void ArmNativeRowRuntime() noexcept {
 
 
 
-void ResetNativeRowRuntime() noexcept {
-    NativeRowBgTrialEnabled.store(false,std::memory_order_release);
-    NativeRowActivePhase.store(NativeRowPhase::Off,std::memory_order_release);
-    NativeRowDeadline.store(0,std::memory_order_release);
-    NativeRowNextSampleAt.store(0,std::memory_order_release);
-    NativeRowSamplesTaken.store(0,std::memory_order_release);
-    for (auto& bucket:NativeRowBuckets) {
-        std::lock_guard lock(bucket.mutex);
-        bucket.records.fill({});bucket.size=0;
-        bucket.chain.fill({});bucket.chainSize=0;
-        bucket.lastCapturedEventUnitId=0;
-        bucket.calls=0;bucket.readFailures=0;
-        bucket.contention=0;bucket.overflow=0;
-        bucket.invalidColor=0;bucket.otherCallers=0;
-    }
-    NativeRowAppendsTaken.store(0,std::memory_order_release);
-    for (auto& c:NativeRowAppendContentionByPhase)
-        c.store(0,std::memory_order_release);
-    for (auto& attempts:NativeRowAppendAttemptsByPhase)
-        attempts.store(0,std::memory_order_release);
-    NativeRowAppendSequence.store(0,std::memory_order_release);
-    NativeRowAppendCommittedSequence.store(0,std::memory_order_release);
-    for (auto& append:NativeRowAppendBuckets) {
-        std::lock_guard lock(append.mutex);
-        append.events.fill({});append.size=0;
-        append.qualified=append.inaccessible=append.unexpectedCount=0;
-        append.unreadableRow=append.contended=append.overflow=0;
-    }
-    for (auto& label:NativeRowLabelPhases) {
-        std::lock_guard lock(label.mutex);
-        label.units.fill({});label.uniqueCount=0;
-        label.callbacks=0;label.overflow=0;label.withoutText=0;
-        label.nextSequence=0;label.builderScopedMatches=0;
-        label.builderScopedMisses=0;label.builderNoScope=0;
-        label.latest={};
-    }
-}
-
-void StartNativeRowPhase(std::string_view name,bool bgTrial=false) noexcept {
-    if (!NativeRowRendererHookInstalled.load(std::memory_order_acquire) ||
-        !NativeRowAppendHookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_NATIVE_ROW_PHASE_REFUSED reason=observer-not-installed use-native-row-arm-first");
-        return;
-    }
-    NativeRowPhase phase=NativeRowPhase::Off;
-    for (std::size_t i=0;i<NativeRowPhaseCount;++i)
-        if(name==NativeRowPhaseNames[i])
-            phase=static_cast<NativeRowPhase>(i+1U);
-    if (phase==NativeRowPhase::Off) {
-        Emit("LOOT_NATIVE_ROW_PHASE_REFUSED usage=native-row-start hidden|away|inventory|visible");
-        return;
-    }
-    NativeRowBgTrialEnabled.store(false,std::memory_order_release);
-    NativeRowActivePhase.store(NativeRowPhase::Off,std::memory_order_release);
-    auto& bucket=NativeRowBuckets[static_cast<std::size_t>(phase)-1U];
-    {
-        std::lock_guard lock(bucket.mutex);
-        bucket.records.fill({});bucket.size=0;
-        bucket.chain.fill({});bucket.chainSize=0;
-        bucket.lastCapturedEventUnitId=0;
-        bucket.calls=0;bucket.readFailures=0;
-        bucket.contention=0;bucket.overflow=0;
-        bucket.invalidColor=0;bucket.otherCallers=0;
-    }
-    {
-        auto& append=NativeRowAppendBuckets[static_cast<std::size_t>(phase)-1U];
-        std::lock_guard lock(append.mutex);
-        append.events.fill({});append.size=0;
-        append.qualified=append.inaccessible=append.unexpectedCount=0;
-        append.unreadableRow=append.contended=append.overflow=0;
-    }
-    {
-        auto& label=NativeRowLabelPhases[static_cast<std::size_t>(phase)-1U];
-        std::lock_guard lock(label.mutex);
-        label.units.fill({});label.uniqueCount=0;
-        label.callbacks=0;label.overflow=0;label.withoutText=0;
-        label.nextSequence=0;label.builderScopedMatches=0;
-        label.builderScopedMisses=0;label.builderNoScope=0;
-        label.latest={};
-    }
-    NativeRowAppendsTaken.store(0,std::memory_order_release);
-    NativeRowAppendContentionByPhase[static_cast<std::size_t>(phase)-1U]
-        .store(0,std::memory_order_release);
-    NativeRowAppendAttemptsByPhase[static_cast<std::size_t>(phase)-1U]
-        .store(0,std::memory_order_release);
-    NativeRowAppendSequence.store(0,std::memory_order_release);
-    NativeRowAppendCommittedSequence.store(0,std::memory_order_release);
-    NativeRowSamplesTaken.store(0,std::memory_order_release);
-    NativeRowNextSampleAt.store(0,std::memory_order_release);
-    NativeRowDeadline.store(GetTickCount64()+NativeRowCaptureMs,
-        std::memory_order_release);
-    NativeRowActivePhase.store(phase,std::memory_order_release);
-    if (bgTrial && phase==NativeRowPhase::Hidden)
-        NativeRowBgTrialEnabled.store(true,std::memory_order_release);
-    char line[310]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_PHASE_BEGIN version=1.0.0 phase=%.*s durationMs=%llu maxSamples=8 minSampleGapMs=180 autoHoverStaticDumps=0 firstItemId=%u itemIdentity=temporal-only nativeWrites=%s no-hook-io=1",
-        static_cast<int>(name.size()),name.data(),
-        static_cast<unsigned long long>(NativeRowCaptureMs),
-        HoverDiffItemId.load(std::memory_order_acquire),
-        bgTrial?"temporary-float4":"0");
-    Emit(line);FlushCapture();
-}
-
-// Text equality + fresh same-thread V1 event is a useful temporal witness,
-// NOT a verified native render-element -> UnitAny ownership relation.
-NativeRowLabelCorrelation::Relation CompareNativeRowItemEvent(
-    const NativeRowTextWitness& rowText,
-    const NativeRowLabelEvent& event) noexcept {
-    if (rowText.size==0 || rowText.size>rowText.raw.size() ||
-        rowText.captured!=rowText.size || event.sourceLength==0 ||
-        event.sourceLength>event.source.size())
-        return NativeRowLabelCorrelation::Relation::Unavailable;
-    return NativeRowLabelCorrelation::Compare(
-        {reinterpret_cast<const char*>(rowText.raw.data()),
-            static_cast<std::size_t>(rowText.size)},
-        {reinterpret_cast<const char*>(event.source.data()),
-            static_cast<std::size_t>(event.sourceLength)});
-}
-
 // Qualify a small heap memory range before copying. Never access stale or
 // unrelated component pointers after this synchronous function invocation.
 bool ReadNativeStyledVector(void* component,
@@ -4681,10 +2164,9 @@ bool ReadNativeStyledVector(void* component,
     return ReadNativeRowTextBytes(address+offset,&vector,sizeof(vector));
 }
 
-// Restricted native-color experiment. Read the current row and the latest
-// completed append within THIS invocation; never use a historical pointer as
-// authority. No background modification when scope/event/sequence/vector or
-// exact original text disagree. Live rows are not retained across frames.
+// Production native-row write guard. Read the current row and latest completed
+// append on this invocation; refuse styling when scope, sequence, vector,
+// original text, or writable-range validation disagrees.
 bool NativeRowBgWritable(void* element) noexcept {
     if (!element) return false;
     const auto address=reinterpret_cast<std::uintptr_t>(element);
@@ -4789,7 +2271,7 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
         text.captured==text.size && text.size!=0 &&
         std::memcmp(text.raw.data(),append.display.data(),
             append.displayLength)==0;
-    if (!exact || !NativeRowBgTrialPolicy::VanillaHiddenBlack(nativeColor)) {
+    if (!exact || !NativeRowBgPolicy::VanillaHiddenBlack(nativeColor)) {
         NativeRowBgLiveRejectedColor.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
@@ -4804,7 +2286,6 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
         const auto latest=NativeRowLiveLatestLabel;
         if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire) ||
             NativeRowBgLiveEpoch.load(std::memory_order_acquire)!=epoch ||
-            NativeRowBgTrialEnabled.load(std::memory_order_acquire) ||
             NativeRowLiveLastAppend.appendSequence!=append.appendSequence ||
             NativeRowLiveLastAppend.epoch!=epoch ||
             latest.sequence!=append.labelSequence ||
@@ -4842,7 +2323,6 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     const bool stillQualified=NativeRowBgLiveEnabled.load(
             std::memory_order_acquire) &&
         NativeRowBgLiveEpoch.load(std::memory_order_acquire)==epoch &&
-        !NativeRowBgTrialEnabled.load(std::memory_order_acquire) &&
         NativeRowLiveLastAppend.appendSequence==append.appendSequence &&
         NativeRowLiveLastAppend.epoch==epoch &&
         NativeRowLiveLatestLabel.sequence==append.labelSequence &&
@@ -4868,8 +2348,6 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     NativeRowBgLiveLastCode.store(append.code,
         std::memory_order_release);
     OriginalNativeRowRenderer(element); // exactly once on success
-    TraceLootLatency(append.code,append.unitId,LootLatencyStage::HoverPaint,
-        "native-hover-row-bg-forwarded");
     std::array<std::uint32_t,4> after{};
     std::memcpy(after.data(),color,sizeof(after));
     if (after==replacement) {
@@ -4960,7 +2438,7 @@ void __fastcall HookNativeRowAppend(void* component,const void* text,
     if (!ReadNativeStyledVector(component,after) ||
         !NativeRowAppendMatch::ValidNewRow(after.data,before.count,
             after.count,after.capacity) ||
-        !NativeRowBgTrialPolicy::SingleRow(before.count,after.count)) return;
+        !NativeRowBgPolicy::SingleRow(before.count,after.count)) return;
     candidate.data=after.data;
     candidate.row=after.data;
     std::array<std::int32_t,4> rect{};
@@ -4968,7 +2446,7 @@ void __fastcall HookNativeRowAppend(void* component,const void* text,
     std::array<std::uint8_t,0x50> header{};
     if (!SnapshotNativeRow(reinterpret_cast<void*>(candidate.row),
             rect,color,header) ||
-        !NativeRowBgTrialPolicy::VanillaHiddenBlack(color)) return;
+        !NativeRowBgPolicy::VanillaHiddenBlack(color)) return;
     const auto rowText=InspectNativeRowTextCandidate(header,0,candidate.row);
     if (rowText.size!=candidate.displayLength ||
         rowText.captured!=rowText.size || rowText.size==0 ||
@@ -4981,640 +2459,7 @@ void __fastcall HookNativeRowAppend(void* component,const void* text,
     NativeRowLiveLastAppend=candidate;
 }
 
-// A strict, explanatory report: identical row pointers and copied display
-// text establish append->render *record* reuse, not item unit ownership.
-void ReportNativeRowAppendMatch(std::size_t phaseIndex,
-    const std::array<NativeRowChainSample,NativeRowMaxSamplesPerPhase>& chain,
-    std::size_t chainSize) noexcept {
-    const char* phase=NativeRowPhaseNames[phaseIndex];
-    NativeRowAppendBucket& live=NativeRowAppendBuckets[phaseIndex];
-    std::array<NativeRowAppendEvent,NativeRowAppendMaxEvents> events{};
-    std::size_t count{};
-    std::uint64_t qualified{},inaccessible{},badCount{},unreadable{},overflow{};
-    {
-        std::lock_guard lock(live.mutex);
-        count=live.size;
-        std::copy_n(live.events.begin(),count,events.begin());
-        qualified=live.qualified;inaccessible=live.inaccessible;
-        badCount=live.unexpectedCount;unreadable=live.unreadableRow;
-        overflow=live.overflow;
-    }
-    LARGE_INTEGER qpf{};
-    const bool frequencyOk=QueryPerformanceFrequency(&qpf) && qpf.QuadPart>0;
-    unsigned exact{},ambiguous{},unmatched{},textMatches{},sameEvent{};
-    unsigned appendScoped{};
-    for(std::size_t j=0;j<count;++j)
-        if(events[j].appendScopeState==2) ++appendScoped;
-    char line[960]{};
-    for(std::size_t i=0;i<chainSize;++i) {
-        const auto& render=chain[i];
-        const NativeRowAppendEvent* nearest{};
-        std::size_t matches=0;
-        for(std::size_t j=0;j<count;++j) {
-            const auto& append=events[j];
-            if (!append.vectorValid || !frequencyOk ||
-                !NativeRowAppendMatch::RecentSameRow(
-                    append.row,render.element,append.thread,render.thread,
-                    append.qpc,render.qpc,qpf.QuadPart)) continue;
-            ++matches;
-            if (!nearest || append.qpc>nearest->qpc) nearest=&append;
-        }
-        if (!nearest) ++unmatched;
-        else if (matches!=1) ++ambiguous;
-        else ++exact;
-        NativeRowLabelCorrelation::Relation relation=
-            NativeRowLabelCorrelation::Relation::Unavailable;
-        if (nearest && nearest->rowReadable &&
-            nearest->text.size && render.text.size &&
-            nearest->text.captured==nearest->text.size &&
-            render.text.captured==render.text.size)
-            relation=NativeRowLabelCorrelation::Compare(
-                {reinterpret_cast<const char*>(nearest->text.raw.data()),
-                    static_cast<std::size_t>(nearest->text.size)},
-                {reinterpret_cast<const char*>(render.text.raw.data()),
-                    static_cast<std::size_t>(render.text.size)});
-        if (relation==NativeRowLabelCorrelation::Relation::Exact)
-            ++textMatches;
-        const bool eventMatches=nearest && nearest->label.latest.unitId &&
-            render.event.latest.unitId==nearest->label.latest.unitId &&
-            render.event.latest.sequence==nearest->label.latest.sequence;
-        if (eventMatches) ++sameEvent;
-        const auto ageUs=nearest && frequencyOk ?
-            static_cast<unsigned long long>(
-                (render.qpc-nearest->qpc)*1000000LL/qpf.QuadPart):0ULL;
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_APPEND_MATCH version=1.0.0 phase=%s render=%zu "
-            "row=0x%llX candidateAppends=%zu component=0x%llX "
-            "queueData=0x%llX queueIndex=%llu queuedCount=%llu "
-            "ageUs=%llu renderUnitId=%u appendEventUnitId=%u "
-            "sameLabelSequence=%u textRelation=%s appendScopeState=%u "
-            "appendScopeUnitId=%u "
-            "conclusion=record-correlation-only-item-ownership-NOT-PROVEN writes=0",
-            phase,i,static_cast<unsigned long long>(render.element),matches,
-            static_cast<unsigned long long>(nearest?nearest->component:0),
-            static_cast<unsigned long long>(nearest?nearest->data:0),
-            static_cast<unsigned long long>(nearest?nearest->afterCount-1:0),
-            static_cast<unsigned long long>(nearest?nearest->afterCount:0),
-            ageUs,render.event.latest.unitId,
-            nearest?nearest->label.latest.unitId:0U,eventMatches?1U:0U,
-            NativeRowLabelCorrelation::Name(relation),
-            nearest?unsigned(nearest->appendScopeState):0U,
-            nearest?nearest->appendScopeUnitId:0U);
-        Emit(line);
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_APPEND_SUMMARY version=1.0.0 phase=%s "
-        "recorded=%zu qualified=%llu inaccessible=%llu unexpectedCount=%llu "
-        "unreadableRow=%llu overflow=%llu contentionGlobal=%llu "
-        "appendHookInstalled=%u renderSamples=%zu uniquePointerMatches=%u "
-        "ambiguousPointerMatches=%u unmatched=%u textMatches=%u "
-        "sameLabelSequence=%u appendScopeActive=%u "
-        "itemOwnership=NOT-PROVEN hiddenHoverBackgroundWrites=0",
-        phase,count,static_cast<unsigned long long>(qualified),
-        static_cast<unsigned long long>(inaccessible),
-        static_cast<unsigned long long>(badCount),
-        static_cast<unsigned long long>(unreadable),
-        static_cast<unsigned long long>(overflow),
-        static_cast<unsigned long long>(NativeRowAppendContention.load()),
-        NativeRowAppendHookInstalled.load()?1U:0U,
-        chainSize,exact,ambiguous,unmatched,textMatches,sameEvent,
-        appendScoped);
-    Emit(line);
-}
-
-// 0.1.99: deterministic candidate selection by a completed append sequence,
-// not by number of historical appearances of a reused row pointer. A pass
-// still does NOT prove game-item ownership; it supports a narrower next probe.
-void ReportNativeRowLatestAppend(std::size_t phaseIndex,
-    const std::array<NativeRowChainSample,NativeRowMaxSamplesPerPhase>& chain,
-    std::size_t chainSize) noexcept {
-    const char* phase=NativeRowPhaseNames[phaseIndex];
-    auto& live=NativeRowAppendBuckets[phaseIndex];
-    std::array<NativeRowAppendEvent,NativeRowAppendMaxEvents> events{};
-    std::size_t count{};
-    std::uint64_t invalid{},overflow{},qualified{};
-    {
-        std::lock_guard lock(live.mutex);
-        count=live.size;
-        std::copy_n(live.events.begin(),count,events.begin());
-        invalid=live.inaccessible+live.unexpectedCount+live.unreadableRow;
-        overflow=live.overflow;
-        qualified=live.qualified;
-    }
-    const auto contention=NativeRowAppendContentionByPhase[phaseIndex].load(
-        std::memory_order_acquire);
-    const bool gapFree=invalid==0 && overflow==0 && contention==0 &&
-        qualified==count &&
-        NativeRowAppendAttemptsByPhase[phaseIndex].load(
-            std::memory_order_acquire)<=NativeRowAppendMaxEvents;
-    LARGE_INTEGER qpf{};
-    const bool frequencyOk=QueryPerformanceFrequency(&qpf) &&
-        qpf.QuadPart>=20;
-    unsigned resolved{},rejected{},missing{},vectorOk{},reuse{};
-    char line[1024]{};
-    for(std::size_t i=0;i<chainSize;++i) {
-        const auto& r=chain[i];
-        const NativeRowAppendEvent* selected{};
-        std::size_t candidates{};
-        bool sequenceCollision=false;
-        for(std::size_t j=0;j<count;++j) {
-            const auto& e=events[j];
-            if (!e.vectorValid || !e.rowReadable ||
-                e.thread!=r.thread || e.row!=r.element ||
-                !NativeRowLatestMatch::FenceAllows(e.sequence,r.appendFence) ||
-                !NativeRowAppendMatch::RecentSameRow(e.row,r.element,
-                    e.thread,r.thread,e.qpc,r.qpc,
-                    frequencyOk?qpf.QuadPart:0)) continue;
-            ++candidates;
-            if (!selected || NativeRowLatestMatch::Later(e.sequence,e.qpc,
-                    selected->sequence,selected->qpc)) selected=&e;
-            else if (e.sequence==selected->sequence) sequenceCollision=true;
-        }
-        if(candidates>1) ++reuse;
-        NativeRowLabelCorrelation::Relation relation=
-            NativeRowLabelCorrelation::Relation::Unavailable;
-        if (selected && selected->text.size && r.text.size &&
-            selected->text.captured==selected->text.size &&
-            r.text.captured==r.text.size)
-            relation=NativeRowLabelCorrelation::Compare(
-                {reinterpret_cast<const char*>(selected->text.raw.data()),
-                    static_cast<std::size_t>(selected->text.size)},
-                {reinterpret_cast<const char*>(r.text.raw.data()),
-                    static_cast<std::size_t>(r.text.size)});
-        const bool eventSame=selected &&
-            selected->label.latest.sequence!=0 &&
-            selected->label.latest.sequence==r.event.latest.sequence &&
-            selected->label.latest.unitId==r.event.latest.unitId;
-        const bool scopeSame=selected && selected->appendScopeState==2 &&
-            selected->appendScopeUnitId!=0 &&
-            selected->appendScopeUnitId==selected->label.latest.unitId;
-        const bool vectorSame=selected && r.rendererVectorState==1 &&
-            r.rendererMatchedAppendSeq==selected->sequence &&
-            r.rendererComponent==selected->component &&
-            r.rendererQueueData==selected->data &&
-            r.rendererQueueCount==selected->afterCount;
-        if(vectorSame)++vectorOk;
-        const bool pass=gapFree && frequencyOk && selected &&
-            !sequenceCollision && eventSame && scopeSame && vectorSame &&
-            relation==NativeRowLabelCorrelation::Relation::Exact;
-        if(pass)++resolved;
-        else if(!selected)++missing;
-        else ++rejected;
-        const auto ageUs=selected && frequencyOk ?
-            static_cast<unsigned long long>(
-                (r.qpc-selected->qpc)*1000000LL/qpf.QuadPart):0ULL;
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_LATEST_APPEND version=1.0.0 phase=%s render=%zu "
-            "appendFence=%llu selectedSeq=%llu candidateHistory=%zu "
-            "component=0x%llX row=0x%llX queueIndex=%llu "
-            "appendUnitId=%u renderEventUnitId=%u labelSeq=%llu "
-            "eventSame=%u scopeSame=%u rendererVectorState=%u "
-            "rendererVectorSame=%u textRelation=%s ageUs=%llu "
-            "gapFree=%u deterministicRecord=%u gameItemOwnership=UNPROVEN "
-            "backgroundWrites=0",
-            phase,i,
-            static_cast<unsigned long long>(r.appendFence),
-            static_cast<unsigned long long>(selected?selected->sequence:0),
-            candidates,
-            static_cast<unsigned long long>(selected?selected->component:0),
-            static_cast<unsigned long long>(r.element),
-            static_cast<unsigned long long>(selected?selected->afterCount-1:0),
-            selected?selected->appendScopeUnitId:0U,r.event.latest.unitId,
-            static_cast<unsigned long long>(selected?
-                selected->label.latest.sequence:0),
-            eventSame?1U:0U,scopeSame?1U:0U,unsigned(r.rendererVectorState),
-            vectorSame?1U:0U,NativeRowLabelCorrelation::Name(relation),
-            ageUs,gapFree?1U:0U,pass?1U:0U);
-        Emit(line);
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_LATEST_SUMMARY version=1.0.0 phase=%s "
-        "renderSamples=%zu deterministicRecords=%u rejected=%u missing=%u "
-        "reusedPointerHistories=%u rendererVectorMatches=%u "
-        "qualifiedAppends=%llu retained=%zu invalid=%llu overflow=%llu "
-        "contention=%llu gapFree=%u itemOwnership=UNPROVEN "
-        "nativeBackgroundWrites=0",
-        phase,chainSize,resolved,rejected,missing,reuse,vectorOk,
-        static_cast<unsigned long long>(qualified),count,
-        static_cast<unsigned long long>(invalid),
-        static_cast<unsigned long long>(overflow),
-        static_cast<unsigned long long>(contention),gapFree?1U:0U);
-    Emit(line);
-}
-
-void ReportNativeRowItemEvent(const char* phase,std::size_t ordinal,
-    std::uintptr_t element,const char* position,
-    const NativeRowTextWitness& rowText,
-    const NativeRowLabelSnapshot& label,
-    ULONGLONG sampleTick,DWORD sampleThread,
-    std::uint32_t duplicateSourceUnitIds,
-    bool identityOverflow) noexcept {
-    const auto& e=label.latest;
-    const bool temporal=label.captured && e.unitId!=0 &&
-        sampleTick>=e.tick;
-    const auto age=temporal?sampleTick-e.tick:0;
-    const bool fresh=temporal && age<=NativeRowLabelFreshMs;
-    const bool sameThread=temporal && e.thread==sampleThread;
-    const auto relation=CompareNativeRowItemEvent(rowText,e);
-    char code[5]{char(e.code&0xFF),char((e.code>>8)&0xFF),
-        char((e.code>>16)&0xFF),char((e.code>>24)&0xFF),0};
-    char sourcePreview[65]{};
-    const auto length=std::min<std::size_t>(e.sourceLength,
-        e.source.size());
-    for(std::size_t i=0;i<length;++i)
-        sourcePreview[i]=e.source[i]>=0x20 && e.source[i]<=0x7E
-            ?static_cast<char>(e.source[i]):'.';
-    char line[800]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_ITEM_EVENT version=1.0.0 phase=%s ordinal=%zu position=%s element=0x%llX "
-        "eventCaptured=%u eventUnitId=%u eventClassId=%u eventCode='%.4s' "
-        "eventSourceLength=%u eventSourcePreview='%s' labelCallbacksAtSample=%llu "
-        "unitIdsAtSample=%u eventAgeMs=%llu ageValid=%u fresh500ms=%u "
-        "sameThread=%u textRelation=%s duplicateSourceUnitIds=%u "
-        "unitListOverflow=%u conclusion=label-correlation-only-item-ownership-NOT-PROVEN nativeWrites=0",
-        phase,ordinal,position,static_cast<unsigned long long>(element),
-        label.captured?1U:0U,e.unitId,e.classId,code,
-        e.sourceLength,sourcePreview,
-        static_cast<unsigned long long>(label.callbacks),
-        label.distinctUnitIds,static_cast<unsigned long long>(age),
-        temporal?1U:0U,fresh?1U:0U,sameThread?1U:0U,
-        NativeRowLabelCorrelation::Name(relation),
-        duplicateSourceUnitIds,identityOverflow?1U:0U);
-    Emit(line);
-}
-
-// 0.1.99: disambiguation probe for the actual 93847 render-row payload.
-// For each immutable sampled element, only report candidate aligned ID fields;
-// never treat absence or a coincidental integer match as an ownership proof.
-void ReportNativeRowHandoffSamples(const char* phase,
-    const std::array<NativeRowChainSample,NativeRowMaxSamplesPerPhase>& chain,
-    std::size_t count) noexcept {
-    std::uint32_t readable{},unreadable{},noEventId{},hits{},transitions{};
-    char line[620]{};
-    for(std::size_t i=0;i<count;++i) {
-        const auto& row=chain[i];
-        const auto id=row.event.latest.unitId;
-        if (row.handoffReadState==1) ++readable;
-        else if(row.handoffReadState==2) ++unreadable;
-        else if(row.handoffReadState==3) ++noEventId;
-        if(row.candidateIdFields.total) ++hits;
-        if(row.previousEventUnitId && id &&
-            row.previousEventUnitId!=id) ++transitions;
-        constexpr unsigned missing=0xFFFF;
-        const auto first=row.candidateIdFields.total ?
-            unsigned(row.candidateIdFields.offsets[0]) : missing;
-        const auto second=row.candidateIdFields.total>1 ?
-            unsigned(row.candidateIdFields.offsets[1]) : missing;
-        const auto previous=row.previousIdFields.total ?
-            unsigned(row.previousIdFields.offsets[0]) : missing;
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_HANDOFF_SAMPLE version=1.0.0 phase=%s "
-            "order=%u eventUnitId=%u priorEventUnitId=%u row=0x%llX "
-            "readState=%u stride=0x2E8 alignedU32CandidateHits=%u "
-            "candidateOffset0=0x%X candidateOffset1=0x%X "
-            "priorIdHits=%u priorIdOffset0=0x%X "
-            "interpretation=raw-field-candidates-not-item-ownership "
-            "nativeWrites=0",
-            phase,row.order,id,row.previousEventUnitId,
-            static_cast<unsigned long long>(row.element),
-            unsigned(row.handoffReadState),row.candidateIdFields.total,
-            first,second,row.previousIdFields.total,previous);
-        Emit(line);
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_HANDOFF_SUMMARY version=1.0.0 phase=%s "
-        "samples=%zu rowReadable=%u rowUnreadable=%u noItemEvent=%u "
-        "samplesWithCandidateIdField=%u observedIdTransitions=%u "
-        "direct32bitScan=diagnostic-only "
-        "noMatchDoesNotExclude-indirect-pointer-or-upstream-ownership=1 "
-        "perItemNativeBackground=DISABLED nativeWrites=0",
-        phase,count,readable,unreadable,noEventId,hits,transitions);
-    Emit(line);
-}
-
-// Independent small static code fingerprints, never an executable-memory
-// scan and never on the hooked renderer's hot path. This locates the known
-// array append/renderer handoff instructions, NOT a UnitAny ownership edge.
-void ReportNativeRowHandoffCode() noexcept {
-    constexpr std::array<std::uint8_t,7> append{{
-        0x4C,0x8D,0xB1,0x68,0x01,0x00,0x00}};
-    constexpr std::array<std::uint8_t,7> render{{
-        0x49,0x8D,0xBF,0x68,0x01,0x00,0x00}};
-    constexpr std::array<std::uint8_t,17> caller{{
-        0x48,0x69,0x4C,0x24,0x40,0xE8,0x02,0x00,0x00,
-        0x48,0x03,0x0F,0xE8,0x14,0x9C,0x05,0x00}};
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    bool verified=false;
-    if (build && std::string_view(build)=="93847" && Base) {
-        std::array<std::uint8_t,7> actualAppend{},actualRender{};
-        std::array<std::uint8_t,17> actualCaller{};
-        verified=ReadSafe(0x88017A,actualAppend.data(),actualAppend.size()) &&
-            ReadSafe(0x880B4A,actualRender.data(),actualRender.size()) &&
-            ReadSafe(0x880BBB,actualCaller.data(),actualCaller.size()) &&
-            actualAppend==append && actualRender==render &&
-            actualCaller==caller;
-    }
-    char line[440]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_HANDOFF_CODE version=1.0.0 verified=%u "
-        "build=93847 append=D2R+0x880160 appendContainer=RCX+0x168 "
-        "drawContainer=R15+0x168 draw=D2R+0x880BC7 "
-        "rowFrom=index*[RSP+0x40]*0x2E8+base-[RDI] "
-        "dynamicContainerEquality=unproven itemPointerLink=unproven "
-        "onMismatch=no-inference noHooksAdded=1 nativeWrites=0",
-        verified?1U:0U);
-    Emit(line);
-}
-
-// Report only after sampling is OFF, outside the native renderer. We MUST
-// label V1 vs row equality as temporal-only if the V3 scope expired before
-// renderer invocation (SoE 0.18.194 scopes around the formatter call).
-void ReportNativeRowChainSamples(const char* phase,
-    const std::array<NativeRowChainSample,NativeRowMaxSamplesPerPhase>& chain,
-    std::size_t count) noexcept {
-    LARGE_INTEGER frequency{};
-    const bool hasFrequency=QueryPerformanceFrequency(&frequency)!=0 &&
-        frequency.QuadPart>0;
-    char line[1050]{};
-    std::uint32_t rendererScoped{},builderMatches{},eventTransitions{},geometryTransitions{};
-    std::uint32_t previousId{};
-    std::array<std::int32_t,4> previousRect{};
-    for(std::size_t i=0;i<count;++i) {
-        const auto& e=chain[i].event.latest;
-        const auto& sample=chain[i];
-        if(e.builderScopeMatches) ++builderMatches;
-        if(sample.rendererScopeState==2) ++rendererScoped;
-        if(i && e.unitId && previousId && e.unitId!=previousId) ++eventTransitions;
-        if(i && sample.rect!=previousRect) ++geometryTransitions;
-        previousId=e.unitId;
-        previousRect=sample.rect;
-        const bool qpcValid=hasFrequency && e.qpc>0 && sample.qpc>=e.qpc;
-        const auto ageUs=qpcValid ? static_cast<std::uint64_t>(
-            (static_cast<long double>(sample.qpc-e.qpc)*1000000.0L)/
-            static_cast<long double>(frequency.QuadPart)) : 0U;
-        const auto relation=NativeRowLabelCorrelation::Compare(
-            std::string_view(reinterpret_cast<const char*>(sample.text.raw.data()),
-                std::min<std::size_t>(sample.text.size,sample.text.raw.size())),
-            std::string_view(reinterpret_cast<const char*>(e.source.data()),
-                std::min<std::size_t>(e.sourceLength,e.source.size())));
-        const bool sameThread=e.thread!=0 && e.thread==sample.thread;
-        const char* ownership=(sample.rendererScopeState==2 &&
-            sample.rendererScopeMatchesEvent && e.builderScopeMatches &&
-            qpcValid && ageUs<=500000U && sameThread &&
-            (relation==NativeRowLabelCorrelation::Relation::Exact ||
-             relation==NativeRowLabelCorrelation::Relation::ColorPrefixOnly)) ?
-            "scope-overlap-candidate-not-upstream-proven" :
-            "temporal-only-no-row-item-ownership";
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_CHAIN_SAMPLE version=1.0.0 phase=%s order=%u "
-            "eventSeq=%llu eventUnitId=%u eventClassId=%u "
-            "eventQpc=%lld renderQpc=%lld eventAgeUs=%llu ageValid=%u "
-            "sameThread=%u builderScopeState=%u builderScopeId=%u builderScopeMatch=%u "
-            "rendererScopeState=%u rendererScopeId=%u rendererScopeEventMatch=%u "
-            "element=0x%llX rect=%ld,%ld,%ld,%ld alphaBits=%08X "
-            "rowTextRelation=%s rowTextPreview='%s' ownership=%s nativeWrites=0",
-            phase,sample.order,static_cast<unsigned long long>(e.sequence),
-            e.unitId,e.classId,static_cast<long long>(e.qpc),
-            static_cast<long long>(sample.qpc),
-            static_cast<unsigned long long>(ageUs),qpcValid?1U:0U,
-            sameThread?1U:0U,unsigned(e.builderScopeState),
-            e.builderScopeUnitId,e.builderScopeMatches?1U:0U,
-            unsigned(sample.rendererScopeState),sample.rendererScopeUnitId,
-            sample.rendererScopeMatchesEvent?1U:0U,
-            static_cast<unsigned long long>(sample.element),
-            static_cast<long>(sample.rect[0]),static_cast<long>(sample.rect[1]),
-            static_cast<long>(sample.rect[2]),static_cast<long>(sample.rect[3]),
-            unsigned(sample.colorBits[3]),NativeRowLabelCorrelation::Name(relation),
-            sample.text.preview.data(),ownership);
-        Emit(line);
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_CHAIN_SUMMARY version=1.0.0 phase=%s "
-        "samples=%zu builderScopeMatchesAtSample=%u rendererScopeActive=%u "
-        "observedEventUnitTransitions=%u observedGeometryTransitions=%u "
-        "next=trace-actual-builder-to-row-handoff-if-renderer-scope-empty "
-        "perItemNativeBackground=DISABLED nativeWrites=0",
-        phase,count,builderMatches,rendererScoped,eventTransitions,geometryTransitions);
-    Emit(line);
-}
-
-void ReportNativeRowRuntime() noexcept {
-    NativeRowBgTrialEnabled.store(false,std::memory_order_release);
-    NativeRowActivePhase.store(NativeRowPhase::Off,std::memory_order_release);
-    NativeRowDeadline.store(0,std::memory_order_release);
-    NativeRowNextSampleAt.store(0,std::memory_order_release);
-    char line[650]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_REPORT_BEGIN version=1.0.0 hookInstalled=%u sampledCalls=%llu otherCallerCalls=%llu contention=%llu perPhaseMaxSamples=8 samplingIntervalMs=180 autoHoverStaticDumps=0 itemAssociation=unverified observerColorWrites=0 trialColorWrites=%llu overlays=0 globalRectHook=0",
-        NativeRowRendererHookInstalled.load()?1U:0U,
-        static_cast<unsigned long long>(NativeRowCalls.load()),
-        static_cast<unsigned long long>(NativeRowCallerMismatch.load()),
-        static_cast<unsigned long long>(NativeRowLockContention.load()),
-        static_cast<unsigned long long>(NativeRowBgWrites.load()));
-    Emit(line);
-    std::array<std::array<std::uintptr_t,NativeRowMaxRecords>,NativeRowPhaseCount>
-        phaseAddresses{};
-    std::array<std::size_t,NativeRowPhaseCount> phaseSizes{};
-    for (std::size_t phase=0;phase<NativeRowPhaseCount;++phase) {
-        std::array<NativeRowRecord,NativeRowMaxRecords> saved{};
-        std::array<NativeRowChainSample,NativeRowMaxSamplesPerPhase> chain{};
-        std::size_t chainSize{};
-        std::size_t size{};
-        std::uint64_t calls{},failures{},overflow{},invalid{},other{};
-        {
-            std::lock_guard lock(NativeRowBuckets[phase].mutex);
-            const auto& b=NativeRowBuckets[phase];
-            saved=b.records;size=b.size;
-            chain=b.chain;chainSize=b.chainSize;
-            calls=b.calls;failures=b.readFailures;
-            overflow=b.overflow;invalid=b.invalidColor;
-            other=b.otherCallers;
-        }
-        for(std::size_t i=0;i<size;++i)
-            phaseAddresses[phase][i]=saved[i].address;
-        phaseSizes[phase]=size;
-        std::sort(saved.begin(),saved.begin()+size,
-            [](const NativeRowRecord& a,const NativeRowRecord& b) noexcept {
-                return a.calls>b.calls;
-            });
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_PHASE_SUMMARY version=1.0.0 phase=%s calls=%llu uniqueObjects=%zu readFailures=%llu overflow=%llu invalidFloat4=%llu unrelatedCallers=%llu caller=0x880BCC rawRectOffsets=+0x50,+0x54,+0x58,+0x5C rgbaOffset=+0x168 objectIdentity=unproven",
-            NativeRowPhaseNames[phase],
-            static_cast<unsigned long long>(calls),size,
-            static_cast<unsigned long long>(failures),
-            static_cast<unsigned long long>(overflow),
-            static_cast<unsigned long long>(invalid),
-            static_cast<unsigned long long>(other));
-        Emit(line);
-        ReportNativeRowChainSamples(NativeRowPhaseNames[phase],chain,chainSize);
-        ReportNativeRowHandoffSamples(NativeRowPhaseNames[phase],chain,chainSize);
-        ReportNativeRowAppendMatch(phase,chain,chainSize);
-        ReportNativeRowLatestAppend(phase,chain,chainSize);
-        // Copy phase evidence under its own mutex; never hold it across Emit.
-        std::array<NativeRowLabelEvent,NativeRowMaxDistinctUnits> units{};
-        std::size_t unitCount{};
-        std::uint64_t eventCalls{},eventOverflow{},emptySources{};
-        std::uint64_t builderScopedMatches{},builderScopedMisses{},builderNoScope{};
-        {
-            std::lock_guard lock(NativeRowLabelPhases[phase].mutex);
-            const auto& labels=NativeRowLabelPhases[phase];
-            units=labels.units;
-            unitCount=labels.uniqueCount;
-            eventCalls=labels.callbacks;
-            eventOverflow=labels.overflow;
-            emptySources=labels.withoutText;
-            builderScopedMatches=labels.builderScopedMatches;
-            builderScopedMisses=labels.builderScopedMisses;
-            builderNoScope=labels.builderNoScope;
-        }
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_BUILDER_SCOPE version=1.0.0 phase=%s "
-            "v3Match=%llu v3Mismatch=%llu v3Empty=%llu callbacks=%llu "
-            "meaning=scope-inside-SoE-original-formatter-only not-renderer-ownership nativeWrites=0",
-            NativeRowPhaseNames[phase],
-            static_cast<unsigned long long>(builderScopedMatches),
-            static_cast<unsigned long long>(builderScopedMisses),
-            static_cast<unsigned long long>(builderNoScope),
-            static_cast<unsigned long long>(eventCalls));
-        Emit(line);
-        // Pairs of different unit IDs with identical complete borrowed
-        // source bytes are explicitly ambiguous even when names match.
-        std::uint32_t duplicatePairs{};
-        for(std::size_t a=0;a<unitCount;++a)
-            for(std::size_t b=a+1;b<unitCount;++b)
-                if(units[a].unitId!=units[b].unitId &&
-                    units[a].sourceLength &&
-                    units[a].sourceLength<=units[a].source.size() &&
-                    units[a].sourceLength==units[b].sourceLength &&
-                    std::memcmp(units[a].source.data(),units[b].source.data(),
-                        units[a].sourceLength)==0)
-                    ++duplicatePairs;
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ROW_LABEL_EVENTS version=1.0.0 phase=%s "
-            "callbacks=%llu distinctUnitIds=%zu duplicateSourcePairs=%u "
-            "unitOverflow=%llu emptySource=%llu eventMutexMissesGlobal=%llu "
-            "sampleMutexMissesGlobal=%llu source=SoE-V1-or-standalone "
-            "itemOwnership=unproven nativeWrites=0",
-            NativeRowPhaseNames[phase],
-            static_cast<unsigned long long>(eventCalls),unitCount,
-            duplicatePairs,static_cast<unsigned long long>(eventOverflow),
-            static_cast<unsigned long long>(emptySources),
-            static_cast<unsigned long long>(NativeRowLabelEventContention.load()),
-            static_cast<unsigned long long>(NativeRowLabelSnapshotContention.load()));
-        Emit(line);
-        for(std::size_t i=0;i<std::min(size,NativeRowPrintRecords);++i) {
-            const auto& v=saved[i];
-            std::array<float,4> rgba{};
-            std::memcpy(rgba.data(),v.firstColorBits.data(),sizeof(rgba));
-            std::snprintf(line,sizeof(line),
-                "LOOT_NATIVE_ROW_SAMPLE phase=%s ordinal=%zu element=0x%llX tid=%lu hits=%llu rectFirst=%ld,%ld,%ld,%ld rectLast=%ld,%ld,%ld,%ld rgbaFirst=%.3f,%.3f,%.3f,%.3f firstColorRaw=%08X,%08X,%08X,%08X colorTransitions=%u geometryTransitions=%u provenance=temporal-candidate-not-item-identity",
-                NativeRowPhaseNames[phase],i,
-                static_cast<unsigned long long>(v.address),
-                static_cast<unsigned long>(v.thread),
-                static_cast<unsigned long long>(v.calls),
-                static_cast<long>(v.firstRect[0]),static_cast<long>(v.firstRect[1]),
-                static_cast<long>(v.firstRect[2]),static_cast<long>(v.firstRect[3]),
-                static_cast<long>(v.lastRect[0]),static_cast<long>(v.lastRect[1]),
-                static_cast<long>(v.lastRect[2]),static_cast<long>(v.lastRect[3]),
-                double(rgba[0]),double(rgba[1]),double(rgba[2]),double(rgba[3]),
-                unsigned(v.firstColorBits[0]),unsigned(v.firstColorBits[1]),
-                unsigned(v.firstColorBits[2]),unsigned(v.firstColorBits[3]),
-                unsigned(v.colorTransitions),unsigned(v.geometryTransitions));
-            Emit(line);
-            // Header words are logged even when the guessed MSVC string
-            // layout is implausible, allowing a later offline correction.
-            std::array<std::uint64_t,4> raw0{},raw1{};
-            std::memcpy(raw0.data(),v.firstTextHeaders.data(),sizeof(raw0));
-            std::memcpy(raw1.data(),v.firstTextHeaders.data()+0x28,sizeof(raw1));
-            char witnessLine[1600]{};
-            std::snprintf(witnessLine,sizeof(witnessLine),
-                "LOOT_NATIVE_ROW_TEXT_WITNESS version=1.0.0 phase=%s ordinal=%zu element=0x%llX headerTransitions=%u "
-                "text0State=%u text0Size=%llu text0Capacity=%llu text0EncodedCap=%016llX text0Preview='%s' text0Hex=%s "
-                "text1State=%u text1Size=%llu text1Capacity=%llu text1EncodedCap=%016llX text1Preview='%s' text1Hex=%s "
-                "lastText0State=%u lastText0Size=%llu lastText0Preview='%s' lastText0Hex=%s "
-                "lastText1State=%u lastText1Size=%llu lastText1Preview='%s' lastText1Hex=%s "
-                "header0=%016llX,%016llX,%016llX,%016llX "
-                "header1=%016llX,%016llX,%016llX,%016llX "
-                "interpretation=candidate-tagged-inline-or-heap-strings-not-item-identity no-native-writes=1",
-                NativeRowPhaseNames[phase],i,
-                static_cast<unsigned long long>(v.address),v.textHeaderTransitions,
-                unsigned(v.firstText[0].state),
-                static_cast<unsigned long long>(v.firstText[0].size),
-                static_cast<unsigned long long>(v.firstText[0].capacity),
-                static_cast<unsigned long long>(v.firstText[0].encodedCapacity),
-                v.firstText[0].preview.data(),v.firstText[0].rawHex.data(),
-                unsigned(v.firstText[1].state),
-                static_cast<unsigned long long>(v.firstText[1].size),
-                static_cast<unsigned long long>(v.firstText[1].capacity),
-                static_cast<unsigned long long>(v.firstText[1].encodedCapacity),
-                v.firstText[1].preview.data(),v.firstText[1].rawHex.data(),
-                unsigned(v.lastText[0].state),
-                static_cast<unsigned long long>(v.lastText[0].size),
-                v.lastText[0].preview.data(),v.lastText[0].rawHex.data(),
-                unsigned(v.lastText[1].state),
-                static_cast<unsigned long long>(v.lastText[1].size),
-                v.lastText[1].preview.data(),v.lastText[1].rawHex.data(),
-                static_cast<unsigned long long>(raw0[0]),
-                static_cast<unsigned long long>(raw0[1]),
-                static_cast<unsigned long long>(raw0[2]),
-                static_cast<unsigned long long>(raw0[3]),
-                static_cast<unsigned long long>(raw1[0]),
-                static_cast<unsigned long long>(raw1[1]),
-                static_cast<unsigned long long>(raw1[2]),
-                static_cast<unsigned long long>(raw1[3]));
-            Emit(witnessLine);
-            auto duplicatesFor=[&](const NativeRowLabelSnapshot& label) noexcept {
-                const auto& source=label.latest;
-                if(!source.unitId || !source.sourceLength ||
-                    source.sourceLength>source.source.size()) return 0U;
-                std::uint32_t duplicates{};
-                for(std::size_t j=0;j<unitCount;++j) {
-                    const auto& other=units[j];
-                    if(other.unitId==source.unitId ||
-                        other.sourceLength!=source.sourceLength) continue;
-                    if(std::memcmp(other.source.data(),source.source.data(),
-                        source.sourceLength)==0) ++duplicates;
-                }
-                return duplicates;
-            };
-            ReportNativeRowItemEvent(NativeRowPhaseNames[phase],i,
-                v.address,"first",v.firstText[0],v.firstLabel,
-                v.firstTick,v.thread,duplicatesFor(v.firstLabel),
-                eventOverflow!=0);
-            ReportNativeRowItemEvent(NativeRowPhaseNames[phase],i,
-                v.address,"last",v.lastText[0],v.lastLabel,
-                v.lastTick,v.thread,duplicatesFor(v.lastLabel),
-                eventOverflow!=0);
-        }
-    }
-    std::size_t hiddenOnly{},hiddenAndAway{},hiddenAndInventory{};
-    for(std::size_t i=0;i<phaseSizes[0];++i) {
-        const auto ptr=phaseAddresses[0][i];
-        const auto contains=[&](std::size_t group) noexcept {
-            for(std::size_t j=0;j<phaseSizes[group];++j)
-                if(phaseAddresses[group][j]==ptr)return true;
-            return false;
-        };
-        const bool away=contains(1),inventory=contains(2);
-        if (!away && !inventory)++hiddenOnly;
-        if (away)++hiddenAndAway;
-        if (inventory)++hiddenAndInventory;
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ROW_CORRELATION version=1.0.0 hiddenOnlyObjects=%zu hiddenAndAwayObjects=%zu hiddenAndInventoryObjects=%zu comparison=pointer-equality-only phaseCoverage=manual-regions-not-item-provenance no-color-writes=1",
-        hiddenOnly,hiddenAndAway,hiddenAndInventory);
-    Emit(line);
-    ReportNativeRowHandoffCode();
-    Emit("LOOT_NATIVE_ROW_REPORT_END version=1.0.0 next=audit-latest-append-invocation-association item-ownership=NOT-PROVEN no-native-writes=1 native-global-rectangle-hook=0");
-    FlushCapture();
-}
-
-// The original hooked helper at D2R+0x36EF50 has a verified 1-argument
-// signature, and its *trampoline* is used here (never the patched entry).
-// The formatter's native item pointer is only passed after positive, freshly
-// captured type/record-ID checks. That pointer equivalence is what the probe
-// tests; an item-code result is evidence, not a hardcoded assumption.
-// No calls are made unless `code-arm` AND an explicit 8-second capture are on.
+// Item-code validation used by production rule evaluation and native guards.
 bool PrintableItemCode(std::uint32_t code) noexcept {
     const auto compact = CanonicalItemCode(code);
     if (compact == 0) return false;
@@ -5627,249 +2472,14 @@ bool PrintableItemCode(std::uint32_t code) noexcept {
     return true;
 }
 
-void ProbeFormatterItemCode(void* unit, bool qualified,
-                            FormatterObservation& temp) noexcept {
-    if (!CodeBridgeArmed.load(std::memory_order_acquire)) return;
-    temp.codeAttempted = true;
-    if (!qualified || !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire) ||
-        !temp.unitOk || !temp.postOk || temp.nativeFirst6[0] != 4) {
-        CodeBridgeGuardReject.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    std::uint32_t recordId{};
-    std::memcpy(&recordId, temp.post.data() + 0x10, sizeof(recordId));
-    if (recordId != temp.nativeFirst6[2]) {
-        CodeBridgeGuardReject.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    temp.codeGuardPassed = true;
-    CodeBridgeAttempts.fetch_add(1, std::memory_order_relaxed);
-    // Do not call HookGetItemCode: the trampoline avoids recursion and lets
-    // the existing hook preserve its separate normal-call telemetry.
-    temp.codeValue = OriginalGetItemCode(unit);
-    temp.codeValid = PrintableItemCode(temp.codeValue);
-    if (!temp.codeValid) {
-        CodeBridgeInvalid.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    CodeBridgeSuccess.fetch_add(1, std::memory_order_relaxed);
-    if (temp.codeValue == DivineCode) {
-        CodeBridgeDivine.fetch_add(1, std::memory_order_relaxed);
-        if (temp.nativeFirst6[1] != DivineNativeClassId)
-            CodeBridgeDivineMismatch.fetch_add(1, std::memory_order_relaxed);
-    } else if (temp.nativeFirst6[1] == ObservedMapNativeClassId) {
-        // Count a map *class candidate*; the emitted code is the experiment.
-        CodeBridgeMap.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        CodeBridgeOther.fetch_add(1, std::memory_order_relaxed);
-    }
-}
 
-// A guarded proof-of-concept, not a general-purpose filter. Only invoked by
-// the formatter hook AFTER the game has populated the UI record. No item data
-// or tooltip storage is written. This changes at most 11 bytes (including NUL)
-// of the explicitly identified ground-label record, with equal-size text.
-void TryRenameDivineLabel(void* unit, void* record, bool sourceCall,
-                          bool paired, std::uint8_t originalResult) noexcept {
-    if (!RenameArmed.load(std::memory_order_acquire) ||
-        !sourceCall || !paired || originalResult == 0 || !unit || !record)
-        return;
-    RenameQualified.fetch_add(1, std::memory_order_relaxed);
-    std::uint32_t nativeHeader[4]{};
-    SIZE_T copied{};
-    if (!ReadProcessMemory(GetCurrentProcess(), unit, nativeHeader,
-            sizeof(nativeHeader), &copied) || copied != sizeof(nativeHeader)) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    // Native object type 4 (item), the class ID observed alongside Divine Orb.
-    if (nativeHeader[0] != 4 || nativeHeader[1] != DivineNativeClassId) {
-        RenameNonDivine.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto recordAddress = reinterpret_cast<std::uintptr_t>(record);
-    if (recordAddress > UINTPTR_MAX - CandidateTextOffset - sizeof(OriginalDivineLabel)) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    std::uint32_t recordId{};
-    copied = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(recordAddress + 0x10),
-            &recordId, sizeof(recordId), &copied) || copied != sizeof(recordId)) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    if (recordId != nativeHeader[2]) {
-        RenameIdMismatch.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto textAddress = recordAddress + CandidateTextOffset;
-    char currentText[sizeof(OriginalDivineLabel)]{};
-    copied = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(textAddress), currentText,
-            sizeof(currentText), &copied) || copied != sizeof(currentText)) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    if (std::memcmp(currentText, OriginalDivineLabel, sizeof(currentText)) != 0) {
-        RenameTextMismatch.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    // The original formatter just wrote this region, but still verify that
-    // it remains fully committed/writable. No VirtualProtect, code writes,
-    // or brute-force fallback if the memory has changed protection.
-    MEMORY_BASIC_INFORMATION memory{};
-    auto* textPointer = reinterpret_cast<void*>(textAddress);
-    if (!VirtualQuery(textPointer, &memory, sizeof(memory)) ||
-        memory.State != MEM_COMMIT ||
-        (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto protection = memory.Protect & 0xFFU;
-    if (protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
-        protection != PAGE_EXECUTE_READWRITE &&
-        protection != PAGE_EXECUTE_WRITECOPY) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto regionEnd = reinterpret_cast<std::uintptr_t>(memory.BaseAddress) +
-        memory.RegionSize;
-    if (regionEnd < textAddress || regionEnd - textAddress < sizeof(ReplacementDivineLabel)) {
-        RenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    // Same-length, NUL-terminated replacement; all other record fields stay
-    // native. Geometry was measured from the original string: do not treat
-    // this as a production implementation for variable-length replacements.
-    std::memcpy(textPointer, ReplacementDivineLabel, sizeof(ReplacementDivineLabel));
-    RenameWrites.fetch_add(1, std::memory_order_relaxed);
-}
-
-// Opt-in 0.1.52 code-matched ground-name PoC. The existing class-ID-based
-// rename remains separate for regression comparison. A rule identifies the
-// underlying item by the original D2R item-code trampoline, not name/color or
-// class ID. The UI record is a transient formatter output, not item storage.
-void TryCodeRenameGroundLabel(void* unit, void* record, bool sourceCall,
-                              bool paired, std::uint8_t originalResult) noexcept {
-    if (!CodeRenameArmed.load(std::memory_order_acquire) ||
-        !sourceCall || !paired || originalResult == 0 || !unit || !record)
-        return;
-    CodeRenameQualified.fetch_add(1, std::memory_order_relaxed);
-    if (!OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire)) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    std::uint32_t unitHeader[4]{};
-    SIZE_T copied{};
-    if (!ReadProcessMemory(GetCurrentProcess(), unit, unitHeader,
-            sizeof(unitHeader), &copied) || copied != sizeof(unitHeader) ||
-        unitHeader[0] != 4) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto recordAddress = reinterpret_cast<std::uintptr_t>(record);
-    if (recordAddress > UINTPTR_MAX - CandidateTextOffset -
-            sizeof(ReplacementDivineLabel)) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    std::uint32_t recordId{};
-    copied = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(recordAddress + 0x10),
-            &recordId, sizeof(recordId), &copied) || copied != sizeof(recordId)) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    if (recordId != unitHeader[2]) {
-        CodeRenameIdMismatch.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    // The item-code bridge successfully tested the same pointer in 0.1.19:
-    // 'divo' and 'mp04' returned against their actual displayed ground names.
-    // Use the trampoline directly; never recurse through HookGetItemCode.
-    CodeRenameLookups.fetch_add(1, std::memory_order_relaxed);
-    const auto itemCode = CanonicalItemCode(OriginalGetItemCode(unit));
-    if (!PrintableItemCode(itemCode)) {
-        CodeRenameInvalid.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const CodeNameRule* rule{};
-    for (const auto& candidate : CodeNameRules) {
-        if (candidate.code == itemCode) {
-            rule = &candidate;
-            break;
-        }
-    }
-    if (!rule) {
-        CodeRenameNoRule.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    CodeRenameRuleMatches.fetch_add(1, std::memory_order_relaxed);
-    // Geometry still reflects the game's original text measurement. Only
-    // same-BYTE-LENGTH substitutions are allowed in this first PoC. No exact
-    // 'Divine Orb' string check: the selection is solely native item code.
-    if (rule->replacementBytes < 2 ||
-        rule->replacementBytes > CandidateTextMaximum ||
-        rule->replacement[rule->replacementBytes - 1] != '\0') {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto textAddress = recordAddress + CandidateTextOffset;
-    std::array<char, CandidateTextMaximum> text{};
-    copied = 0;
-    if (!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(textAddress), text.data(),
-            text.size(), &copied) || copied != text.size()) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto* terminator = static_cast<const char*>(
-        std::memchr(text.data(), '\0', text.size()));
-    if (!terminator || static_cast<std::size_t>(terminator - text.data()) + 1 !=
-            rule->replacementBytes) {
-        CodeRenameTextLengthMismatch.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    // Do not alter metadata, UI geometry, text length, item memory, quality,
-    // inventory labels, or the formatter input. Verify writable record bounds.
-    MEMORY_BASIC_INFORMATION memory{};
-    auto* destination = reinterpret_cast<void*>(textAddress);
-    if (!VirtualQuery(destination, &memory, sizeof(memory)) ||
-        memory.State != MEM_COMMIT ||
-        (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto protection = memory.Protect & 0xFFU;
-    if (protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
-        protection != PAGE_EXECUTE_READWRITE &&
-        protection != PAGE_EXECUTE_WRITECOPY) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    const auto regionStart = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
-    if (regionStart > textAddress || memory.RegionSize > UINTPTR_MAX - regionStart ||
-        regionStart + memory.RegionSize < textAddress ||
-        regionStart + memory.RegionSize - textAddress < rule->replacementBytes) {
-        CodeRenameReadFailures.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-    std::memcpy(destination, rule->replacement, rule->replacementBytes);
-    CodeRenameWrites.fetch_add(1, std::memory_order_relaxed);
-}
-
-// The canonical runtime configuration is filter.json beside the DLL.
-// Previous production/probe filenames remain read-only migration fallbacks when
-// the canonical file is absent.
+// Resolve the canonical filter.json path, retaining read-only migration
+// fallbacks for previous production/probe filenames when the canonical file is absent.
 bool ResolveFilterConfigPath() noexcept {
     HMODULE self{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&TryCodeRenameGroundLabel), &self) || !self)
+            reinterpret_cast<LPCWSTR>(&ResolveFilterConfigPath), &self) || !self)
         return false;
     std::array<wchar_t, 32768> modulePath{};
     const auto length = GetModuleFileNameW(self, modulePath.data(),
@@ -6621,286 +3231,6 @@ bool ReloadFilterRules() {
     }
 }
 
-// 0.1.52: READ-ONLY hover-route comparison. D2R's hover-only text can use
-// different call sites (or different functions entirely). Observe ONLY the
-// already fingerprinted formatter, inner name writer and shared painter.
-// No new native hooks, guessed calling conventions, item writes or hook I/O.
-enum class HoverStage : std::size_t { Formatter=0, NameWriter=1, Painter=2 };
-constexpr std::size_t HoverStageCount=3;
-constexpr std::size_t HoverCallerSlots=32;
-constexpr ULONGLONG HoverProbeDurationMs=12'000;
-struct HoverCallerRecord {
-    std::uintptr_t returnRva{};
-    std::uint64_t hits{};
-    std::uint64_t paired{};
-    std::uint32_t firstArg{}; // formatter flags / name-writer buffer size
-    std::uint32_t header0{}; // first dword at unit, read-only, not a validated code
-    std::uint32_t header2{}; // potential unit id, not assumed for unknown callers
-    std::uint32_t recordId{};
-    std::uint32_t samples{};
-    std::uint64_t verifiedDivine{};
-    std::uint64_t verifiedMap{};
-    std::uint64_t verifiedOther{};
-    std::uint64_t identityUnresolved{};
-    std::uint32_t firstVerifiedCode{};
-    char firstName[84]{};
-    char targetName[84]{};
-};
-std::mutex HoverProbeMutex;
-std::atomic_bool HoverProbeArmed{false};
-std::atomic<ULONGLONG> HoverProbeDeadline{};
-std::array<std::array<HoverCallerRecord,HoverCallerSlots>,HoverStageCount> HoverProbeCallers{};
-std::array<std::size_t,HoverStageCount> HoverProbeSizes{};
-std::array<std::uint64_t,HoverStageCount> HoverProbeHits{};
-std::array<std::uint64_t,HoverStageCount> HoverProbeOverflow{};
-std::array<char,24> HoverProbePhase{};
-
-bool HoverTextIsTarget(std::string_view text) noexcept {
-    for (std::size_t i=0;i<text.size();++i) {
-        constexpr std::string_view needles[]{"divine", "custom map", "high value"};
-        for (const auto needle:needles) {
-            if (needle.size()>text.size()-i) continue;
-            bool equal=true;
-            for (std::size_t j=0;j<needle.size();++j) {
-                auto c=text[i+j];
-                if (c>='A' && c<='Z') c=static_cast<char>(c+('a'-'A'));
-                if (c!=needle[j]) {equal=false;break;}
-            }
-            if(equal) return true;
-        }
-    }
-    return false;
-}
-
-// Already implemented later: the painter only exposes a rendered label record,
-// so the code must be verified against the recent formatter unitId AND exact
-// prepared name. This bridge is not a mouse-targeting API.
-bool GetGroundIdentity(std::uint32_t id, std::string_view visibleName,
-                       std::uint32_t& code,
-                       std::uint32_t* quantityOut=nullptr,
-                       std::uint32_t* classIdOut=nullptr,
-                       RuleEngine::Item* scalarOut=nullptr) noexcept;
-
-// Untrusted buffers are copied, never modified. The record offsets are only
-// inspected when the arguments fit the previously verified pair structure.
-void ObserveHoverRoute(HoverStage stage,std::uintptr_t caller,void* unit,
-    void* output,void* record,std::uint32_t argument,void* color=nullptr) noexcept {
-    if (!HoverProbeArmed.load(std::memory_order_relaxed) ||
-        GetTickCount64()>=HoverProbeDeadline.load(std::memory_order_relaxed)) return;
-    if (!HoverProbeMutex.try_lock()) return;
-    std::lock_guard<std::mutex> hold(HoverProbeMutex,std::adopt_lock);
-    if (!HoverProbeArmed.load(std::memory_order_relaxed) ||
-        GetTickCount64()>=HoverProbeDeadline.load(std::memory_order_relaxed)) return;
-    const auto group=static_cast<std::size_t>(stage);
-    ++HoverProbeHits[group];
-    const auto rva=caller>=Base && caller-Base<ImageSize?caller-Base:0;
-    HoverCallerRecord* row{};
-    for (std::size_t i=0;i<HoverProbeSizes[group];++i) {
-        if (HoverProbeCallers[group][i].returnRva==rva) {
-            row=&HoverProbeCallers[group][i];break;
-        }
-    }
-    if(!row) {
-        if(HoverProbeSizes[group]>=HoverCallerSlots) {++HoverProbeOverflow[group];return;}
-        row=&HoverProbeCallers[group][HoverProbeSizes[group]++];
-        *row={};
-        row->returnRva=rva;
-        row->firstArg=argument;
-    }
-    ++row->hits;
-    const auto out=reinterpret_cast<std::uintptr_t>(output);
-    const auto rec=reinterpret_cast<std::uintptr_t>(record);
-    bool paired=false;
-    std::uintptr_t textAddress{};
-    std::size_t textLength=80;
-    if(stage==HoverStage::Formatter) {
-        paired=rec && out && rec<=UINTPTR_MAX-0x28-80 && out==rec+0x24;
-        if(paired) textAddress=rec+0x28;
-    } else if(stage==HoverStage::NameWriter) {
-        paired=out && argument>=8 && argument<=0x1000 && out<=UINTPTR_MAX-84;
-        if(paired) {
-            textAddress=out+4;
-            textLength=std::min<std::size_t>(80,argument-4);
-        }
-    } else {
-        paired=rec && out && color && rec<=UINTPTR_MAX-0x28-80 &&
-            out==rec+0x24 &&
-            reinterpret_cast<std::uintptr_t>(color)==rec+GroundColorOffset;
-        if(paired) textAddress=rec+0x28;
-    }
-    if(paired) ++row->paired;
-    // Phase-local read-only identity differential. The native item is valid
-    // ONLY on the verified formatter/name-writer path; painter identity uses
-    // the already qualified unitId + exact label-name bridge. No address-only
-    // inference and no item, tooltip or label writes.
-    std::uint32_t verifiedCode{};
-    bool identityFound=false;
-    if(paired && (stage==HoverStage::Formatter || stage==HoverStage::NameWriter) &&
-       unit && OriginalGetItemCode && HookInstalled.load(std::memory_order_acquire)) {
-        const bool knownWriter=stage==HoverStage::NameWriter &&
-            caller==Base+InnerNameWriterCallerRva+DirectCallBytes &&
-            argument==InnerNameBufferBytes;
-        const bool knownFormatter=stage==HoverStage::Formatter &&
-            (caller==Base+LabelFormatterCallRva+DirectCallBytes ||
-             caller==Base+LabelFormatterSecondCallRva+DirectCallBytes);
-        if(knownWriter || knownFormatter) {
-            std::uint32_t header[4]{};
-            SIZE_T copied{};
-            const bool validUnit=ReadProcessMemory(GetCurrentProcess(),unit,header,
-                sizeof(header),&copied) && copied==sizeof(header) && header[0]==4;
-            bool validPair=validUnit;
-            const auto recordForId=stage==HoverStage::Formatter?rec:out-0x24;
-            if(validPair && recordForId<=UINTPTR_MAX-0x14) {
-                std::uint32_t recordId{};
-                copied=0;
-                validPair=ReadProcessMemory(GetCurrentProcess(),
-                    reinterpret_cast<const void*>(recordForId+0x10),
-                    &recordId,sizeof(recordId),&copied) &&
-                    copied==sizeof(recordId) && recordId==header[2] && recordId!=0;
-            } else validPair=false;
-            if(validPair) {
-                verifiedCode=CanonicalItemCode(OriginalGetItemCode(unit));
-                identityFound=PrintableItemCode(verifiedCode);
-            }
-        }
-    } else if(paired && stage==HoverStage::Painter &&
-              (caller==Base+0x1517AF6 || caller==Base+0x1519E46) &&
-              rec<=UINTPTR_MAX-0x28-80) {
-        std::uint32_t id{};
-        std::array<char,80> name{};
-        SIZE_T copied{};
-        const bool idOk=ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(rec+0x10),&id,sizeof(id),&copied) &&
-            copied==sizeof(id) && id!=0;
-        copied=0;
-        const bool nameOk=ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(rec+0x28),name.data(),name.size(),&copied) &&
-            copied==name.size() && std::memchr(name.data(),'\0',name.size())!=nullptr;
-        if(idOk && nameOk) {
-            const auto length=strnlen_s(name.data(),name.size());
-            identityFound=GetGroundIdentity(id,std::string_view(name.data(),length),
-                verifiedCode);
-        }
-    }
-    if(paired) {
-        if(!identityFound) ++row->identityUnresolved;
-        else {
-            if(row->firstVerifiedCode==0) row->firstVerifiedCode=verifiedCode;
-            if(verifiedCode==DivineCode) ++row->verifiedDivine;
-            else if(verifiedCode==PackFilterCode("mp04")) ++row->verifiedMap;
-            else ++row->verifiedOther;
-        }
-    }
-    if(row->samples>=32 || (!row->firstName[0] && !paired)) return;
-    // Avoid reading this uncertain native unit on every render frame.
-    if(row->samples==0 && unit) {
-        std::uint32_t firstFour[4]{};
-        SIZE_T copied{};
-        if(ReadProcessMemory(GetCurrentProcess(),unit,firstFour,sizeof(firstFour),&copied) &&
-            copied==sizeof(firstFour)) {
-            row->header0=firstFour[0];
-            row->header2=firstFour[2];
-        }
-    }
-    if(row->samples==0 && (stage==HoverStage::Formatter || stage==HoverStage::Painter) &&
-        paired && rec<=UINTPTR_MAX-0x14) {
-        SIZE_T copied{};
-        (void)ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(rec+0x10),&row->recordId,
-            sizeof(row->recordId),&copied);
-    }
-    if(!textAddress || (row->firstName[0] && row->targetName[0])) return;
-    ++row->samples;
-    std::array<char,80> bytes{};
-    SIZE_T copied{};
-    if(!ReadProcessMemory(GetCurrentProcess(),
-        reinterpret_cast<const void*>(textAddress),bytes.data(),textLength,&copied) ||
-        copied!=textLength) return;
-    const auto* terminator=static_cast<const char*>(
-        std::memchr(bytes.data(),'\0',textLength));
-    if(!terminator || terminator==bytes.data()) return;
-    const auto length=static_cast<std::size_t>(terminator-bytes.data());
-    const auto target=HoverTextIsTarget(std::string_view(bytes.data(),length));
-    char printable[84]{};
-    std::size_t used{};
-    for(std::size_t i=0;i<length && used<sizeof(printable)-1;++i) {
-        const unsigned char ch=static_cast<unsigned char>(bytes[i]);
-        if(ch=='\n' || ch=='\r') printable[used++]='|';
-        else if(ch>=0x20 && ch<=0x7e) printable[used++]=static_cast<char>(ch);
-        else printable[used++]='?';
-    }
-    printable[used]=0;
-    if(!row->firstName[0]) std::memcpy(row->firstName,printable,used+1);
-    if(target && !row->targetName[0])
-        std::memcpy(row->targetName,printable,used+1);
-}
-
-void ReportHoverProbe(bool stop) noexcept {
-    if(stop) HoverProbeArmed.store(false,std::memory_order_release);
-    std::lock_guard<std::mutex> lock(HoverProbeMutex);
-    char message[512]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_HOVER_PROBE_BEGIN version=1.0.0 phase='%s' active=%u durationMs=%llu stages=formatter,name-writer,painter labelWrites=unchanged itemWrites=0 nativeHookAdds=0",
-        HoverProbePhase.data(),HoverProbeArmed.load()?1U:0U,
-        static_cast<unsigned long long>(HoverProbeDurationMs));
-    Emit(message);
-    constexpr const char* names[]{"formatter","name-writer","painter"};
-    for(std::size_t group=0;group<HoverStageCount;++group) {
-        std::snprintf(message,sizeof(message),
-            "LOOT_HOVER_STAGE phase='%s' stage=%s calls=%llu distinctCallers=%zu overflow=%llu",
-            HoverProbePhase.data(),names[group],
-            static_cast<unsigned long long>(HoverProbeHits[group]),
-            HoverProbeSizes[group],
-            static_cast<unsigned long long>(HoverProbeOverflow[group]));
-        Emit(message);
-        for(std::size_t i=0;i<HoverProbeSizes[group];++i) {
-            const auto& r=HoverProbeCallers[group][i];
-            std::snprintf(message,sizeof(message),
-                "LOOT_HOVER_SITE phase='%s' stage=%s returnRva=0x%llX calls=%llu paired=%llu divo=%llu mp04=%llu verifiedOther=%llu unresolved=%llu firstCode=0x%08X firstArg=%u unitHeader0=0x%X unitIdCandidate=%u recordIdCandidate=%u samples=%u sample='%s' target='%s'",
-                HoverProbePhase.data(),names[group],
-                static_cast<unsigned long long>(r.returnRva),
-                static_cast<unsigned long long>(r.hits),
-                static_cast<unsigned long long>(r.paired),
-                static_cast<unsigned long long>(r.verifiedDivine),
-                static_cast<unsigned long long>(r.verifiedMap),
-                static_cast<unsigned long long>(r.verifiedOther),
-                static_cast<unsigned long long>(r.identityUnresolved),
-                r.firstVerifiedCode,r.firstArg,
-                r.header0,r.header2,r.recordId,r.samples,r.firstName,r.targetName);
-            Emit(message);
-        }
-    }
-    Emit("LOOT_HOVER_PROBE_END note=compare-visible-hidden-inventory captures; zero-delta means this hook route was not used, not that item never rendered");
-    FlushCapture();
-}
-
-void StartHoverProbe(std::string_view phase) noexcept {
-    if(phase!="idle" && phase!="visible" && phase!="hidden" && phase!="inventory") {
-        Emit("LOOT_HOVER_REFUSED usage: hover-probe-start idle|visible|hidden|inventory");return;
-    }
-    if(!FormatterHookInstalled.load(std::memory_order_acquire) ||
-       !InnerNameHookInstalled.load(std::memory_order_acquire) ||
-       !BackgroundPaintHookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_REFUSED install formatter-arm, geometry-hook, background-paint-observe first");return;
-    }
-    HoverProbeArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(HoverProbeMutex);
-        for(auto& group:HoverProbeCallers) group.fill({});
-        HoverProbeSizes.fill(0);HoverProbeHits.fill(0);HoverProbeOverflow.fill(0);
-        HoverProbePhase.fill(0);
-        std::memcpy(HoverProbePhase.data(),phase.data(),phase.size());
-        HoverProbeDeadline.store(GetTickCount64()+HoverProbeDurationMs,
-            std::memory_order_release);
-        HoverProbeArmed.store(true,std::memory_order_release);
-    }
-    char message[260]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_HOVER_PROBE_ARMED version=1.0.0 phase='%s' durationMs=%llu formatter=0x1FA9F0 writer=0xCBEB0 painter=0x1FA8E0 readOnly=1 sourceUnchanged=1",
-        HoverProbePhase.data(),static_cast<unsigned long long>(HoverProbeDurationMs));
-    Emit(message);
-}
-
 // Read/write a *specific* 93847 ground-name output region only. The native
 // inner writer is invoked first; our substitution happens while its parent
 // formatter has NOT YET measured text or calculated x/y/width/height.
@@ -6910,10 +3240,9 @@ std::uint64_t __fastcall HookInnerNameWriter(
     void* unit, void* output, std::uint32_t bufferSize, void* outMetadata) noexcept {
     const auto returnAddress = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const auto result = OriginalInnerNameWriter(unit, output, bufferSize, outMetadata);
-    ObserveHoverRoute(HoverStage::NameWriter,returnAddress,unit,output,nullptr,bufferSize);
     GeometryTotalCalls.fetch_add(1, std::memory_order_relaxed);
     const auto mode = ActiveGeometryMode.load(std::memory_order_acquire);
-    if (mode == GeometryMode::Off ||
+    if (mode != GeometryMode::Rules ||
         returnAddress != Base + InnerNameWriterCallerRva + DirectCallBytes ||
         !unit || !output || bufferSize != InnerNameBufferBytes ||
         !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire))
@@ -6951,7 +3280,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
     const char* configuredName = nullptr;
     std::size_t configuredBytes = 0;
     std::shared_ptr<const FilterRuleTable> snapshot;
-    if (mode == GeometryMode::Rules) {
+    {
         FilterLookups.fetch_add(1,std::memory_order_relaxed);
         if (!PrintableItemCode(code)) {
             FilterGuardFailures.fetch_add(1,std::memory_order_relaxed);
@@ -6972,9 +3301,6 @@ std::uint64_t __fastcall HookInnerNameWriter(
             }
         }
         if (configuredName) FilterMatches.fetch_add(1,std::memory_order_relaxed);
-    } else if (code != DivineCode) {
-        GeometryNoRule.fetch_add(1, std::memory_order_relaxed);
-        return result;
     }
     constexpr std::size_t capacity = InnerNameBufferBytes - InnerNamePrefixBytes;
     const auto textAddress = outputAddress + InnerNamePrefixBytes;
@@ -6993,17 +3319,13 @@ std::uint64_t __fastcall HookInnerNameWriter(
         return result;
     }
     GeometryObserved.fetch_add(1, std::memory_order_relaxed);
-    if (mode == GeometryMode::Observe) return result; // NEVER write
-    const char* replacement = mode == GeometryMode::Rules ? configuredName :
-        (mode == GeometryMode::Long ? LongDivineLabel : ShortDivineLabel);
-    std::size_t replacementBytes = mode == GeometryMode::Rules ? configuredBytes :
-        (mode == GeometryMode::Long ? sizeof(LongDivineLabel) :
-            sizeof(ShortDivineLabel));
+    const char* replacement = configuredName;
+    std::size_t replacementBytes = configuredBytes;
     // This native writer is the Alt-visible ground label, unlike the SoE V2
     // hidden-hover relay above. Both take the current quantity from the same
     // borrowed TYPE_ITEM and add the prefix before native text measurement.
     std::array<char,InnerNameBufferBytes> countedName{};
-    if (mode == GeometryMode::Rules) {
+    {
         const auto currentName=std::string_view(original.data(),
             static_cast<std::size_t>(end-original.data()));
         const auto displayName=configuredName ?
@@ -7021,8 +3343,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
             return result;
         }
     }
-    if (replacementBytes > capacity ||
-        replacementBytes > RecordBytes - CandidateTextOffset) {
+    if (replacementBytes > capacity) {
         GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
@@ -7051,8 +3372,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
     // to the still-running original formatter (text measure + rectangle).
     std::memcpy(destination, replacement, replacementBytes);
     GeometryWrites.fetch_add(1, std::memory_order_relaxed);
-    if (mode == GeometryMode::Rules)
-        FilterWrites.fetch_add(1,std::memory_order_relaxed);
+    FilterWrites.fetch_add(1,std::memory_order_relaxed);
     return result;
 }
 
@@ -7087,16 +3407,6 @@ void ArmInnerNameWriter() noexcept {
     }
     InnerNameHookInstalled.store(true,std::memory_order_release);
     Emit("LOOT_GEOMETRY_HOOK_READY version=1.0.0 hook=D2R+0xCBEB0 onlyCallerReturnRva=0x1FAA1D innerSize=0x80 textOffset=+0x04 geometryRecalculatedByNativeFormatter=1 mode=off");
-}
-
-const char* GeometryModeText(GeometryMode mode) noexcept {
-    switch (mode) {
-        case GeometryMode::Observe: return "observe";
-        case GeometryMode::Long: return "long";
-        case GeometryMode::Short: return "short";
-        case GeometryMode::Rules: return "rules";
-        default: return "off";
-    }
 }
 
 // Record identity at the only point with a verified native item pointer.
@@ -7135,8 +3445,6 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
     const auto* selected=ResolveGroundRule(table.get(),scalars,resolvedRule) ?
         &resolvedRule : nullptr;
     if(selected && (selected->hasBackground || selected->hasTextColor))
-        TraceLootLatency(code,recordId,LootLatencyStage::MatchBulk,
-            "formatter-ground-identity-match",0,scalars.quality,scalars.itemLevel);
     if (!selected || (!selected->hasBackground &&
         !selected->hasTextColor && selected->show)) {
         BackgroundNoMatch.fetch_add(1,std::memory_order_relaxed);
@@ -7241,16 +3549,6 @@ std::atomic_bool CorrectedGlyphBArmed{};
 
 void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) noexcept {
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    ObserveHoverRoute(HoverStage::Painter,caller,nullptr,textArg,rect,0,colorArg);
-    ObserveHoverDifferentialDraw(HoverDiffRenderer::Painter,caller);
-    if (const auto* scope=InWorldRenderScopeApi.load(std::memory_order_acquire);
-        scope && ActiveGeometryMode.load(std::memory_order_relaxed)
-                   == GeometryMode::Rules) {
-        SoE::Interop::InWorldActiveItemV3 active{};
-        active.structSize=sizeof(active);
-        if (scope->getCurrentItem(&active))
-            InWorldScopePainterCalls.fetch_add(1,std::memory_order_relaxed);
-    }
     const bool ground=caller==Base+0x1517AF6;
     const bool neighbor=caller==Base+0x1519E46;
     const bool observe=BackgroundPaintObserveArmed.load(std::memory_order_acquire);
@@ -7278,7 +3576,6 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
     std::uint32_t concealedVerifiedCode{};
     // 0.2.48: values copied from the qualified record while its locals are
     // in scope. Report BULK_PAINT only after the original renderer returns.
-    bool latencyBulkPaintQualified=false;
     bool latencyBulkBackgroundForwarded=false;
     std::uint32_t latencyBulkCode{};
     std::uint32_t latencyBulkRecordId{};
@@ -7405,7 +3702,7 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
                     }
                     if (divine && (cyan || nativeGlyph==ProbeCyanGlyphColor)) {
                         // Do not alter native map text or any non-verified ID.
-                        // Only write the exact native Divine color or the probe's
+                        // Only write the exact native Divine color or the qualified
                         // OWN distinctive cyan; refuse unknown style values.
                         if (cyan && nativeGlyph==ProbeCyanGlyphColor) {
                             glyphWasCyanOrPatched=true;
@@ -7509,7 +3806,6 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
         }
         if (ground && identified &&
             (customForwarded || hasScopedRuleTextColor)) {
-            latencyBulkPaintQualified=true;
             latencyBulkBackgroundForwarded=customForwarded;
             latencyBulkCode=verifiedCode;
             latencyBulkRecordId=recordId;
@@ -7547,10 +3843,6 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
         HiddenGroundInteractionPainterSkips.fetch_add(1,std::memory_order_relaxed);
     } else if (OriginalSharedLabelPaint) {
         OriginalSharedLabelPaint(rect,textArg,forwardedColor);
-        if (latencyBulkPaintQualified)
-            TraceLootLatency(latencyBulkCode,latencyBulkRecordId,
-                LootLatencyStage::BulkPaint,latencyBulkBackgroundForwarded ?
-                "native-bulk-bg-forwarded":"native-bulk-text-forwarded");
     }
     VerifiedRuleGlyphColor=previousGlyphColor;
     // Legacy record-write observer only (disabled by default); not part of the
@@ -7636,667 +3928,6 @@ void EnableAutomaticNativeHover() noexcept {
         rules->backgroundRules?1U:0U,fontReady?1U:0U,
         rules->hiddenRules,rules->rules.size());
     Emit(line);
-}
-
-// 0.1.99: observe the loader's public ItemTooltipEvent bus, used by SoE's
-// Currency subsystem (see SoE currency/currency.cpp), rather than install
-// another speculative hover-native detour. This is an *item tooltip event*
-// probe: whether the bus publishes hidden ground hover is unknown and is
-// precisely what our three isolated phases are intended to establish.
-// No tooltip fragments are added and event->item is never modified.
-constexpr ULONGLONG HoverEventWindowMs=12000;
-constexpr std::uint32_t HoverEventMapCode=
-    static_cast<std::uint32_t>('m') |
-    (static_cast<std::uint32_t>('p')<<8U) |
-    (static_cast<std::uint32_t>('0')<<16U) |
-    (static_cast<std::uint32_t>('4')<<24U);
-std::atomic<const D2RL::ItemServiceV1*> HoverEventItems{};
-const D2RL::SharedEventServiceV1* HoverEventBus{};
-D2RL::SharedEvents::ListenerHandle HoverEventListener{
-    D2RL::SharedEvents::InvalidHandle};
-std::atomic_bool HoverEventArmed{};
-std::atomic<ULONGLONG> HoverEventDeadline{};
-std::atomic<std::uint64_t> HoverEventTotal{};
-std::atomic<std::uint64_t> HoverEventDivine{};
-std::atomic<std::uint64_t> HoverEventMap{};
-std::atomic<std::uint64_t> HoverEventOther{};
-std::atomic<std::uint64_t> HoverEventInfoFailure{};
-std::atomic<std::uint64_t> HoverEventBadEvent{};
-std::atomic<std::uint64_t> HoverEventRuleMatches{};
-std::atomic<std::uint32_t> HoverEventFirstCode{};
-std::atomic<std::uint32_t> HoverEventLastCode{};
-std::atomic<DWORD> HoverEventFirstThread{};
-std::array<char,24> HoverEventPhase{};
-
-void __cdecl OnHoverEvent(const D2RL::PluginContext* ctx,
-    D2RL::SharedEvents::ItemTooltipEvent* event,void*) noexcept {
-    if(!HoverEventArmed.load(std::memory_order_relaxed) ||
-       GetTickCount64()>=HoverEventDeadline.load(std::memory_order_relaxed))
-        return;
-    if(!ctx || !event ||
-       event->structSize < D2RL::SharedEvents::ItemTooltipEventRequiredSize) {
-        HoverEventBadEvent.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    HoverEventTotal.fetch_add(1,std::memory_order_relaxed);
-    DWORD expected{};
-    (void)HoverEventFirstThread.compare_exchange_strong(
-        expected,GetCurrentThreadId(),std::memory_order_relaxed);
-    const auto* items=HoverEventItems.load(std::memory_order_acquire);
-    if(!items || !items->getItemInfo) {
-        HoverEventInfoFailure.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    D2RL::Items::ItemInfo info{};
-    info.structSize=D2RL::Items::ItemInfoSize;
-    if(items->getItemInfo(ctx,event->item,&info)
-       !=D2RL::Items::Result::Success) {
-        HoverEventInfoFailure.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    std::uint32_t empty{};
-    (void)HoverEventFirstCode.compare_exchange_strong(
-        empty,info.code,std::memory_order_relaxed);
-    HoverEventLastCode.store(info.code,std::memory_order_relaxed);
-    if(info.code==DivineCode)
-        HoverEventDivine.fetch_add(1,std::memory_order_relaxed);
-    else if(info.code==HoverEventMapCode)
-        HoverEventMap.fetch_add(1,std::memory_order_relaxed);
-    else
-        HoverEventOther.fetch_add(1,std::memory_order_relaxed);
-    // PublishedFilterRules is immutable; do not alter the event or send a UI
-    // notification from a frequently invoked SDK callback.
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
-    if(rules) {
-        RuleEngine::Item item{};item.code=CanonicalItemCode(info.code);
-        item.classIdKnown=true;item.classId=info.classId;
-        item.quantityKnown=true;item.quantity=info.quantity>1?
-            static_cast<std::uint32_t>(info.quantity):1U;
-        GroundRuleDecision resolvedRule{};
-        if(ResolveGroundRule(rules.get(),item,resolvedRule))
-            HoverEventRuleMatches.fetch_add(1,std::memory_order_relaxed);
-    }
-}
-
-void ArmHoverEventObserver() noexcept {
-    if(HoverEventListener!=D2RL::SharedEvents::InvalidHandle) {
-        Emit("LOOT_HOVER_EVENT_READY version=1.0.0 already-registered=1 public-SDK=1 modifications=0");
-        return;
-    }
-    if(!Context || !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") {
-        Emit("LOOT_HOVER_EVENT_REFUSED version=1.0.0 reason=unsupported-build-or-context");
-        return;
-    }
-    const D2RL::ItemServiceV1* items{};
-    const D2RL::SharedEventServiceV1* bus{};
-    if(Context->QueryService(D2RL::ServiceId::Item,
-           D2RL::ItemServiceV1Version,&items)!=D2RL::ServiceQueryResult::Success ||
-       !D2RL::HasItemServiceV1Field(items,
-           D2RL::ItemServiceV1RequiredSize) ||
-       !items->getItemInfo ||
-       Context->QueryService(D2RL::ServiceId::SharedEvent,
-           D2RL::SharedEventServiceV1Version,&bus)!=D2RL::ServiceQueryResult::Success ||
-       !bus || !D2RL::HasSharedEventServiceV1Field(bus,
-           D2RL::SharedEventServiceV1RequiredSize) ||
-       !bus->registerItemTooltipListener ||
-       !bus->unregisterItemTooltipListener) {
-        Emit("LOOT_HOVER_EVENT_REFUSED version=1.0.0 reason=public-item-or-shared-event-service-unavailable no-native-fallback=1");
-        return;
-    }
-    const D2RL::SharedEvents::ItemTooltipListener listener{
-        .structSize=D2RL::SharedEvents::ItemTooltipListenerSize,
-        .flags=0,
-        .priority=100,
-        .slot=0,
-        .region=D2RL::SharedEvents::ItemTooltipRegion::ActionFooter,
-        .position=D2RL::SharedEvents::ItemTooltipPosition::Bottom,
-        .anchor=D2RL::SharedEvents::ItemTooltipAnchor::None,
-        .fallback=D2RL::SharedEvents::ItemTooltipFallback::Omit,
-        .callback=&OnHoverEvent,
-        .userData=nullptr,
-    };
-    HoverEventItems.store(items,std::memory_order_release);HoverEventBus=bus;
-    auto handle=D2RL::SharedEvents::InvalidHandle;
-    const auto result=bus->registerItemTooltipListener(Context,&listener,&handle);
-    if(result!=D2RL::SharedEvents::Result::Success ||
-       handle==D2RL::SharedEvents::InvalidHandle) {
-        HoverEventItems.store(nullptr,std::memory_order_release);HoverEventBus=nullptr;
-        Emit("LOOT_HOVER_EVENT_REFUSED version=1.0.0 reason=public-listener-registration-failed no-hook-installed=1");
-        return;
-    }
-    HoverEventListener=handle;
-    Emit("LOOT_HOVER_EVENT_READY version=1.0.0 source=D2RLoader-SharedEvents.ItemTooltipEvent itemInfo=public-ItemService includesGroundHover=unverified readOnly=1 fragmentSubmission=none nativeHooksAdded=0 SoEImageHook=untouched");
-}
-
-void StartHoverEvent(std::string_view phase) noexcept {
-    if(phase!="idle" && phase!="visible" && phase!="hidden" &&
-       phase!="inventory") {
-        Emit("LOOT_HOVER_EVENT_REFUSED usage: hover-event-start idle|visible|hidden|inventory");
-        return;
-    }
-    if(HoverEventListener==D2RL::SharedEvents::InvalidHandle) {
-        Emit("LOOT_HOVER_EVENT_REFUSED use-hover-event-observe-first");
-        return;
-    }
-    HoverEventArmed.store(false,std::memory_order_release);
-    HoverEventTotal.store(0);HoverEventDivine.store(0);HoverEventMap.store(0);
-    HoverEventOther.store(0);HoverEventInfoFailure.store(0);
-    HoverEventBadEvent.store(0);HoverEventRuleMatches.store(0);
-    HoverEventFirstCode.store(0);HoverEventLastCode.store(0);
-    HoverEventFirstThread.store(0);HoverEventPhase.fill(0);
-    std::memcpy(HoverEventPhase.data(),phase.data(),phase.size());
-    HoverEventDeadline.store(GetTickCount64()+HoverEventWindowMs,
-        std::memory_order_release);
-    HoverEventArmed.store(true,std::memory_order_release);
-    char msg[260]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_HOVER_EVENT_ARMED version=1.0.0 phase='%s' durationMs=%llu source=public-ItemTooltipEvent nativeHooksAdded=0",
-        HoverEventPhase.data(),
-        static_cast<unsigned long long>(HoverEventWindowMs));
-    Emit(msg);
-}
-
-void ReportHoverEvent(bool stop) noexcept {
-    if(stop) HoverEventArmed.store(false,std::memory_order_release);
-    char msg[590]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_HOVER_EVENT_PHASE version=1.0.0 phase='%s' registered=%u armed=%u events=%llu divo=%llu mp04=%llu other=%llu getInfoFailures=%llu invalidEvents=%llu ruleHits=%llu firstCode=0x%08X lastCode=0x%08X firstTid=%lu source=public-ItemTooltipEvent ground-vs-inventory-meaning=phase-dependent no-event-does-not-prove-no-hover=1 writes=0",
-        HoverEventPhase.data(),
-        HoverEventListener!=D2RL::SharedEvents::InvalidHandle?1U:0U,
-        HoverEventArmed.load()?1U:0U,
-        static_cast<unsigned long long>(HoverEventTotal.load()),
-        static_cast<unsigned long long>(HoverEventDivine.load()),
-        static_cast<unsigned long long>(HoverEventMap.load()),
-        static_cast<unsigned long long>(HoverEventOther.load()),
-        static_cast<unsigned long long>(HoverEventInfoFailure.load()),
-        static_cast<unsigned long long>(HoverEventBadEvent.load()),
-        static_cast<unsigned long long>(HoverEventRuleMatches.load()),
-        HoverEventFirstCode.load(),HoverEventLastCode.load(),
-        static_cast<unsigned long>(HoverEventFirstThread.load()));
-    Emit(msg);
-    FlushCapture();
-}
-
-void ReleaseHoverEventObserver() noexcept {
-    HoverEventArmed.store(false,std::memory_order_release);
-    if(HoverEventBus && Context &&
-       HoverEventListener!=D2RL::SharedEvents::InvalidHandle)
-        (void)HoverEventBus->unregisterItemTooltipListener(
-            Context,HoverEventListener);
-    HoverEventListener=D2RL::SharedEvents::InvalidHandle;
-    HoverEventBus=nullptr;
-    HoverEventItems.store(nullptr,std::memory_order_release);
-}
-
-// 0.1.99: phase-isolated, read-only tracing of the existing ABI-qualified
-// glyph-B callback. This is a text-renderer candidate, NOT an item-tooltip
-// hook and the RGBA argument has no relation to an item identity. No new
-// detour: we reuse 0x658510; 0x858510 is SoE currency ImageWidget submit.
-constexpr ULONGLONG UiTextCaptureMs=12000;
-constexpr std::size_t UiTextMaxSites=16;
-constexpr std::uint64_t UiTextSampleInterval=128;
-struct UiTextSite {
-    std::uintptr_t returnRva{};
-    std::uint64_t sampled{};
-    DWORD firstTid{};
-    float firstX{};
-    float firstY{};
-    bool colorPointerPresent{};
-};
-std::atomic_bool UiTextArmed{};
-std::atomic<ULONGLONG> UiTextDeadline{};
-std::atomic<std::uint64_t> UiTextCalls{};
-std::atomic<std::uint64_t> UiTextKnownReturnCalls{};
-std::atomic<std::uint64_t> UiTextOtherReturnCalls{};
-std::atomic<std::uint64_t> UiTextContended{};
-std::atomic<std::uint64_t> UiTextOverflow{};
-std::array<char,24> UiTextPhase{};
-std::array<UiTextSite,UiTextMaxSites> UiTextSites{};
-std::size_t UiTextSiteCount{};
-std::mutex UiTextMutex;
-
-void ObserveUiTextGlyphB(std::uintptr_t caller,float x,float y,
-                         const float* color) noexcept {
-    if(!UiTextArmed.load(std::memory_order_relaxed) ||
-       GetTickCount64()>=UiTextDeadline.load(std::memory_order_relaxed))
-        return;
-    const auto hits=UiTextCalls.fetch_add(1,std::memory_order_relaxed)+1;
-    const auto rva=caller>=Base && caller-Base<ImageSize?caller-Base:0;
-    if(rva==CorrectedGlyphBCallRva+5)
-        UiTextKnownReturnCalls.fetch_add(1,std::memory_order_relaxed);
-    else
-        UiTextOtherReturnCalls.fetch_add(1,std::memory_order_relaxed);
-    // One in 128 calls records a caller/position tuple. All glyph-B calls
-    // are counted, but site counts are sampled and must not be treated as
-    // exact frequencies. Never dereference glyph context or the color pointer.
-    if((hits%UiTextSampleInterval)!=0) return;
-    if(!UiTextMutex.try_lock()) {
-        UiTextContended.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    {
-        std::lock_guard<std::mutex> guard(UiTextMutex,std::adopt_lock);
-        if(!UiTextArmed.load(std::memory_order_relaxed)) return;
-        UiTextSite* row{};
-        for(std::size_t i=0;i<UiTextSiteCount;++i)
-            if(UiTextSites[i].returnRva==rva) {row=&UiTextSites[i];break;}
-        if(!row) {
-            if(UiTextSiteCount>=UiTextMaxSites) {
-                UiTextOverflow.fetch_add(1,std::memory_order_relaxed);return;
-            }
-            row=&UiTextSites[UiTextSiteCount++];
-            *row={};row->returnRva=rva;row->firstTid=GetCurrentThreadId();
-            row->firstX=x;row->firstY=y;row->colorPointerPresent=color!=nullptr;
-        }
-        ++row->sampled;
-    }
-}
-
-// 0.1.99: group *caller ancestry* of a sampled subset of already qualified
-// glyph-B draw calls. 0.1.53 established that the direct return site is always
-// D2R+0x908580 in every test; this observer looks at the next stack frames
-// rather than assigning an item identity to an individual glyph. It does not
-// dereference context/color pointers, mutate text or install another detour.
-// Sampling is 1/256 and a bounded synchronous stack walk is deliberately done
-// *outside* the results lock. Counters are relative and are NOT an item ID.
-constexpr ULONGLONG HoverStackDurationMs=12'000;
-constexpr std::uint64_t HoverStackSampling=256;
-constexpr std::size_t HoverStackMaxSites=128;
-constexpr std::size_t HoverStackTraceFrames=20;
-constexpr std::size_t HoverStackKeyDepth=7;
-struct HoverStackSite {
-    std::array<std::uint32_t,HoverStackKeyDepth> d2rFrames{};
-    std::uint64_t samples{};
-    DWORD firstTid{};
-    float firstX{};
-    float firstY{};
-};
-std::atomic_bool HoverStackArmed{};
-std::atomic<ULONGLONG> HoverStackDeadline{};
-std::atomic<std::uint64_t> HoverStackCalls{};
-std::atomic<std::uint64_t> HoverStackSampled{};
-std::atomic<std::uint64_t> HoverStackWrongCaller{};
-std::atomic<std::uint64_t> HoverStackNoD2r{};
-std::atomic<std::uint64_t> HoverStackOverflow{};
-std::atomic<std::uint64_t> HoverStackContended{};
-std::array<char,24> HoverStackPhase{};
-std::array<HoverStackSite,HoverStackMaxSites> HoverStackSites{};
-std::size_t HoverStackSiteCount{};
-std::mutex HoverStackMutex;
-
-__declspec(noinline) void ObserveHoverGlyphStack(std::uintptr_t caller,
-                                                  float x,float y) noexcept {
-    if(!HoverStackArmed.load(std::memory_order_relaxed) ||
-       GetTickCount64()>=HoverStackDeadline.load(std::memory_order_relaxed))
-        return;
-    const auto calls=HoverStackCalls.fetch_add(1,std::memory_order_relaxed)+1;
-    if(caller!=Base+CorrectedGlyphBCallRva+5) {
-        HoverStackWrongCaller.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    if(calls%HoverStackSampling!=0) return;
-    std::array<void*,HoverStackTraceFrames> stack{};
-    const USHORT depth=RtlCaptureStackBackTrace(0,
-        static_cast<ULONG>(stack.size()),stack.data(),nullptr);
-    std::array<std::uint32_t,HoverStackKeyDepth> key{};
-    std::size_t count{};
-    // A native stack frame is not a proof that a glyph belongs to a particular
-    // item. Preserve the ordered D2R ancestry for *differential* inspection.
-    for(USHORT i=0;i<depth && count<key.size();++i) {
-        const auto address=reinterpret_cast<std::uintptr_t>(stack[i]);
-        if(address<Base || address-Base>=ImageSize) continue;
-        const auto rva=address-Base;
-        if(rva>UINT32_MAX) continue;
-        key[count++]=static_cast<std::uint32_t>(rva);
-    }
-    HoverStackSampled.fetch_add(1,std::memory_order_relaxed);
-    if(!count) {HoverStackNoD2r.fetch_add(1,std::memory_order_relaxed);return;}
-    if(!HoverStackMutex.try_lock()) {
-        HoverStackContended.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    std::lock_guard guard(HoverStackMutex,std::adopt_lock);
-    if(!HoverStackArmed.load(std::memory_order_relaxed)) return;
-    for(std::size_t i=0;i<HoverStackSiteCount;++i) {
-        if(HoverStackSites[i].d2rFrames==key) {
-            ++HoverStackSites[i].samples;return;
-        }
-    }
-    if(HoverStackSiteCount>=HoverStackSites.size()) {
-        HoverStackOverflow.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    auto& row=HoverStackSites[HoverStackSiteCount++];
-    row={};row.d2rFrames=key;row.samples=1;
-    row.firstTid=GetCurrentThreadId();row.firstX=x;row.firstY=y;
-}
-
-void ReportHoverStack(bool stop) noexcept {
-    if(stop) HoverStackArmed.store(false,std::memory_order_release);
-    std::lock_guard lock(HoverStackMutex);
-    char msg[850]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_HOVER_STACK_BEGIN version=1.0.0 phase='%s' active=%u calls=%llu sampled=%llu differentDirectCaller=%llu noD2rFrames=%llu rows=%zu overflow=%llu contention=%llu interval=%llu maxFrames=%zu scope=glyph-B-ancestry-only identity=unknown writes=0",
-        HoverStackPhase.data(),HoverStackArmed.load()?1U:0U,
-        static_cast<unsigned long long>(HoverStackCalls.load()),
-        static_cast<unsigned long long>(HoverStackSampled.load()),
-        static_cast<unsigned long long>(HoverStackWrongCaller.load()),
-        static_cast<unsigned long long>(HoverStackNoD2r.load()),
-        HoverStackSiteCount,
-        static_cast<unsigned long long>(HoverStackOverflow.load()),
-        static_cast<unsigned long long>(HoverStackContended.load()),
-        static_cast<unsigned long long>(HoverStackSampling),HoverStackTraceFrames);
-    Emit(msg);
-    std::array<std::size_t,HoverStackMaxSites> order{};
-    for(std::size_t i=0;i<HoverStackSiteCount;++i)order[i]=i;
-    std::sort(order.begin(),order.begin()+HoverStackSiteCount,
-        [](std::size_t a,std::size_t b) {
-            return HoverStackSites[a].samples>HoverStackSites[b].samples;
-        });
-    for(std::size_t k=0;k<HoverStackSiteCount;++k) {
-        const auto& row=HoverStackSites[order[k]];
-        std::snprintf(msg,sizeof(msg),
-            "LOOT_HOVER_STACK_SITE phase='%s' rank=%zu samples=%llu tid=%lu firstX=%.2f firstY=%.2f frames=D2R+0x%X,D2R+0x%X,D2R+0x%X,D2R+0x%X,D2R+0x%X,D2R+0x%X,D2R+0x%X sampleOnly=1 itemCode=unavailable",
-            HoverStackPhase.data(),k+1,
-            static_cast<unsigned long long>(row.samples),
-            static_cast<unsigned long>(row.firstTid),row.firstX,row.firstY,
-            row.d2rFrames[0],row.d2rFrames[1],row.d2rFrames[2],
-            row.d2rFrames[3],row.d2rFrames[4],row.d2rFrames[5],
-            row.d2rFrames[6]);
-        CaptureLine(msg); // inactive legacy sampling; no output
-    }
-    Emit("LOOT_HOVER_STACK_END compare-ancestry-signatures-across-isolated-phases; no-ground-item-identity-yet; no-new-native-detours");
-    FlushCapture();
-}
-
-void StartHoverStack(std::string_view phase) noexcept {
-    if(phase!="idle" && phase!="visible" && phase!="hidden" &&
-       phase!="inventory" && phase!="map") {
-        Emit("LOOT_HOVER_STACK_REFUSED usage: hover-stack-start idle|visible|hidden|inventory|map");return;
-    }
-    if(!CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
-       !OriginalCorrectedGlyphB ||
-       CorrectedGlyphBArmed.load(std::memory_order_acquire) ||
-       UiTextArmed.load(std::memory_order_acquire) ||
-       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Off ||
-       RenameArmed.load(std::memory_order_acquire) ||
-       CodeRenameArmed.load(std::memory_order_acquire) ||
-       BackgroundTintArmed.load(std::memory_order_acquire) ||
-       GroundTextCyanArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_STACK_REFUSED observer-not-installed-or-other-visual-mode-active; no-state-changed");return;
-    }
-    HoverStackArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard lock(HoverStackMutex);
-        HoverStackPhase.fill(0);
-        std::memcpy(HoverStackPhase.data(),phase.data(),phase.size());
-        HoverStackSites.fill({});HoverStackSiteCount=0;
-        HoverStackCalls.store(0);HoverStackSampled.store(0);
-        HoverStackWrongCaller.store(0);HoverStackNoD2r.store(0);
-        HoverStackOverflow.store(0);HoverStackContended.store(0);
-        HoverStackDeadline.store(GetTickCount64()+HoverStackDurationMs,
-            std::memory_order_release);
-        HoverStackArmed.store(true,std::memory_order_release);
-    }
-    char msg[460]{};
-    std::snprintf(msg,sizeof(msg),"LOOT_HOVER_STACK_ARMED version=1.0.0 phase='%s' durationMs=%llu nativeTarget=D2R+0x658510 knownReturn=0x908580 readOnly=1 sampling=1/%llu newSpeculativeHooks=0",
-        HoverStackPhase.data(),static_cast<unsigned long long>(HoverStackDurationMs),
-        static_cast<unsigned long long>(HoverStackSampling));
-    Emit(msg);
-}
-
-// Forward-declare the already-defined glyph-B installer: the 0.1.71
-// hover-stack command calls it before its full definition below.
-void ArmCorrectedGlyphB(bool observeOnly) noexcept;
-
-void ArmHoverStack() noexcept {
-    if(CorrectedGlyphBArmed.load(std::memory_order_acquire) ||
-       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Off ||
-       RenameArmed.load(std::memory_order_acquire) ||
-       CodeRenameArmed.load(std::memory_order_acquire) ||
-       BackgroundTintArmed.load(std::memory_order_acquire) ||
-       GroundTextCyanArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_STACK_REFUSED active-visual-modification; do-not-disarm-user-filter-automatically");return;
-    }
-    ArmCorrectedGlyphB(true); // already ABI-qualified by 0.1.42/0.1.53
-    if(!CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
-       !OriginalCorrectedGlyphB ||
-       CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_STACK_REFUSED glyph-B-hook-not-qualified-or-color-mode-active");return;
-    }
-    Emit("LOOT_HOVER_STACK_READY version=1.0.0 source=existing-ABI-qualified-glyph-B target=D2R+0x658510 directCall=D2R+0x90857B stackSamples=bounded readOnly=1 newSpeculativeHooks=0 imageWidgetRva=0x858510-untouched");
-}
-
-// 0.1.99: opt-in, bounded glyph-coordinate differential. 0.1.58 established
-// that native glyph-B's return/stack signature is identical across UI states.
-// This is a spatial CONTROL experiment, not an item-code/hover renderer claim.
-// No pointer dereference, code write, or extra native detour is performed here.
-// Captured coordinates are native UI coordinates; do not assume physical pixels.
-constexpr ULONGLONG HoverSpatialDurationMs=12'000;
-constexpr std::uint64_t HoverSpatialStride=32;
-constexpr std::size_t HoverSpatialMaxRows=2048;
-constexpr std::size_t HoverSpatialDumpRows=96;
-constexpr float HoverSpatialTileSize=32.0f;
-struct HoverSpatialRow {
-    std::int32_t binX{},binY{};
-    std::uint64_t hits{};
-    float exampleX{},exampleY{};
-    std::uint32_t threadId{};
-};
-std::atomic_bool HoverSpatialArmed{};
-std::atomic<ULONGLONG> HoverSpatialDeadline{};
-std::atomic<std::uint64_t> HoverSpatialCalls{};
-std::atomic<std::uint64_t> HoverSpatialSamples{};
-std::atomic<std::uint64_t> HoverSpatialInvalid{};
-std::atomic<std::uint64_t> HoverSpatialOverflow{};
-std::atomic<std::uint64_t> HoverSpatialContention{};
-std::atomic<std::uint64_t> HoverSpatialWrongCaller{};
-std::array<char,24> HoverSpatialPhase{};
-std::array<HoverSpatialRow,HoverSpatialMaxRows> HoverSpatialRows{};
-std::size_t HoverSpatialRowCount{};
-std::mutex HoverSpatialMutex;
-
-void ObserveHoverSpatial(std::uintptr_t caller,float x,float y) noexcept {
-    if(!HoverSpatialArmed.load(std::memory_order_relaxed) ||
-       GetTickCount64()>=HoverSpatialDeadline.load(std::memory_order_relaxed))return;
-    const auto n=HoverSpatialCalls.fetch_add(1,std::memory_order_relaxed)+1;
-    if(caller!=Base+CorrectedGlyphBCallRva+5) {
-        HoverSpatialWrongCaller.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    if(n%HoverSpatialStride!=0)return;
-    if(!std::isfinite(x) || !std::isfinite(y) ||
-       x < -1'000'000.0f || x > 1'000'000.0f ||
-       y < -1'000'000.0f || y > 1'000'000.0f) {
-        HoverSpatialInvalid.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    const auto bx=static_cast<std::int32_t>(std::floor(x/HoverSpatialTileSize));
-    const auto by=static_cast<std::int32_t>(std::floor(y/HoverSpatialTileSize));
-    HoverSpatialSamples.fetch_add(1,std::memory_order_relaxed);
-    if(!HoverSpatialMutex.try_lock()) {
-        HoverSpatialContention.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    std::lock_guard lock(HoverSpatialMutex,std::adopt_lock);
-    if(!HoverSpatialArmed.load(std::memory_order_relaxed))return;
-    for(std::size_t i=0;i<HoverSpatialRowCount;++i) {
-        auto& row=HoverSpatialRows[i];
-        if(row.binX==bx && row.binY==by) {++row.hits;return;}
-    }
-    if(HoverSpatialRowCount==HoverSpatialRows.size()) {
-        HoverSpatialOverflow.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    auto& row=HoverSpatialRows[HoverSpatialRowCount++];
-    row={bx,by,1,x,y,GetCurrentThreadId()};
-}
-
-void ArmHoverSpatial() noexcept {
-    if(CorrectedGlyphBArmed.load(std::memory_order_acquire) ||
-       RenameArmed.load(std::memory_order_acquire) ||
-       CodeRenameArmed.load(std::memory_order_acquire) ||
-       BackgroundTintArmed.load(std::memory_order_acquire) ||
-       GroundTextCyanArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_SPATIAL_REFUSED visual-modification-active do-not-change-user-filter");return;
-    }
-    ArmCorrectedGlyphB(true);
-    if(!CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
-       !OriginalCorrectedGlyphB ||
-       CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_SPATIAL_REFUSED glyph-B-observer-unavailable no-new-hook");return;
-    }
-    Emit("LOOT_HOVER_SPATIAL_READY version=1.0.0 readOnly=1 knownGlyphB=D2R+0x658510 knownCall=D2R+0x90857B newHooks=0 imageWidget=untouched UI-coordinates-not-physical-pixels identity=unknown");
-}
-
-void StartHoverSpatial(std::string_view phase) noexcept {
-    if(phase!="away-before" && phase!="on" &&
-       phase!="away-after" && phase!="map-on") {
-        Emit("LOOT_HOVER_SPATIAL_REFUSED usage:hover-spatial-start away-before|on|away-after|map-on");return;
-    }
-    if(!CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
-       !OriginalCorrectedGlyphB ||
-       CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_HOVER_SPATIAL_REFUSED install-hover-spatial-observe-first or visual-mode-active");return;
-    }
-    HoverSpatialArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard lock(HoverSpatialMutex);
-        HoverSpatialRows.fill({}); HoverSpatialRowCount=0;
-        HoverSpatialCalls.store(0);HoverSpatialSamples.store(0);
-        HoverSpatialInvalid.store(0);HoverSpatialOverflow.store(0);
-        HoverSpatialContention.store(0);HoverSpatialWrongCaller.store(0);
-        HoverSpatialPhase.fill(0);
-        std::memcpy(HoverSpatialPhase.data(),phase.data(),phase.size());
-        HoverSpatialDeadline.store(GetTickCount64()+HoverSpatialDurationMs,
-                                   std::memory_order_release);
-        HoverSpatialArmed.store(true,std::memory_order_release);
-    }
-    char msg[300]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_HOVER_SPATIAL_ARMED version=1.0.0 phase='%s' durationMs=%llu stride=%llu tile=%.0f nativeUIUnits readOnly=1",
-        HoverSpatialPhase.data(),
-        static_cast<unsigned long long>(HoverSpatialDurationMs),
-        static_cast<unsigned long long>(HoverSpatialStride),
-        static_cast<double>(HoverSpatialTileSize));
-    Emit(msg);
-}
-
-void ReportHoverSpatial(bool stop) noexcept {
-    if(stop)HoverSpatialArmed.store(false,std::memory_order_release);
-    // Snapshot under lock, emit only on the console/control thread.
-    std::array<HoverSpatialRow,HoverSpatialMaxRows> rows{};
-    std::array<char,24> phase{};
-    std::size_t count{};
-    {
-        std::lock_guard lock(HoverSpatialMutex);
-        count=HoverSpatialRowCount;
-        std::copy_n(HoverSpatialRows.begin(),count,rows.begin());
-        phase=HoverSpatialPhase;
-    }
-    std::sort(rows.begin(),rows.begin()+count,
-        [](const HoverSpatialRow& a,const HoverSpatialRow& b){
-            return a.hits>b.hits;
-        });
-    char msg[470]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_HOVER_SPATIAL_BEGIN version=1.0.0 phase='%s' active=%u calls=%llu sampled=%llu differentDirectCaller=%llu invalidCoords=%llu bins=%zu printed=%zu overflow=%llu contended=%llu stride=%llu tile=%.0f coordinateUnits=nativeUI identity=unknown",
-        phase.data(),HoverSpatialArmed.load()?1U:0U,
-        static_cast<unsigned long long>(HoverSpatialCalls.load()),
-        static_cast<unsigned long long>(HoverSpatialSamples.load()),
-        static_cast<unsigned long long>(HoverSpatialWrongCaller.load()),
-        static_cast<unsigned long long>(HoverSpatialInvalid.load()),
-        count,std::min(count,HoverSpatialDumpRows),
-        static_cast<unsigned long long>(HoverSpatialOverflow.load()),
-        static_cast<unsigned long long>(HoverSpatialContention.load()),
-        static_cast<unsigned long long>(HoverSpatialStride),
-        static_cast<double>(HoverSpatialTileSize));
-    Emit(msg);
-    for(std::size_t i=0;i<std::min(count,HoverSpatialDumpRows);++i) {
-        const auto& row=rows[i];
-        std::snprintf(msg,sizeof(msg),
-            "LOOT_HOVER_SPATIAL_BIN phase='%s' rank=%zu binX=%d binY=%d hits=%llu sampleX=%.2f sampleY=%.2f tid=%lu itemCode=unknown",
-            phase.data(),i+1,static_cast<int>(row.binX),
-            static_cast<int>(row.binY),
-            static_cast<unsigned long long>(row.hits),
-            static_cast<double>(row.exampleX),
-            static_cast<double>(row.exampleY),
-            static_cast<unsigned long>(row.threadId));
-        Emit(msg);
-    }
-    Emit("LOOT_HOVER_SPATIAL_END compare-away-before/on/away-after normalized-bin-hits; name-content-and-selection-pointer-NOT-captured; no-item-writes no-hook-adds");
-    FlushCapture();
-}
-
-// Diagnostic second-pass color trial. Trained on one item and one horizontal
-// cluster in this game only. No pointer mutation; the array's lifetime spans
-// exactly the synchronous original glyph-B call. Do not call this on a shared
-// renderer without the item heartbeat, geometry and native-white guards.
-// This is NOT sufficient evidence for general/public release hover RGB.
-bool TryForwardHoverRgbGlyph(void* context, float x, float y,
-    const float* nativeRgba, std::uint64_t& result) noexcept {
-    if (!HoverRgbTrialEnabled ||
-        !HoverRgbTrialReady.load(std::memory_order_acquire) ||
-        !InWorldStyleAttached.load(std::memory_order_relaxed) ||
-        ActiveGeometryMode.load(std::memory_order_relaxed)!=GeometryMode::Rules ||
-        !OriginalCorrectedGlyphB || !nativeRgba ||
-        VerifiedRuleGlyphColor || // existing Alt-visible recolor has precedence
-        !std::isfinite(x) || !std::isfinite(y)) return false;
-    const auto bx=static_cast<std::int32_t>(std::floor(x/HoverDiffTileSize));
-    const auto by=static_cast<std::int32_t>(std::floor(y/HoverDiffTileSize));
-    if (by!=HoverRgbTrialRowY.load(std::memory_order_relaxed) ||
-        bx<HoverRgbTrialMinX.load(std::memory_order_relaxed) ||
-        bx>HoverRgbTrialMaxX.load(std::memory_order_relaxed)) return false;
-    HoverRgbTrialRegionHits.fetch_add(1,std::memory_order_relaxed);
-    const auto expectedId=HoverRgbTrialItemId.load(std::memory_order_relaxed);
-    const auto expectedCode=HoverRgbTrialCode.load(std::memory_order_relaxed);
-    if (!expectedId || !expectedCode ||
-        expectedId!=HoverDiffItemId.load(std::memory_order_acquire) ||
-        expectedCode!=HoverDiffCode.load(std::memory_order_acquire) ||
-        HoverDiffOtherItemCallbacks.load(std::memory_order_relaxed)!=0U) {
-        HoverRgbTrialWrongItem.fetch_add(1,std::memory_order_relaxed);
-        return false;
-    }
-    const auto now=GetTickCount64();
-    const auto last=HoverDiffLastMatchingMs.load(std::memory_order_acquire);
-    if (!last || now<last || now-last>100U) {
-        HoverRgbTrialNotFresh.fetch_add(1,std::memory_order_relaxed);
-        return false;
-    }
-    std::array<float,4> native{};
-    SIZE_T copied{};
-    if (!ReadProcessMemory(GetCurrentProcess(),nativeRgba,native.data(),
-            sizeof(native),&copied) || copied!=sizeof(native)) {
-        HoverRgbTrialRejectedColor.fetch_add(1,std::memory_order_relaxed);
-        return false;
-    }
-    // Captured candidate glyphs were native 0.941,0.941,0.941,1.000.
-    // Reject colored/transparent UI in the same region, fail closed.
-    for (int i=0;i<3;++i) {
-        if (!std::isfinite(native[i]) || std::fabs(native[i]-0.941f)>0.03f) {
-            HoverRgbTrialRejectedColor.fetch_add(1,std::memory_order_relaxed);
-            return false;
-        }
-    }
-    if (!std::isfinite(native[3]) || native[3]<0.99f || native[3]>1.001f) {
-        HoverRgbTrialRejectedColor.fetch_add(1,std::memory_order_relaxed);
-        return false;
-    }
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
-    if (rules) for (const auto& rule:rules->rules) {
-        if (rule.code!=expectedCode || !rule.hasTextColor) continue;
-        for (const auto channel:rule.textColor)
-            if (!std::isfinite(channel) || channel<0.f || channel>1.f) {
-                HoverRgbTrialRejectedColor.fetch_add(1,
-                    std::memory_order_relaxed);
-                return false;
-            }
-        std::array<float,4> rgba=rule.textColor;
-        // Never override engine-provided alpha with a different value in this
-        // proof. The JSON RGB is what we are qualifying, not transparency.
-        rgba[3]=native[3];
-        HoverRgbTrialForwarded.fetch_add(1,std::memory_order_relaxed);
-        result=OriginalCorrectedGlyphB(context,x,y,rgba.data());
-        return true;
-    }
-    HoverRgbTrialNoRule.fetch_add(1,std::memory_order_relaxed);
-    return false;
 }
 
 // Native font override: only inside the SAME synchronous qualified native hidden-hover row
@@ -8459,1519 +4090,6 @@ void ArmCorrectedGlyphB(bool observeOnly=false) noexcept {
         "LOOT_UI_TEXT_OBSERVER_READY version=1.0.0 target=D2R+0x658510 caller=dynamic ABI=RCX,XMM1,XMM2,R9-pointer glyphA=untouched ruleColors=unchanged itemWrites=0":
         "LOOT_GLYPH_B_ARMED version=1.0.0 target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 recordWrites=0 itemWrites=0");
 }
-
-void StartUiTextProbe(std::string_view phase) noexcept {
-    if(phase!="idle" && phase!="hidden" && phase!="inventory" &&
-       phase!="visible") {
-        Emit("LOOT_UI_TEXT_REFUSED usage: ui-text-start idle|hidden|inventory|visible");
-        return;
-    }
-    if(!CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
-       !OriginalCorrectedGlyphB) {
-        Emit("LOOT_UI_TEXT_REFUSED install-ui-text-observe-first");return;
-    }
-    UiTextArmed.store(false,std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> guard(UiTextMutex);
-        UiTextSites.fill({});UiTextSiteCount=0;
-        UiTextCalls.store(0);UiTextKnownReturnCalls.store(0);
-        UiTextOtherReturnCalls.store(0);UiTextContended.store(0);
-        UiTextOverflow.store(0);UiTextPhase.fill(0);
-        std::memcpy(UiTextPhase.data(),phase.data(),phase.size());
-        UiTextDeadline.store(GetTickCount64()+UiTextCaptureMs,
-                             std::memory_order_release);
-        UiTextArmed.store(true,std::memory_order_release);
-    }
-    char msg[320]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_UI_TEXT_ARMED version=1.0.0 phase='%s' durationMs=%llu source=already-qualified-glyph-B no-new-hook=1 glyphA=untouched no-tooltip-writes=1",
-        UiTextPhase.data(),static_cast<unsigned long long>(UiTextCaptureMs));
-    Emit(msg);
-}
-
-void ReportUiTextProbe(bool stop) noexcept {
-    if(stop) UiTextArmed.store(false,std::memory_order_release);
-    std::lock_guard<std::mutex> guard(UiTextMutex);
-    char msg[480]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_UI_TEXT_BEGIN version=1.0.0 phase='%s' installed=%u armed=%u calls=%llu knownReturn=0x908580 knownCalls=%llu otherCalls=%llu siteSamples=%zu sampleInterval=%llu contended=%llu overflow=%llu",
-        UiTextPhase.data(),CorrectedGlyphBInstalled.load()?1U:0U,
-        UiTextArmed.load()?1U:0U,
-        static_cast<unsigned long long>(UiTextCalls.load()),
-        static_cast<unsigned long long>(UiTextKnownReturnCalls.load()),
-        static_cast<unsigned long long>(UiTextOtherReturnCalls.load()),
-        UiTextSiteCount,
-        static_cast<unsigned long long>(UiTextSampleInterval),
-        static_cast<unsigned long long>(UiTextContended.load()),
-        static_cast<unsigned long long>(UiTextOverflow.load()));
-    Emit(msg);
-    for(std::size_t i=0;i<UiTextSiteCount;++i) {
-        const auto& row=UiTextSites[i];
-        std::snprintf(msg,sizeof(msg),
-            "LOOT_UI_TEXT_SITE phase='%s' returnRva=D2R+0x%llX sampled=%llu tid=%lu firstX=%.2f firstY=%.2f colorPointerPresent=%u itemIdentity=unknown",
-            UiTextPhase.data(),
-            static_cast<unsigned long long>(row.returnRva),
-            static_cast<unsigned long long>(row.sampled),
-            static_cast<unsigned long>(row.firstTid),
-            static_cast<double>(row.firstX),static_cast<double>(row.firstY),
-            row.colorPointerPresent?1U:0U);
-        Emit(msg);
-    }
-    Emit("LOOT_UI_TEXT_END scope=glyphB-only; zero-calls-do-not-prove-no-tooltip; no-new-detours; no-item-or-tooltip-writes");
-    FlushCapture();
-}
-
-// Forward declaration: SyncFilterTextColorState is defined before this
-// existing hook installer; MSVC requires the declaration before first use.
-// One automatic bounded report after the first hidden-hover V2 callback;
-// JSON is already active. No console commands, no per-glyph logging.
-void ResetInWorldScopeProbe() noexcept {
-    InWorldScopeGlyphCalls.store(0,std::memory_order_release);
-    InWorldScopePainterCalls.store(0,std::memory_order_release);
-    InWorldScopeRgbaSamples.store(0,std::memory_order_release);
-    InWorldScopeMatchingRule.store(0,std::memory_order_release);
-    InWorldScopeLastId.store(0,std::memory_order_release);
-    InWorldScopeLastCode.store(0,std::memory_order_release);
-    InWorldScopeFirstHoverMs.store(0,std::memory_order_release);
-    InWorldScopeReported.store(false,std::memory_order_release);
-}
-void ReportInWorldScopeProbe() noexcept {
-    std::array<float,4> rgba{};
-    { std::lock_guard lock(InWorldScopeSampleMutex);rgba=InWorldScopeLastRgba; }
-    char line[650]{};
-    const auto code=InWorldScopeLastCode.load(std::memory_order_acquire);
-    const char chars[5]{char(code&0xff),char((code>>8)&0xff),
-        char((code>>16)&0xff),char((code>>24)&0xff),0};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_RENDER_SCOPE_RESULT version=1.0.0 hiddenCallbacks=%llu scopedGlyphB=%llu scopedGroundPainter=%llu sampledNativeRgba=%llu sampledJsonMatches=%llu lastItemId=%u lastCode='%.4s' lastNativeRgba=%.3f,%.3f,%.3f,%.3f interpretation=overlap-is-not-proof-of-glyph-ownership arbitraryColorWrites=0 backgroundWrites=0", 
-        static_cast<unsigned long long>(InWorldStyleCalls.load()),
-        static_cast<unsigned long long>(InWorldScopeGlyphCalls.load()),
-        static_cast<unsigned long long>(InWorldScopePainterCalls.load()),
-        static_cast<unsigned long long>(InWorldScopeRgbaSamples.load()),
-        static_cast<unsigned long long>(InWorldScopeMatchingRule.load()),
-        InWorldScopeLastId.load(),chars,
-        double(rgba[0]),double(rgba[1]),double(rgba[2]),double(rgba[3]));
-    Emit(line);
-}
-
-// 0.1.99: native rendering is not nested in the synchronous V3 label scope.
-// Classify EXISTING renderer calls by proximity to V1 matching-label events.
-// This is temporal correlation only, NOT ownership of a particular glyph.
-HoverDiffPhase ClassifyHoverDifferential(ULONGLONG now) noexcept {
-    return HoverDiffPolicy::Classify(now,
-        HoverDiffBeginMs.load(std::memory_order_acquire),
-        HoverDiffLastMatchingMs.load(std::memory_order_acquire),
-        HoverDiffCompleted.load(std::memory_order_relaxed));
-}
-
-void ObserveHoverDifferentialDraw(HoverDiffRenderer renderer,
-    std::uintptr_t caller, float x, float y,
-    const float* rgba) noexcept {
-    const auto now=GetTickCount64();
-    const auto phase=ClassifyHoverDifferential(now);
-    if (phase==HoverDiffPhase::None) return;
-    auto& state=renderer==HoverDiffRenderer::Glyph ?
-        HoverDiffGlyph : HoverDiffPainter;
-    const auto number=state.observed.fetch_add(1,std::memory_order_relaxed)+1U;
-    if (phase==HoverDiffPhase::Hover)
-        state.hover.fetch_add(1,std::memory_order_relaxed);
-    else if (phase==HoverDiffPhase::Away)
-        state.away.fetch_add(1,std::memory_order_relaxed);
-    else {
-        state.transition.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    // Global counts are exact. 0.1.73 sampled every 16th glyph, which
-    // phase-locked to a periodically repeating UI glyph sequence and saw only
-    // ONE native XY tile even when a whole label was visible. Sample the
-    // UNION of two relatively-prime periods: 17 and 19. This covers glyph
-    // sequences whose per-frame lengths divide either period, without
-    // doubling the native hook count or adding any native hooks. Exactly
-    // 35 of each 323 successive calls pass (19+17-1 intersection).
-    if ((number % 17U)!=1U && (number % 19U)!=1U) return;
-    if (!state.mutex.try_lock()) {
-        state.contention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    const auto phaseIndex=phase==HoverDiffPhase::Hover?0U:1U;
-    const auto inImage=caller>=Base && Base && caller-Base<ImageSize;
-    const auto rva=inImage?caller-Base:0U;
-    const auto thread=GetCurrentThreadId();
-    auto* row=static_cast<HoverDiffSite*>(nullptr);
-    for (std::size_t i=0;i<state.siteCount;++i) {
-        if (state.sites[i].callerRva==rva &&
-            state.sites[i].thread==thread) {
-            row=&state.sites[i];break;
-        }
-    }
-    if (!row && state.siteCount<state.sites.size()) {
-        row=&state.sites[state.siteCount++];
-        *row={};row->callerRva=rva;row->thread=thread;
-        row->firstX=x;row->firstY=y;
-    } else if (!row) state.overflow.fetch_add(1,std::memory_order_relaxed);
-    // Shared renderer B is sampled at both 1/17 and 1/19 phases. Bin only those
-    // samples, with fixed-size storage and no allocations or extra native hooks.
-    if (renderer==HoverDiffRenderer::Glyph) {
-        if (std::isfinite(x) && std::isfinite(y) &&
-            x>=-4096.0f && x<=16384.0f &&
-            y>=-4096.0f && y<=16384.0f) {
-            const auto bx=static_cast<std::int32_t>(std::floor(x/HoverDiffTileSize));
-            const auto by=static_cast<std::int32_t>(std::floor(y/HoverDiffTileSize));
-            HoverDiffTile* tile=nullptr;
-            for (std::size_t i=0;i<state.tileCount;++i) {
-                if (state.tiles[i].binX==bx && state.tiles[i].binY==by) {
-                    tile=&state.tiles[i];break;
-                }
-            }
-            if (!tile && state.tileCount<state.tiles.size()) {
-                tile=&state.tiles[state.tileCount++];
-                *tile={};tile->binX=bx;tile->binY=by;
-                tile->sampleX=x;tile->sampleY=y;
-            }
-            if (tile) {
-                if (phaseIndex==0) {
-                    ++tile->hover;
-                    if (!tile->hoverRgbaValid && rgba) {
-                        std::array<float,4> input{};
-                        SIZE_T copied{};
-                        if (ReadProcessMemory(GetCurrentProcess(),rgba,
-                                input.data(),sizeof(input),&copied) &&
-                            copied==sizeof(input)) {
-                            bool valid=true;
-                            for (const auto channel:input)
-                                valid=valid && std::isfinite(channel) &&
-                                    channel>=0.0f && channel<=1.001f;
-                            if (valid) {
-                                tile->hoverRgba=input;
-                                tile->hoverRgbaValid=true;
-                            }
-                        }
-                    }
-                } else ++tile->away;
-            } else ++state.tileOverflow;
-        } else ++state.invalidTileCoords;
-    }
-    if (row) {
-        if (phaseIndex==0)++row->hoverSamples;
-        else ++row->awaySamples;
-        if (!row->rgbaValid && rgba && renderer==HoverDiffRenderer::Glyph) {
-            std::array<float,4> input{};
-            SIZE_T count{};
-            if (ReadProcessMemory(GetCurrentProcess(),rgba,input.data(),
-                    sizeof(input),&count) && count==sizeof(input)) {
-                bool valid=true;
-                for (const float f:input)
-                    valid=valid && std::isfinite(f) && f>=0.0f && f<=1.001f;
-                if (valid) {row->firstRgba=input;row->rgbaValid=true;}
-            }
-        }
-    }
-    // At most two stack witnesses for each renderer/state, never a per-frame
-    // stack scan. RtlCaptureStackBackTrace is read-only and has fixed storage.
-    if (state.stackCounts[phaseIndex]<HoverDiffMaxStacks) {
-        auto& stack=state.stacks[phaseIndex][state.stackCounts[phaseIndex]++];
-        stack.thread=thread;stack.callerRva=rva;
-        void* frames[HoverDiffStackFrames]{};
-        const auto captured=CaptureStackBackTrace(1,
-            static_cast<DWORD>(HoverDiffStackFrames), frames,nullptr);
-        stack.count=static_cast<std::uint16_t>(captured);
-        for (std::uint16_t i=0;i<stack.count;++i)
-            stack.frames[i]=reinterpret_cast<std::uintptr_t>(frames[i]);
-    }
-    state.mutex.unlock();
-}
-
-void ResetHoverDifferentialProbe() noexcept {
-    // Called at GameJoined while old writer may be finishing its report.
-    HoverRgbTrialReady.store(false,std::memory_order_release);
-    HoverRgbTrialItemId.store(0,std::memory_order_relaxed);
-    HoverRgbTrialCode.store(0,std::memory_order_relaxed);
-    HoverRgbTrialRegionHits.store(0,std::memory_order_relaxed);
-    HoverRgbTrialForwarded.store(0,std::memory_order_relaxed);
-    HoverRgbTrialRejectedColor.store(0,std::memory_order_relaxed);
-    HoverRgbTrialNoRule.store(0,std::memory_order_relaxed);
-    HoverRgbTrialNotFresh.store(0,std::memory_order_relaxed);
-    HoverRgbTrialWrongItem.store(0,std::memory_order_relaxed);
-    HoverDiffEpoch.fetch_add(1,std::memory_order_acq_rel);
-    HoverDiffCompleted.store(false,std::memory_order_release);
-    HoverDiffBeginMs.store(0,std::memory_order_release);
-    HoverDiffLastMatchingMs.store(0,std::memory_order_release);
-    HoverDiffMatches.store(0,std::memory_order_release);
-    HoverDiffOtherItemCallbacks.store(0,std::memory_order_release);
-    HoverDiffCode.store(0,std::memory_order_release);
-    HoverDiffItemId.store(0,std::memory_order_release);
-    for (auto* state : {&HoverDiffGlyph,&HoverDiffPainter}) {
-        std::lock_guard lock(state->mutex);
-        state->sites.fill({});state->siteCount=0;
-        state->tiles.fill({});state->tileCount=0;
-        state->invalidTileCoords=0;state->tileOverflow=0;
-        state->stacks={};state->stackCounts={};
-        state->observed.store(0,std::memory_order_relaxed);
-        state->hover.store(0,std::memory_order_relaxed);
-        state->away.store(0,std::memory_order_relaxed);
-        state->transition.store(0,std::memory_order_relaxed);
-        state->contention.store(0,std::memory_order_relaxed);
-        state->overflow.store(0,std::memory_order_relaxed);
-    }
-}
-
-void ReportHoverDifferentialRenderer(const char* name,
-    HoverDiffRendererState& state,
-    std::uint64_t hoverMs,std::uint64_t awayMs) noexcept {
-    char line[600]{};
-    const auto h=state.hover.load(std::memory_order_acquire);
-    const auto a=state.away.load(std::memory_order_acquire);
-    std::lock_guard lock(state.mutex);
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_DIFF_RENDERER version=1.0.0 renderer=%s hoverCalls=%llu awayCalls=%llu transitionCalls=%llu hoverMs=%llu awayMs=%llu hoverCallsPerSecond=%.2f awayCallsPerSecond=%.2f sitesSampled=%zu sampleMode=dual-17-19 sampleFraction=35/323 contention=%llu overflow=%llu",
-        name,static_cast<unsigned long long>(h),
-        static_cast<unsigned long long>(a),
-        static_cast<unsigned long long>(state.transition.load()),
-        static_cast<unsigned long long>(hoverMs),
-        static_cast<unsigned long long>(awayMs),
-        hoverMs?1000.0*double(h)/double(hoverMs):0.0,
-        awayMs?1000.0*double(a)/double(awayMs):0.0,
-        state.siteCount,
-        static_cast<unsigned long long>(state.contention.load()),
-        static_cast<unsigned long long>(state.overflow.load()));
-    Emit(line);
-    for (std::size_t i=0;i<state.siteCount;++i) {
-        const auto& row=state.sites[i];
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_DIFF_SITE renderer=%s returnRva=D2R+0x%llX tid=%lu hoverSampled=%llu awaySampled=%llu hoverEstimatedHz=%.2f awayEstimatedHz=%.2f sampleMode=dual-17-19 sampleFraction=35/323 firstXY=%.2f,%.2f rgbaPresent=%u nativeRgba=%.3f,%.3f,%.3f,%.3f ownership=unproven",
-            name,static_cast<unsigned long long>(row.callerRva),
-            static_cast<unsigned long>(row.thread),
-            static_cast<unsigned long long>(row.hoverSamples),
-            static_cast<unsigned long long>(row.awaySamples),
-            hoverMs?1000.0*(323.0/35.0)*double(row.hoverSamples)/double(hoverMs):0.0,
-            awayMs?1000.0*(323.0/35.0)*double(row.awaySamples)/double(awayMs):0.0,
-            double(row.firstX),double(row.firstY),row.rgbaValid?1U:0U,
-            double(row.firstRgba[0]),double(row.firstRgba[1]),
-            double(row.firstRgba[2]),double(row.firstRgba[3]));
-        Emit(line);
-    }
-    if (&state==&HoverDiffGlyph) {
-        // Sort local value copies while holding lock; never re-order live bins.
-        auto sorted=state.tiles;
-        const auto n=state.tileCount;
-        std::sort(sorted.begin(),sorted.begin()+n,
-            [hoverMs,awayMs](const HoverDiffTile& l,
-                             const HoverDiffTile& r) noexcept {
-                // Signed, duration-normalized excess, from the dual-period glyph sample.
-                const auto excess=[hoverMs,awayMs](const HoverDiffTile& v) noexcept {
-                    return std::int64_t(v.hover)*std::int64_t(awayMs)-
-                           std::int64_t(v.away)*std::int64_t(hoverMs);
-                };
-                return excess(l)>excess(r);
-            });
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_DIFF_SPATIAL version=1.0.0 renderer=glyph-B tileSize=32 nativeUIUnits totalTiles=%zu printed=%zu invalidCoords=%llu overflow=%llu sampleMode=dual-17-19 sampleFraction=35/323 topBy=duration-normalized-hover-minus-away readOnly=1 itemOwnership=unproven",
-            n,std::min(n,HoverDiffPrintTiles),
-            static_cast<unsigned long long>(state.invalidTileCoords),
-            static_cast<unsigned long long>(state.tileOverflow));
-        Emit(line);
-        for(std::size_t i=0;i<std::min(n,HoverDiffPrintTiles);++i) {
-            const auto& t=sorted[i];
-            const double h=hoverMs?(323000.0/35.0)*double(t.hover)/double(hoverMs):0.0;
-            const double a=awayMs?(323000.0/35.0)*double(t.away)/double(awayMs):0.0;
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_DIFF_TILE rank=%zu binX=%d binY=%d sampleXY=%.1f,%.1f hoverSampled=%u awaySampled=%u hoverEstimatedHz=%.2f awayEstimatedHz=%.2f excessHz=%.2f itemOwnership=unproven",
-                i+1,int(t.binX),int(t.binY),double(t.sampleX),double(t.sampleY),
-                unsigned(t.hover),unsigned(t.away),h,a,h-a);
-            Emit(line);
-        }
-    }
-    if (&state==&HoverDiffGlyph) {
-        // The 0.1.71 capture has a horizontal set of 5 hover-only bins at
-        // native y~726. Find such runs from data rather than hardcoding their
-        // coordinates; 32-unit bins may have gaps between letters/words.
-        std::array<HoverDiffTile,HoverDiffMaxTiles> exclusive{};
-        std::size_t count{};
-        for (std::size_t i=0;i<state.tileCount;++i) {
-            const auto& t=state.tiles[i];
-            if (t.hover>=20U && t.away==0U)exclusive[count++]=t;
-        }
-        std::sort(exclusive.begin(),exclusive.begin()+count,
-            [](const auto& a,const auto& b) noexcept {
-                return a.binY==b.binY ? a.binX<b.binX : a.binY<b.binY;
-            });
-        std::size_t bestBegin{},bestEnd{},bestHits{};
-        for (std::size_t i=0;i<count;) {
-            std::size_t j=i+1;
-            std::size_t hits=exclusive[i].hover;
-            while (j<count && exclusive[j].binY==exclusive[j-1].binY &&
-                exclusive[j].binX-exclusive[j-1].binX<=3 &&
-                exclusive[j].binX-exclusive[i].binX<=16) {
-                hits+=exclusive[j].hover;
-                ++j;
-            }
-            if (j-i>=3U && hits>bestHits) {
-                bestBegin=i;bestEnd=j;bestHits=hits;
-            }
-            i=j;
-        }
-        const auto span=bestEnd-bestBegin;
-        const bool clean=span>=3U && span<=16U &&
-            HoverDiffOtherItemCallbacks.load(std::memory_order_acquire)==0U &&
-            state.tileOverflow==0U && state.invalidTileCoords==0U &&
-            HoverDiffItemId.load(std::memory_order_relaxed)!=0U;
-        bool nativeWhite=clean;
-        for (std::size_t i=bestBegin;i<bestEnd && nativeWhite;++i) {
-            const auto& t=exclusive[i];
-            if (!t.hoverRgbaValid || t.hoverRgba[3]<0.99f ||
-                t.hoverRgba[3]>1.001f) {nativeWhite=false;break;}
-            for (int c=0;c<3;++c) {
-                if (!std::isfinite(t.hoverRgba[c]) ||
-                    std::fabs(t.hoverRgba[c]-0.941f)>0.03f) {
-                    nativeWhite=false;break;
-                }
-            }
-        }
-        const bool styleTrialAvailable =
-            InWorldMode.load(std::memory_order_acquire) == InWorldBackend::SoEInterop &&
-            InWorldStyleAttached.load(std::memory_order_acquire);
-        if (!HoverRgbTrialEnabled) {
-            Emit("LOOT_HOVER_RGB_POC_DISABLED version=1.0.0 reason=partial-name-tile-coverage full-native-label-ownership-unproven glyphColorWrites=0 backgroundWrites=0");
-        } else if (nativeWhite && styleTrialAvailable &&
-            HoverDiffCompleted.load(std::memory_order_acquire)) {
-            HoverRgbTrialMinX.store(exclusive[bestBegin].binX,
-                std::memory_order_relaxed);
-            HoverRgbTrialMaxX.store(exclusive[bestEnd-1].binX,
-                std::memory_order_relaxed);
-            HoverRgbTrialRowY.store(exclusive[bestBegin].binY,
-                std::memory_order_relaxed);
-            HoverRgbTrialItemId.store(HoverDiffItemId.load(
-                std::memory_order_acquire),std::memory_order_relaxed);
-            HoverRgbTrialCode.store(HoverDiffCode.load(
-                std::memory_order_acquire),std::memory_order_relaxed);
-            HoverRgbTrialReady.store(true,std::memory_order_release);
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_RGB_POC_READY version=1.0.0 unitId=%u rowY=%d minX=%d maxX=%d nativeWhite=1 noNewHooks=1 trial=second-hover-only alpha=preserved bg=unmodified not-production-ownership-proof=1",
-                HoverRgbTrialItemId.load(),
-                exclusive[bestBegin].binY,exclusive[bestBegin].binX,
-                exclusive[bestEnd-1].binX);
-            Emit(line);
-        } else {
-            // The 0.1.73 capture produced one hover-exclusive tile (469
-            // samples). Do not silently report this as an ambiguous color or
-            // insufficient JSON rule: the training gate specifically requires
-            // >=3 horizontal bins. Expose the failed gate and remaining
-            // witnesses, keeping RGB writes disabled until ALL gates pass.
-            const char* reason = !styleTrialAvailable ? "soe-style-interop-unavailable-standalone-readonly" :
-                span<3U ? "insufficient-horizontal-coverage" :
-                HoverDiffOtherItemCallbacks.load(std::memory_order_acquire)!=0U ? "other-matched-item-observed" :
-                state.tileOverflow!=0U ? "tile-overflow" :
-                state.invalidTileCoords!=0U ? "invalid-glyph-coordinates" :
-                HoverDiffItemId.load(std::memory_order_relaxed)==0U ? "missing-runtime-item-id" :
-                !nativeWhite ? "native-color-not-qualified" :
-                "incomplete-training";
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_RGB_POC_REFUSED version=1.0.0 reason=%s exclusiveTiles=%zu qualifiedClusterTiles=%zu sampledHits=%zu candidateFirstTile=%d,%d nativeWhite=%u otherItemCallbacks=%llu overflow=%llu invalidCoords=%llu no-glyph-writes=1",
-                reason,count,span,bestHits,
-                count?exclusive[0].binX:0,count?exclusive[0].binY:0,
-                nativeWhite?1U:0U,
-                static_cast<unsigned long long>(HoverDiffOtherItemCallbacks.load(std::memory_order_acquire)),
-                static_cast<unsigned long long>(state.tileOverflow),
-                static_cast<unsigned long long>(state.invalidTileCoords));
-            Emit(line);
-        }
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_DIFF_EXCLUSIVE_CLUSTER version=1.0.0 candidate=%u qualifyingTiles=%zu rowY=%d firstX=%d lastX=%d sampledHits=%zu firstItemId=%u otherItemCallbacks=%llu rule=hover>=20,away=0,gap<=2-tiles,span<=16-tiles identity=temporal-spatial-candidate-only no-writes=1",
-            span>=3U?1U:0U,count,
-            span?int(exclusive[bestBegin].binY):0,
-            span?int(exclusive[bestBegin].binX):0,
-            span?int(exclusive[bestEnd-1].binX):0,bestHits,
-            HoverDiffItemId.load(std::memory_order_acquire),
-            static_cast<unsigned long long>(HoverDiffOtherItemCallbacks.load(
-                std::memory_order_acquire)));
-        Emit(line);
-        for (std::size_t i=bestBegin;i<bestEnd;++i) {
-            if (!span)break;
-            const auto& t=exclusive[i];
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_DIFF_EXCLUSIVE_TILE version=1.0.0 binX=%d binY=%d x=%.1f y=%.1f hoverSamples=%u awaySamples=%u colorValid=%u nativeRgba=%.3f,%.3f,%.3f,%.3f provenance=unproven",
-                int(t.binX),int(t.binY),double(t.sampleX),double(t.sampleY),
-                unsigned(t.hover),unsigned(t.away),
-                t.hoverRgbaValid?1U:0U,
-                double(t.hoverRgba[0]),double(t.hoverRgba[1]),
-                double(t.hoverRgba[2]),double(t.hoverRgba[3]));
-            Emit(line);
-        }
-    }
-    for (std::size_t phase=0;phase<2;++phase) {
-        for (std::size_t i=0;i<state.stackCounts[phase];++i) {
-            const auto& stack=state.stacks[phase][i];
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_DIFF_STACK renderer=%s phase=%s ordinal=%zu tid=%lu callerRva=D2R+0x%llX depth=%u",
-                name,phase==0?"hover":"away",i,
-                static_cast<unsigned long>(stack.thread),
-                static_cast<unsigned long long>(stack.callerRva),
-                unsigned(stack.count));
-            Emit(line);
-            for (std::uint16_t f=0;f<stack.count;++f) {
-                const auto addr=stack.frames[f];
-                const bool inImage=Base && addr>=Base && addr-Base<ImageSize;
-                std::snprintf(line,sizeof(line),
-                    "LOOT_HOVER_DIFF_STACK_FRAME renderer=%s phase=%s ordinal=%zu index=%u module=%s returnRva=0x%llX",
-                    name,phase==0?"hover":"away",i,unsigned(f),
-                    inImage?"D2R":"other",static_cast<unsigned long long>(
-                        inImage?addr-Base:0));
-                Emit(line);
-            }
-        }
-    }
-}
-
-void ReportHoverNativeConsumerCode() noexcept {
-    // Static bytes, not an assertion that the relay's caller draws text.
-    // Capture the qualified merge-relay CALL and immediate continuation.
-    constexpr std::uintptr_t begin=0xC0F67-0x30;
-    constexpr std::size_t bytes=0x250;
-    std::array<std::uint8_t,bytes> snapshot{};
-    if (!ReadSafe(begin,snapshot.data(),snapshot.size())) {
-        Emit("LOOT_HOVER_DIFF_NATIVE_WINDOW unavailable reason=read-failed");
-        return;
-    }
-    Emit("LOOT_HOVER_DIFF_NATIVE_WINDOW_BEGIN build=93847 startRva=D2R+0xC0F37 callRva=D2R+0xC0F67 returnRva=D2R+0xC0F6C bytes=592 type=static-code-not-runtime-text-consumer-proof");
-    char line[270]{};
-    for (std::size_t at=0;at<bytes;at+=16) {
-        char hex[16*3+1]{};
-        for (std::size_t i=0;i<16;++i)
-            std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",
-                unsigned(snapshot[at+i]));
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_DIFF_NATIVE_BYTES rva=D2R+0x%llX hex='%s'",
-            static_cast<unsigned long long>(begin+at),hex);
-        Emit(line);
-    }
-    Emit("LOOT_HOVER_DIFF_NATIVE_WINDOW_END next=inspect-text-consumer-0xBFA00-and-later-continuation no-hooks-added=1");
-    // Live bytes establish the actual target of the post-relay call seen in
-    // this log, not its semantics. Do not hook/call this candidate until ABI
-    // and its callers are established in the user's exact runtime image.
-    constexpr std::uintptr_t consumerRva=0xBFA00;
-    constexpr std::size_t consumerBytes=0x100;
-    std::array<std::uint8_t,consumerBytes> consumer{};
-    if (!ReadSafe(consumerRva,consumer.data(),consumer.size())) {
-        Emit("LOOT_HOVER_DIFF_CONSUMER_WINDOW unavailable target=D2R+0xBFA00 reason=read-failed no-hooks-added=1");
-        return;
-    }
-    Emit("LOOT_HOVER_DIFF_CONSUMER_WINDOW_BEGIN version=1.0.0 target=D2R+0xBFA00 sourceCall=D2R+0xC0F7C role=unverified entryBytes=256 no-hooks-added=1");
-    for (std::size_t at=0;at<consumerBytes;at+=16) {
-        char hex[16*3+1]{};
-        for (std::size_t i=0;i<16;++i)
-            std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",
-                unsigned(consumer[at+i]));
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_DIFF_CONSUMER_BYTES rva=D2R+0x%llX hex='%s'",
-            static_cast<unsigned long long>(consumerRva+at),hex);
-        Emit(line);
-    }
-    Emit("LOOT_HOVER_DIFF_CONSUMER_WINDOW_END label-render-ownership=not-proven");
-}
-
-void ReportHoverRendererCandidateCode() noexcept {
-    if (!Context || !Base) return;
-    // Static code windows only. 0x908580 is the observed shared glyph-B return,
-    // while 0x843C00 receives the post-relay label record at D2R+0xC1097.
-    // Neither address is promoted to an item-specific rendering hook here.
-    for (const auto& entry : std::array<std::pair<std::uintptr_t,
-            std::size_t>,2>{{{0x908480,512},{0x843C00,256}}}) {
-        const auto rva=entry.first;
-        const auto size=entry.second;
-        std::array<std::uint8_t,512> bytes{};
-        if (!ReadSafe(rva,bytes.data(),size)) {
-            char msg[200]{};
-            std::snprintf(msg,sizeof(msg),
-                "LOOT_HOVER_DIFF_TRACE_UNAVAILABLE startRva=D2R+0x%llX read-failed no-hooks=1",
-                static_cast<unsigned long long>(rva));
-            Emit(msg);
-            continue;
-        }
-        char msg[400]{};
-        std::snprintf(msg,sizeof(msg),
-            "LOOT_HOVER_DIFF_TRACE_BEGIN version=1.0.0 startRva=D2R+0x%llX length=%zu type=static-code no-hook-install=1",
-            static_cast<unsigned long long>(rva),size);
-        Emit(msg);
-        for (std::size_t at=0;at<size;at+=16) {
-            char hex[52]{};
-            for (std::size_t i=0;i<16;++i)
-                std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",
-                    unsigned(bytes[at+i]));
-            std::snprintf(msg,sizeof(msg),
-                "LOOT_HOVER_DIFF_TRACE_BYTES rva=D2R+0x%llX hex='%s'",
-                static_cast<unsigned long long>(rva+at),hex);
-            Emit(msg);
-        }
-    }
-    Emit("LOOT_HOVER_DIFF_TRACE_END semantics=unverified disassemble-before-native-hooks=1");
-}
-
-// 0.1.99: recovery and native hidden-hover callsite provenance.
-// Previous builds installed an inline detour at D2R+0x657B90, which is shared
-// by many native rectangles. The user observed missing inventory and ground
-// tooltip fills even when JSON recoloring refused to activate. There is NO
-// hook, function-pointer call, instruction patch, geometry write or RGB write
-// for either the shared function or its hidden-hover caller in this build.
-// This probes only code bytes from the running build for OFFLINE disassembly.
-void ReportNativeHoverBackgroundCallsite() noexcept {
-    constexpr std::uintptr_t callRva=0x8DA9F3;
-    constexpr std::uintptr_t returnRva=0x8DA9F8;
-    constexpr std::uintptr_t observedTargetRva=0x657B90;
-    const char* version=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!version || std::string_view(version)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_CALLSITE_UNAVAILABLE version=1.0.0 reason=build-or-image-unavailable unsafeRectHook=absent no-fallback=1");
-        return;
-    }
-    std::array<std::uint8_t,5> call{};
-    std::array<std::uint8_t,19> entry{};
-    if (!ReadSafe(callRva,call.data(),call.size()) ||
-        !ReadSafe(observedTargetRva,entry.data(),entry.size())) {
-        Emit("LOOT_HOVER_BG_CALLSITE_UNAVAILABLE version=1.0.0 reason=read-failed unsafeRectHook=absent no-fallback=1");
-        return;
-    }
-    std::int32_t relative{};
-    std::memcpy(&relative,call.data()+1,sizeof(relative));
-    const auto target=static_cast<std::int64_t>(returnRva)+relative;
-    constexpr std::array<std::uint8_t,19> knownEntry{{
-        0x44,0x3B,0xC1,0x0F,0x8C,0xD3,0x02,0x00,0x00,
-        0x4C,0x8B,0xDC,0x55,0x41,0x54,0x41,0x55,0x41,0x57
-    }};
-    const bool callValid=call[0]==0xE8 &&
-        target==static_cast<std::int64_t>(observedTargetRva);
-    const bool entryValid=entry==knownEntry;
-    // Unwind metadata describes the containing function, not the renderer's
-    // arguments or whether a particular draw belongs to a given item.
-    DWORD64 imageBase{};
-    const auto* owner=RtlLookupFunctionEntry(
-        static_cast<DWORD64>(Base+callRva),&imageBase,nullptr);
-    char line[320]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_CALLSITE_READY version=1.0.0 callRva=D2R+0x%llX returnRva=D2R+0x%llX decodedTarget=D2R+0x%llX callMatchesHistorical=%u sharedEntryMatchesHistorical=%u unwind=%u ownerBeginRva=D2R+0x%llX ownerEndRva=D2R+0x%llX unsafeRectHook=absent codeWrites=0 tintWrites=0",
-        static_cast<unsigned long long>(callRva),
-        static_cast<unsigned long long>(returnRva),
-        static_cast<unsigned long long>(target>=0?target:0),
-        callValid?1U:0U,entryValid?1U:0U,owner?1U:0U,
-        owner?static_cast<unsigned long long>(owner->BeginAddress):0ULL,
-        owner?static_cast<unsigned long long>(owner->EndAddress):0ULL);
-    Emit(line);
-    // A failed fingerprint must not trigger a fallback hook, recoloring or
-    // assumptions about what the native call actually does.
-    if (!callValid || !entryValid) {
-        Emit("LOOT_HOVER_BG_CALLSITE_STOP version=1.0.0 reason=call-or-target-fingerprint-mismatch unsafeRectHook=absent no-fallback=1");
-        return;
-    }
-    // Deliberately bounded near CALL: 256 bytes before and 256 after, for
-    // the actual argument preparation and post-call continuation. The start
-    // is not assumed to be an x86 instruction boundary.
-    constexpr std::uintptr_t start=callRva-0x100;
-    constexpr std::size_t length=0x200;
-    std::array<std::uint8_t,length> snapshot{};
-    if (!ReadSafe(start,snapshot.data(),snapshot.size())) {
-        Emit("LOOT_HOVER_BG_CALLSITE_UNAVAILABLE version=1.0.0 reason=call-neighborhood-read-failed unsafeRectHook=absent");
-        return;
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_CALLSITE_WINDOW_BEGIN version=1.0.0 startRva=D2R+0x%llX length=%zu callRva=D2R+0x%llX type=static-code-not-instruction-aligned unsafeRectHook=absent",
-        static_cast<unsigned long long>(start),length,
-        static_cast<unsigned long long>(callRva));
-    Emit(line);
-    for (std::size_t at=0;at<length;at+=16) {
-        char hex[16*3+1]{};
-        for (std::size_t i=0;i<16;++i)
-            std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",
-                unsigned(snapshot[at+i]));
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BG_CALLSITE_BYTES rva=D2R+0x%llX hex='%s'",
-            static_cast<unsigned long long>(start+at),hex);
-        Emit(line);
-    }
-    Emit("LOOT_HOVER_BG_CALLSITE_WINDOW_END version=1.0.0 next=offline-disassemble-owner-and-ABI-before-any-new-hooks nativeBackground=unchanged overlay=0");
-}
-
-// 0.1.99: validate the origin of the color pointer passed by the two
-// native hidden-hover rectangle CALLs. The 0.1.78 code window reveals
-//     lea r14,[rsi+0x168]
-//     mov [rsp+0x20],r14 ; call 0x657B90 (first rectangle)
-//     mov [rsp+0x20],r14 ; call 0x657B90 (second rectangle)
-// The +0x168 address is a member within an UNVERIFIED native object, not a
-// proved universal "background-color offset". Only static byte reads here;
-// no hooks, pointer dereferences, gameplay item edits, or color substitution.
-void ReportNativeHoverBackgroundR14Provenance() noexcept {
-    constexpr std::uintptr_t firstCall=0x8DA9B4;
-    constexpr std::uintptr_t secondCall=0x8DA9F3;
-    constexpr std::uintptr_t targetRva=0x657B90;
-    constexpr std::uintptr_t leaRva=0x8DA91B;
-    constexpr std::uintptr_t firstArgumentRva=0x8DA952;
-    constexpr std::uintptr_t secondArgumentRva=0x8DA9EE;
-    constexpr std::array<std::uint8_t,7> expectedLea{{
-        0x4C,0x8D,0xB6,0x68,0x01,0x00,0x00
-    }};
-    constexpr std::array<std::uint8_t,5> expectedArg{{
-        0x4C,0x89,0x74,0x24,0x20
-    }};
-    constexpr std::uintptr_t ownerWindowBegin=0x8DA5F3;
-    constexpr std::size_t ownerWindowLength=0x300;
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_R14_UNAVAILABLE version=1.0.0 reason=build-or-image-unavailable no-hooks=1 no-writes=1");
-        return;
-    }
-    constexpr std::array<std::uint8_t,19> expectedSharedEntry{{
-        0x44,0x3B,0xC1,0x0F,0x8C,0xD3,0x02,0x00,0x00,
-        0x4C,0x8B,0xDC,0x55,0x41,0x54,0x41,0x55,0x41,0x57
-    }};
-    std::array<std::uint8_t,19> sharedEntry{};
-    std::array<std::uint8_t,7> lea{};
-    std::array<std::uint8_t,5> firstArg{},secondArg{},call1{},call2{};
-    if (!ReadSafe(targetRva,sharedEntry.data(),sharedEntry.size()) ||
-        !ReadSafe(leaRva,lea.data(),lea.size()) ||
-        !ReadSafe(firstArgumentRva,firstArg.data(),firstArg.size()) ||
-        !ReadSafe(secondArgumentRva,secondArg.data(),secondArg.size()) ||
-        !ReadSafe(firstCall,call1.data(),call1.size()) ||
-        !ReadSafe(secondCall,call2.data(),call2.size())) {
-        Emit("LOOT_HOVER_BG_R14_UNAVAILABLE version=1.0.0 reason=static-code-read-failed no-hooks=1 no-writes=1");
-        return;
-    }
-    const auto callTarget=[](const std::array<std::uint8_t,5>& bytes,
-                            std::uintptr_t returnRva) noexcept -> std::int64_t {
-        std::int32_t displacement{};
-        std::memcpy(&displacement,bytes.data()+1,sizeof(displacement));
-        return static_cast<std::int64_t>(returnRva)+displacement;
-    };
-    const bool firstCallOk=call1[0]==0xE8 &&
-        callTarget(call1,firstCall+5)==static_cast<std::int64_t>(targetRva);
-    const bool secondCallOk=call2[0]==0xE8 &&
-        callTarget(call2,secondCall+5)==static_cast<std::int64_t>(targetRva);
-    const bool sharedEntryOk=sharedEntry==expectedSharedEntry;
-    const bool leaOk=lea==expectedLea;
-    const bool firstArgOk=firstArg==expectedArg;
-    const bool secondArgOk=secondArg==expectedArg;
-    char line[520]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_R14_READY version=1.0.0 verified=%u sharedEntryMatches=%u leaRva=D2R+0x%llX leaMatches=%u firstArgRva=D2R+0x%llX firstArgMatches=%u firstCallRva=D2R+0x%llX firstCallMatches=%u secondArgRva=D2R+0x%llX secondArgMatches=%u secondCallRva=D2R+0x%llX secondCallMatches=%u target=D2R+0x657B90 no-hooks=1 no-writes=1",
-        (sharedEntryOk&&leaOk&&firstArgOk&&secondArgOk&&firstCallOk&&secondCallOk)?1U:0U,
-        sharedEntryOk?1U:0U,
-        static_cast<unsigned long long>(leaRva),leaOk?1U:0U,
-        static_cast<unsigned long long>(firstArgumentRva),firstArgOk?1U:0U,
-        static_cast<unsigned long long>(firstCall),firstCallOk?1U:0U,
-        static_cast<unsigned long long>(secondArgumentRva),secondArgOk?1U:0U,
-        static_cast<unsigned long long>(secondCall),secondCallOk?1U:0U);
-    Emit(line);
-    if (!sharedEntryOk || !leaOk || !firstArgOk || !secondArgOk || !firstCallOk || !secondCallOk) {
-        Emit("LOOT_HOVER_BG_R14_STOP version=1.0.0 reason=instruction-or-call-fingerprint-mismatch no-assumed-field-layout=1 no-fallback-hooks=1");
-        return;
-    }
-    Emit("LOOT_HOVER_BG_R14_SOURCE version=1.0.0 expression=address-of-[RSI+0x168] encoded=LEA-R14-[RSI+0x168] stackFifthArg=R14 sharedByBothCalls=1 nativeObjectType=unverified fieldMeaning=unverified runtimePointerRead=0 nativeColorWrites=0");
-    // Previous 0.1.78 snapshot starts at 0x8DA8F3, which is *after* the
-    // instruction assigning RSI may occur. Capture the preceding 0x300 bytes
-    // to identify its owner/provenance. This start isn't assumed to be an
-    // instruction boundary, nor is the whole window claimed to be one fn.
-    std::array<std::uint8_t,ownerWindowLength> snapshot{};
-    if (!ReadSafe(ownerWindowBegin,snapshot.data(),snapshot.size())) {
-        Emit("LOOT_HOVER_BG_OWNER_UNAVAILABLE version=1.0.0 reason=prior-code-window-read-failed no-hooks=1");
-        return;
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_WINDOW_BEGIN version=1.0.0 startRva=D2R+0x%llX length=%zu endsBefore=D2R+0x8DA8F3 instructionAligned=unverified readOnly=1",
-        static_cast<unsigned long long>(ownerWindowBegin),ownerWindowLength);
-    Emit(line);
-    for (std::size_t at=0;at<snapshot.size();at+=16) {
-        char hex[16*3+1]{};
-        for (std::size_t i=0;i<16;++i)
-            std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",unsigned(snapshot[at+i]));
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BG_OWNER_BYTES rva=D2R+0x%llX hex='%s'",
-            static_cast<unsigned long long>(ownerWindowBegin+at),hex);
-        Emit(line);
-    }
-    Emit("LOOT_HOVER_BG_OWNER_WINDOW_END version=1.0.0 next=identify-RSI-object-origin-and-verified-native-color-field no-hook-or-writes=1");
-}
-
-// 0.1.99: locate DIRECT CALL references to the already verified native UI
-// paint-object renderer. This reads ONLY D2R's executable .text section,
-// once on the diagnostic reporter thread, after the first matched item hover.
-// A five-byte E8 displacement can appear in data or inside an instruction;
-// the results are candidates for offline disassembly, NOT hook-qualified RVAs.
-// No call interception, renderer invocation or object-memory dereference.
-void ReportNativeHoverBackgroundOwnerCallers() noexcept {
-    constexpr std::uintptr_t renderEntryRva=0x8DA7E0;
-    constexpr std::uintptr_t ownerMovRva=0x8DA802;
-    constexpr std::uintptr_t colorLeaRva=0x8DA91B;
-    constexpr std::array<std::uint8_t,16> expectedEntry{{
-        0x40,0x56,0x48,0x81,0xEC,0x10,0x01,0x00,
-        0x00,0x48,0x8B,0x05,0xD8,0x0A,0x0F,0x02
-    }};
-    constexpr std::array<std::uint8_t,3> expectedMov{{0x48,0x8B,0xF1}};
-    constexpr std::array<std::uint8_t,7> expectedLea{{
-        0x4C,0x8D,0xB6,0x68,0x01,0x00,0x00
-    }};
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_UNAVAILABLE version=1.0.0 reason=build-or-image no-hooks=1");
-        return;
-    }
-    std::array<std::uint8_t,16> entry{};
-    std::array<std::uint8_t,3> mov{};
-    std::array<std::uint8_t,7> lea{};
-    if (!ReadSafe(renderEntryRva,entry.data(),entry.size()) ||
-        !ReadSafe(ownerMovRva,mov.data(),mov.size()) ||
-        !ReadSafe(colorLeaRva,lea.data(),lea.size()) ||
-        entry!=expectedEntry || mov!=expectedMov || lea!=expectedLea) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_REFUSED version=1.0.0 reason=owner-entry-or-RCX-to-RSI-or-color-LEA-fingerprint-mismatch no-hooks=1");
-        return;
-    }
-    char line[512]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_PROVENANCE version=1.0.0 entry=D2R+0x%llX input=RCX movRsiRva=D2R+0x%llX expression=address-of-[RCX+0x168] rgbaPassedBy=R14-to-fifth-stack-arg role=renderer-object-not-gameplay-unit nativeColorWrites=0",
-        static_cast<unsigned long long>(renderEntryRva),
-        static_cast<unsigned long long>(ownerMovRva));
-    Emit(line);
-    IMAGE_DOS_HEADER dos{};
-    if (!ReadSafe(0,&dos,sizeof(dos)) ||
-        dos.e_magic!=IMAGE_DOS_SIGNATURE ||
-        dos.e_lfanew<=0 || dos.e_lfanew>0x1000) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_UNAVAILABLE version=1.0.0 reason=dos-header no-hooks=1");
-        return;
-    }
-    IMAGE_NT_HEADERS64 nt{};
-    if (!ReadSafe(static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
-        nt.Signature!=IMAGE_NT_SIGNATURE ||
-        nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
-        nt.FileHeader.NumberOfSections==0 ||
-        nt.FileHeader.NumberOfSections>96) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_UNAVAILABLE version=1.0.0 reason=nt-header-or-section-count no-hooks=1");
-        return;
-    }
-    const auto sectionRva=static_cast<std::uintptr_t>(dos.e_lfanew)+
-        sizeof(DWORD)+sizeof(IMAGE_FILE_HEADER)+
-        nt.FileHeader.SizeOfOptionalHeader;
-    std::array<IMAGE_SECTION_HEADER,96> sections{};
-    const auto sectionBytes=std::size_t(nt.FileHeader.NumberOfSections)*
-        sizeof(IMAGE_SECTION_HEADER);
-    if (!ReadSafe(sectionRva,sections.data(),sectionBytes)) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_UNAVAILABLE version=1.0.0 reason=section-header-read no-hooks=1");
-        return;
-    }
-    std::uintptr_t begin{};
-    std::size_t textSize{};
-    for (std::size_t i=0;i<nt.FileHeader.NumberOfSections;++i) {
-        const auto& part=sections[i];
-        if (std::memcmp(part.Name,".text",5)!=0 ||
-            !(part.Characteristics&IMAGE_SCN_MEM_EXECUTE)) continue;
-        begin=part.VirtualAddress;
-        textSize=part.Misc.VirtualSize;
-        break;
-    }
-    if (!begin || begin>=ImageSize || !textSize ||
-        textSize>0x8000000U || textSize>ImageSize-begin) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_UNAVAILABLE version=1.0.0 reason=text-section-bounds no-hooks=1");
-        return;
-    }
-    constexpr std::size_t chunkSize=0x4000;
-    std::vector<std::uint8_t> bytes{};
-    try {bytes.resize(chunkSize+4);} catch (const std::exception&) {
-        Emit("LOOT_HOVER_BG_OWNER_XREF_UNAVAILABLE version=1.0.0 reason=scan-buffer-allocation no-hooks=1");
-        return;
-    }
-    std::uint64_t candidates{};
-    std::uint64_t failedChunks{};
-    std::uint64_t windows{};
-    constexpr std::size_t maxPrinted=24;
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_XREF_BEGIN version=1.0.0 scan=.text begin=D2R+0x%llX bytes=%zu target=D2R+0x%llX E8-rel32-candidates-only=1 readOnly=1 newHooks=0",
-        static_cast<unsigned long long>(begin),textSize,
-        static_cast<unsigned long long>(renderEntryRva));
-    Emit(line);
-    const auto end=begin+textSize;
-    for (auto at=begin;at<end;at+=chunkSize) {
-        const auto actual=std::min<std::size_t>(chunkSize+4,end-at);
-        if (actual<5 || !ReadSafe(at,bytes.data(),actual)) {
-            ++failedChunks;
-            continue;
-        }
-        const auto scanCount=std::min<std::size_t>(chunkSize,actual-4);
-        for (std::size_t i=0;i<scanCount;++i) {
-            if (bytes[i]!=0xE8) continue;
-            std::int32_t displacement{};
-            std::memcpy(&displacement,bytes.data()+i+1,sizeof(displacement));
-            const auto destination=static_cast<std::int64_t>(at+i+5)+
-                static_cast<std::int64_t>(displacement);
-            if (destination!=static_cast<std::int64_t>(renderEntryRva))continue;
-            ++candidates;
-            if (windows>=maxPrinted)continue;
-            const auto callRva=at+i;
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BG_OWNER_XREF_SITE version=1.0.0 callRva=D2R+0x%llX returnRva=D2R+0x%llX target=D2R+0x%llX interpretation=potential-direct-call-not-instruction-aligned",
-                static_cast<unsigned long long>(callRva),
-                static_cast<unsigned long long>(callRva+5),
-                static_cast<unsigned long long>(renderEntryRva));
-            Emit(line);
-            constexpr std::size_t pre=32;
-            constexpr std::size_t post=64;
-            if (callRva>=pre && callRva+post<=ImageSize) {
-                std::array<std::uint8_t,pre+post> nearBytes{};
-                if (ReadSafe(callRva-pre,nearBytes.data(),nearBytes.size())) {
-                    for (std::size_t j=0;j<nearBytes.size();j+=16) {
-                        char hex[49]{};
-                        for (std::size_t k=0;k<16;++k)
-                            std::snprintf(hex+k*3,sizeof(hex)-k*3,
-                                "%02X ",unsigned(nearBytes[j+k]));
-                        std::snprintf(line,sizeof(line),
-                            "LOOT_HOVER_BG_OWNER_XREF_BYTES callRva=D2R+0x%llX rva=D2R+0x%llX hex='%s'",
-                            static_cast<unsigned long long>(callRva),
-                            static_cast<unsigned long long>(callRva-pre+j),hex);
-                        Emit(line);
-                    }
-                }
-            }
-            ++windows;
-        }
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_XREF_END version=1.0.0 candidateCalls=%llu printed=%llu failedChunks=%llu scanLimitedToD2RText=1 nativeHooksAdded=0 nativeItemWrites=0 backgroundWrites=0 no-overlay=1 next=offline-disassemble-caller-and-ownership",
-        static_cast<unsigned long long>(candidates),
-        static_cast<unsigned long long>(windows),
-        static_cast<unsigned long long>(failedChunks));
-    Emit(line);
-}
-
-// 0.1.99: follow the single direct call candidate found by the 0.1.80
-// build-93847 .text scan. The callsite's preceding two instructions show a
-// stride-based address calculation: RCX = *(RDI) + *(RSP+0x40) * 0x2E8.
-// This is code provenance only. The owner of RDI, the index, the lifetime of
-// the selected render object, and whether it represents an item remain
-// unverified. No native hook, runtime object read, or color write is added.
-void ReportNativeHoverBackgroundOwnerArray() noexcept {
-    constexpr std::uintptr_t callRva=0x880BC7;
-    constexpr std::uintptr_t targetRva=0x8DA7E0;
-    constexpr std::uintptr_t addressRva=0x880BBB;
-    constexpr std::array<std::uint8_t,17> expected{{
-        0x48,0x69,0x4C,0x24,0x40,0xE8,0x02,0x00,0x00,
-        0x48,0x03,0x0F,
-        0xE8,0x14,0x9C,0x05,0x00
-    }};
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_OWNER_ARRAY_UNAVAILABLE version=1.0.0 reason=build-or-image no-hooks=1 no-writes=1");
-        return;
-    }
-    std::array<std::uint8_t,expected.size()> instructions{};
-    if (!ReadSafe(addressRva,instructions.data(),instructions.size())) {
-        Emit("LOOT_HOVER_BG_OWNER_ARRAY_UNAVAILABLE version=1.0.0 reason=static-code-read-failed no-hooks=1 no-writes=1");
-        return;
-    }
-    std::int32_t displacement{};
-    std::memcpy(&displacement,instructions.data()+13,sizeof(displacement));
-    const auto decoded=static_cast<std::int64_t>(callRva+5)+displacement;
-    const bool qualified=instructions==expected &&
-        decoded==static_cast<std::int64_t>(targetRva);
-    char line[360]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_ARRAY_READY version=1.0.0 verified=%u caller=D2R+0x%llX target=D2R+0x%llX index=stack-[RSP+0x40] stride=0x2E8 base=pointer-[RDI] colorOffsetWithinRenderObject=0x168 nativeObjectLifetime=unverified itemIdentity=unverified no-hooks=1 no-writes=1",
-        qualified?1U:0U,static_cast<unsigned long long>(callRva),
-        static_cast<unsigned long long>(decoded>=0?decoded:0));
-    Emit(line);
-    if (!qualified) {
-        Emit("LOOT_HOVER_BG_OWNER_ARRAY_STOP version=1.0.0 reason=caller-instruction-fingerprint-mismatch no-fallback-hook=1");
-        return;
-    }
-    // Unwind lookup is diagnostic only; some build-93847 native functions
-    // legitimately have no returned unwind entry. Never require it to read
-    // code or infer function type from the lack of an entry.
-    DWORD64 imageBase{};
-    const auto* owner=RtlLookupFunctionEntry(
-        static_cast<DWORD64>(Base+callRva),&imageBase,nullptr);
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_ARRAY_UNWIND version=1.0.0 available=%u beginRva=D2R+0x%llX endRva=D2R+0x%llX objectType=unverified",
-        owner?1U:0U,
-        owner?static_cast<unsigned long long>(owner->BeginAddress):0ULL,
-        owner?static_cast<unsigned long long>(owner->EndAddress):0ULL);
-    Emit(line);
-    // Read the continuous native call-owner neighborhood once on the
-    // reporter thread, not the UI render thread. The arbitrary start RVA
-    // is NOT claimed to be an instruction or function boundary.
-    constexpr std::uintptr_t begin=0x880160;
-    constexpr std::size_t count=0xB00;
-    std::array<std::uint8_t,count> bytes{};
-    if (!ReadSafe(begin,bytes.data(),bytes.size())) {
-        Emit("LOOT_HOVER_BG_OWNER_ARRAY_UNAVAILABLE version=1.0.0 reason=owner-code-window-read-failed no-hooks=1");
-        return;
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_OWNER_ARRAY_WINDOW_BEGIN version=1.0.0 startRva=D2R+0x%llX bytes=%zu callRva=D2R+0x%llX instructionAligned=unverified nativeObjectReads=0 no-hooks=1",
-        static_cast<unsigned long long>(begin),count,
-        static_cast<unsigned long long>(callRva));
-    Emit(line);
-    for (std::size_t at=0;at<bytes.size();at+=32) {
-        char hex[32*3+1]{};
-        for (std::size_t i=0;i<32;++i)
-            std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",
-                unsigned(bytes[at+i]));
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BG_OWNER_ARRAY_BYTES rva=D2R+0x%llX hex='%s'",
-            static_cast<unsigned long long>(begin+at),hex);
-        Emit(line);
-    }
-    Emit("LOOT_HOVER_BG_OWNER_ARRAY_WINDOW_END version=1.0.0 target=trace-RDI-source-and-native-record-construction before-any-owner-scoped-hook=1 global-rect-detour=0 backgroundWrites=0 overlay=0");
-}
-
-
-// 0.1.99: static provenance of the element APPEND/construction path.
-// Build-93847 code establishes that the draw loop uses the container at
-// parent+0x168 and that a separate function at 0x880160 also uses an
-// RCX+0x168 container and calls the element constructor at 0x8D9EB0.
-// These could be the same native UI array, but this is NOT item ownership
-// proof. Inspect the direct callers before hooking or writing the array.
-// Read executable bytes only on the automatic reporter thread. Never detour
-// the shared native fill-rectangle function or its owner draw loop.
-void ReportNativeHoverBackgroundProducerCallers() noexcept {
-    constexpr std::uintptr_t insertEntry=0x880160;
-    constexpr std::uintptr_t constructEntry=0x8D9EB0;
-    constexpr std::uintptr_t appendArrayLea=0x88017A;
-    constexpr std::uintptr_t renderArrayLea=0x880B4A;
-    constexpr std::uintptr_t renderArrayCount=0x880B14;
-    constexpr std::uintptr_t constructorCall=0x8801DD;
-    constexpr std::array<std::uint8_t,7> appendFingerprint{{0x4C,0x8D,0xB1,0x68,0x01,0x00,0x00}};
-    constexpr std::array<std::uint8_t,7> renderFingerprint{{0x49,0x8D,0xBF,0x68,0x01,0x00,0x00}};
-    constexpr std::array<std::uint8_t,7> countFingerprint{{0x4D,0x39,0xB7,0x70,0x01,0x00,0x00}};
-    constexpr std::array<std::uint8_t,5> constructFingerprint{{0xE8,0xCE,0x9C,0x05,0x00}};
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=build-or-image no-hooks=1");
-        return;
-    }
-    std::array<std::uint8_t,7> append{},render{},count{};
-    std::array<std::uint8_t,5> construct{};
-    if (!ReadSafe(appendArrayLea,append.data(),append.size()) ||
-        !ReadSafe(renderArrayLea,render.data(),render.size()) ||
-        !ReadSafe(renderArrayCount,count.data(),count.size()) ||
-        !ReadSafe(constructorCall,construct.data(),construct.size()) ||
-        append!=appendFingerprint || render!=renderFingerprint ||
-        count!=countFingerprint || construct!=constructFingerprint) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=shared-native-container-fingerprint no-hooks=1 no-writes=1");
-        return;
-    }
-    char line[460]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_PRODUCER_READY version=1.0.0 insertEntry=D2R+0x%llX appendContainer=RCX+0x168 drawContainer=R15+0x168 drawCount=R15+0x170 elementStride=0x2E8 rgbaOffset=element+0x168 constructor=D2R+0x%llX sameContainerAtRuntime=unverified itemIdentity=unverified noHooks=1 noWrites=1",
-        static_cast<unsigned long long>(insertEntry),
-        static_cast<unsigned long long>(constructEntry));
-    Emit(line);
-    // Reuse already qualified PE section metadata from the preceding owner
-    // scanner; the scan here is independent and bounded to executable .text.
-    IMAGE_DOS_HEADER dos{};
-    if (!ReadSafe(0,&dos,sizeof(dos)) || dos.e_magic!=IMAGE_DOS_SIGNATURE ||
-        dos.e_lfanew<0 || static_cast<std::size_t>(dos.e_lfanew)>0x100000) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=pe-dos-header no-hooks=1");
-        return;
-    }
-    IMAGE_NT_HEADERS64 nt{};
-    if (!ReadSafe(static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
-        nt.Signature!=IMAGE_NT_SIGNATURE ||
-        nt.FileHeader.NumberOfSections==0 ||
-        nt.FileHeader.NumberOfSections>96) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=pe-nt-header no-hooks=1");
-        return;
-    }
-    const auto sectionRva=static_cast<std::uintptr_t>(dos.e_lfanew)+
-        sizeof(DWORD)+sizeof(IMAGE_FILE_HEADER)+
-        nt.FileHeader.SizeOfOptionalHeader;
-    std::array<IMAGE_SECTION_HEADER,96> sections{};
-    if (!ReadSafe(sectionRva,sections.data(),
-        static_cast<std::size_t>(nt.FileHeader.NumberOfSections)*sizeof(IMAGE_SECTION_HEADER))) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=section-header no-hooks=1");
-        return;
-    }
-    std::uintptr_t begin{};
-    std::size_t textSize{};
-    for (std::size_t i=0;i<nt.FileHeader.NumberOfSections;++i) {
-        const auto& sec=sections[i];
-        if (std::memcmp(sec.Name,".text",5)!=0 ||
-            !(sec.Characteristics&IMAGE_SCN_MEM_EXECUTE))continue;
-        begin=sec.VirtualAddress;
-        textSize=sec.Misc.VirtualSize;
-        break;
-    }
-    if (!begin || begin>=ImageSize || !textSize ||
-        textSize>0x8000000U || textSize>ImageSize-begin) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=executable-text-bounds no-hooks=1");
-        return;
-    }
-    constexpr std::size_t chunkSize=0x4000;
-    std::vector<std::uint8_t> bytes{};
-    try {bytes.resize(chunkSize+4);} catch (const std::exception&) {
-        Emit("LOOT_HOVER_BG_PRODUCER_UNAVAILABLE version=1.0.0 reason=scan-buffer-allocation no-hooks=1");
-        return;
-    }
-    // 0.1.99: also locate direct callers of the two functions that feed
-    // native element data into the append/constructor chain. These are
-    // candidate CALL byte sequences, not item ownership or render scope.
-    constexpr std::uintptr_t labelAppendOwner=0x843CA0;
-    constexpr std::uintptr_t otherConstructorOwner=0x87FF00;
-    constexpr std::array<std::uint8_t,7> labelOwnerExpected{{
-        0x48,0x89,0x6C,0x24,0x20,0x57,0x41}};
-    constexpr std::array<std::uint8_t,7> otherOwnerExpected{{
-        0x40,0x55,0x53,0x56,0x57,0x41,0x56}};
-    std::array<std::uint8_t,7> labelOwnerBytes{},otherOwnerBytes{};
-    const bool sourceOwnersVerified=ReadSafe(labelAppendOwner,
-            labelOwnerBytes.data(),labelOwnerBytes.size()) &&
-        ReadSafe(otherConstructorOwner,otherOwnerBytes.data(),
-            otherOwnerBytes.size()) &&
-        labelOwnerBytes==labelOwnerExpected &&
-        otherOwnerBytes==otherOwnerExpected;
-    Emit(sourceOwnersVerified?
-        "LOOT_HOVER_BG_COLOR_SOURCE_READY version=1.0.0 labelOwner=D2R+0x843CA0 otherOwner=D2R+0x87FF00 staticEntryFingerprints=verified itemIdentity=unverified no-hooks=1 no-writes=1":
-        "LOOT_HOVER_BG_COLOR_SOURCE_UNAVAILABLE version=1.0.0 reason=source-owner-entry-fingerprint no-source-scan=1 no-hooks=1 no-writes=1");
-    constexpr std::array<std::uintptr_t,4> targets{{
-        insertEntry,constructEntry,labelAppendOwner,otherConstructorOwner}};
-    // One counter for EACH entry in targets. 0.1.85 mistakenly allocated
-    // only two slots while subsequently indexing [2] and [3], which corrupted
-    // adjacent stack storage and produced nonsensical caller totals.
-    std::array<std::uint64_t,targets.size()> candidates{};
-    std::array<std::uint64_t,targets.size()> printed{};
-    static_assert(candidates.size()==targets.size());
-    static_assert(printed.size()==targets.size());
-    std::uint64_t failedChunks{};
-    constexpr std::uint64_t maxPerTarget=16;
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_PRODUCER_XREF_BEGIN version=1.0.0 textBegin=D2R+0x%llX textBytes=%zu producer=D2R+0x%llX constructor=D2R+0x%llX E8-rel32-candidates-only=1 indirectCallersNotCovered=1 noHooks=1",
-        static_cast<unsigned long long>(begin),textSize,
-        static_cast<unsigned long long>(insertEntry),
-        static_cast<unsigned long long>(constructEntry));
-    Emit(line);
-    const auto end=begin+textSize;
-    for (auto at=begin;at<end;at+=chunkSize) {
-        const auto actual=std::min<std::size_t>(chunkSize+4,end-at);
-        if (actual<5 || !ReadSafe(at,bytes.data(),actual)) {
-            ++failedChunks;
-            continue;
-        }
-        const auto scanCount=std::min<std::size_t>(chunkSize,actual-4);
-        for (std::size_t i=0;i<scanCount;++i) {
-            if (bytes[i]!=0xE8)continue;
-            std::int32_t displacement{};
-            std::memcpy(&displacement,bytes.data()+i+1,sizeof(displacement));
-            const auto destination=static_cast<std::int64_t>(at+i+5)+
-                static_cast<std::int64_t>(displacement);
-            for (std::size_t k=0;k<targets.size();++k) {
-                if (k>=2 && !sourceOwnersVerified)continue;
-                if (destination!=static_cast<std::int64_t>(targets[k]))continue;
-                ++candidates[k];
-                if (printed[k]>=maxPerTarget)break;
-                const auto callRva=at+i;
-                const char* kind=k==0?"append":k==1?"construct":
-                    k==2?"label-owner":"other-constructor-owner";
-                std::snprintf(line,sizeof(line),
-                    "%s version=1.0.0 kind=%s callRva=D2R+0x%llX returnRva=D2R+0x%llX target=D2R+0x%llX aligned=unverified itemIdentity=unverified no-hooks=1",
-                    k<2?"LOOT_HOVER_BG_PRODUCER_XREF_SITE":
-                        "LOOT_HOVER_BG_COLOR_SOURCE_SITE",
-                    kind,
-                    static_cast<unsigned long long>(callRva),
-                    static_cast<unsigned long long>(callRva+5),
-                    static_cast<unsigned long long>(targets[k]));
-                Emit(line);
-                constexpr std::size_t pre=48,post=48;
-                if (callRva>=pre && callRva+post<=ImageSize) {
-                    std::array<std::uint8_t,pre+post> contextBytes{};
-                    if (ReadSafe(callRva-pre,contextBytes.data(),contextBytes.size())) {
-                        for (std::size_t j=0;j<contextBytes.size();j+=16) {
-                            char hex[49]{};
-                            for (std::size_t b=0;b<16;++b)
-                                std::snprintf(hex+b*3,sizeof(hex)-b*3,
-                                    "%02X ",unsigned(contextBytes[j+b]));
-                            std::snprintf(line,sizeof(line),
-                                "%s kind=%s callRva=D2R+0x%llX rva=D2R+0x%llX hex='%s'",
-                                k<2?"LOOT_HOVER_BG_PRODUCER_XREF_BYTES":
-                                    "LOOT_HOVER_BG_COLOR_SOURCE_BYTES",
-                                kind,
-                                static_cast<unsigned long long>(callRva),
-                                static_cast<unsigned long long>(callRva-pre+j),hex);
-                            Emit(line);
-                        }
-                    }
-                }
-                ++printed[k];
-                break;
-            }
-        }
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_PRODUCER_XREF_END version=1.0.0 appendCandidates=%llu appendPrinted=%llu constructorCandidates=%llu constructorPrinted=%llu failedChunks=%llu directCallsOnly=1 ownerItemAssociation=unverified backgroundWrites=0 noOverlay=1 globalRectDetour=0",
-        static_cast<unsigned long long>(candidates[0]),
-        static_cast<unsigned long long>(printed[0]),
-        static_cast<unsigned long long>(candidates[1]),
-        static_cast<unsigned long long>(printed[1]),
-        static_cast<unsigned long long>(failedChunks));
-    Emit(line);
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_COLOR_SOURCE_XREF_END version=1.0.0 sourceOwnersVerified=%u labelOwnerCandidates=%llu labelOwnerPrinted=%llu otherOwnerCandidates=%llu otherOwnerPrinted=%llu failedChunks=%llu candidateE8Only=1 indirectCallersNotCovered=1 itemOwnership=unverified no-hooks=1 no-writes=1",
-        sourceOwnersVerified?1U:0U,
-        static_cast<unsigned long long>(candidates[2]),
-        static_cast<unsigned long long>(printed[2]),
-        static_cast<unsigned long long>(candidates[3]),
-        static_cast<unsigned long long>(printed[3]),
-        static_cast<unsigned long long>(failedChunks));
-    Emit(line);
-}
-
-
-// 0.1.99: the corrected direct E8-rel32 scan found no direct CALL to
-// 0x843CA0. Search plausible address-taken references before inferring that
-// the label-element owner is unreachable. A code-pointer/LEA hit is only a
-// static reference; it does NOT prove a hovered item's renderer ownership.
-// This reporter does no new detours, memory writes or process-wide data scan.
-void ReportNativeHoverBackgroundIndirectOwnerRefs() noexcept {
-    constexpr std::uintptr_t ownerRva=0x843CA0;
-    constexpr std::array<std::uint8_t,7> expected{{
-        0x48,0x89,0x6C,0x24,0x20,0x57,0x41}};
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    std::array<std::uint8_t,7> entry{};
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize ||
-        !ReadSafe(ownerRva,entry.data(),entry.size()) || entry!=expected) {
-        Emit("LOOT_HOVER_BG_INDIRECT_OWNER_UNAVAILABLE version=1.0.0 reason=build-image-or-owner-fingerprint no-hooks=1 no-writes=1");
-        return;
-    }
-    IMAGE_DOS_HEADER dos{};
-    if (!ReadSafe(0,&dos,sizeof(dos)) || dos.e_magic!=IMAGE_DOS_SIGNATURE ||
-        dos.e_lfanew<0 || static_cast<std::size_t>(dos.e_lfanew)>0x100000) {
-        Emit("LOOT_HOVER_BG_INDIRECT_OWNER_UNAVAILABLE version=1.0.0 reason=pe-dos-header no-hooks=1 no-writes=1");
-        return;
-    }
-    IMAGE_NT_HEADERS64 nt{};
-    if (!ReadSafe(static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
-        nt.Signature!=IMAGE_NT_SIGNATURE ||
-        nt.FileHeader.NumberOfSections==0 || nt.FileHeader.NumberOfSections>96) {
-        Emit("LOOT_HOVER_BG_INDIRECT_OWNER_UNAVAILABLE version=1.0.0 reason=pe-nt-header no-hooks=1 no-writes=1");
-        return;
-    }
-    const auto sectionsRva=static_cast<std::uintptr_t>(dos.e_lfanew)+
-        sizeof(DWORD)+sizeof(IMAGE_FILE_HEADER)+nt.FileHeader.SizeOfOptionalHeader;
-    std::array<IMAGE_SECTION_HEADER,96> sections{};
-    if (!ReadSafe(sectionsRva,sections.data(),
-        static_cast<std::size_t>(nt.FileHeader.NumberOfSections)*sizeof(IMAGE_SECTION_HEADER))) {
-        Emit("LOOT_HOVER_BG_INDIRECT_OWNER_UNAVAILABLE version=1.0.0 reason=section-headers no-hooks=1 no-writes=1");
-        return;
-    }
-    constexpr std::size_t chunk=0x4000;
-    constexpr std::uint64_t maxReported=24;
-    std::vector<std::uint8_t> bytes{};
-    try {bytes.resize(chunk+7);} catch (const std::exception&) {
-        Emit("LOOT_HOVER_BG_INDIRECT_OWNER_UNAVAILABLE version=1.0.0 reason=scan-buffer-allocation no-hooks=1 no-writes=1");
-        return;
-    }
-    std::uint64_t pointerMatches{},leaMatches{},failedChunks{};
-    std::uint64_t printed{};
-    const auto absoluteOwner=static_cast<std::uint64_t>(Base)+ownerRva;
-    char line[360]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_INDIRECT_OWNER_BEGIN version=1.0.0 owner=D2R+0x%llX directCallsPrevious=0 candidateScopes=.rdata,.data,.text patterns=absolute-VA64-or-REX-LEA-RIP scanReadOnly=1 no-hooks=1 no-writes=1",
-        static_cast<unsigned long long>(ownerRva));
-    Emit(line);
-    for (std::size_t si=0;si<nt.FileHeader.NumberOfSections;++si) {
-        const auto& sec=sections[si];
-        const bool textSec=std::memcmp(sec.Name,".text",5)==0 &&
-            (sec.Characteristics&IMAGE_SCN_MEM_EXECUTE)!=0;
-        const bool pointerSec=std::memcmp(sec.Name,".rdata",6)==0 ||
-            std::memcmp(sec.Name,".data",5)==0;
-        if (!textSec && !pointerSec)continue;
-        const auto start=static_cast<std::uintptr_t>(sec.VirtualAddress);
-        const auto length=static_cast<std::size_t>(sec.Misc.VirtualSize);
-        if (!start || start>=ImageSize || length<8 ||
-            length>0x4000000U || length>ImageSize-start) {
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BG_INDIRECT_OWNER_SECTION_SKIPPED version=1.0.0 section=%s reason=invalid-or-oversized-section no-hooks=1",
-                textSec?".text":std::memcmp(sec.Name,".rdata",6)==0?".rdata":".data");
-            Emit(line);
-            continue;
-        }
-        const char* sectionName=textSec?".text":
-            std::memcmp(sec.Name,".rdata",6)==0?".rdata":".data";
-        const auto end=start+length;
-        for (auto at=start;at<end;at+=chunk) {
-            const auto actual=std::min<std::size_t>(chunk+7,end-at);
-            if (actual<8 || !ReadSafe(at,bytes.data(),actual)) {
-                ++failedChunks;
-                continue;
-            }
-            // +7 overlap handles every possible eight-byte pointer even at
-            // chunk boundaries. The last seven section bytes cannot start a
-            // complete pointer and are not counted as candidates.
-            const auto starts=std::min<std::size_t>(chunk,actual-7);
-            for (std::size_t i=0;i<starts;++i) {
-                const auto site=at+i;
-                if (pointerSec) {
-                    std::uint64_t value{};
-                    std::memcpy(&value,bytes.data()+i,sizeof(value));
-                    if (value!=absoluteOwner)continue;
-                    ++pointerMatches;
-                    if (printed>=maxReported)continue;
-                    std::snprintf(line,sizeof(line),
-                        "LOOT_HOVER_BG_INDIRECT_OWNER_REF version=1.0.0 kind=absolute-pointer section=%s siteRva=D2R+0x%llX target=D2R+0x%llX interpretation=possible-address-taken-reference-not-owner-proof",
-                        sectionName,
-                        static_cast<unsigned long long>(site),
-                        static_cast<unsigned long long>(ownerRva));
-                } else {
-                    // REX.W + LEA r64,[RIP+disp32]. We check the ModRM
-                    // addressing form explicitly, rather than treating any
-                    // appearance of E8/8D as instruction-aligned proof.
-                    if ((bytes[i]&0xF8)!=0x48 || bytes[i+1]!=0x8D ||
-                        (bytes[i+2]&0xC7)!=0x05)continue;
-                    std::int32_t displacement{};
-                    std::memcpy(&displacement,bytes.data()+i+3,sizeof(displacement));
-                    const auto destination=static_cast<std::int64_t>(site+7)+
-                        static_cast<std::int64_t>(displacement);
-                    if (destination!=static_cast<std::int64_t>(ownerRva))continue;
-                    ++leaMatches;
-                    if (printed>=maxReported)continue;
-                    std::snprintf(line,sizeof(line),
-                        "LOOT_HOVER_BG_INDIRECT_OWNER_REF version=1.0.0 kind=rex-rip-lea section=.text siteRva=D2R+0x%llX target=D2R+0x%llX interpretation=candidate-address-taken-reference-not-instruction-alignment-or-owner-proof",
-                        static_cast<unsigned long long>(site),
-                        static_cast<unsigned long long>(ownerRva));
-                }
-                Emit(line);
-                ++printed;
-            }
-        }
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BG_INDIRECT_OWNER_END version=1.0.0 pointerMatches=%llu leaMatches=%llu printed=%llu failedChunks=%llu directCallsPrevious=0 noHitDoesNotProveUnused=1 itemIdentity=unverified backgroundWrites=0 no-hooks=1 no-overlay=1",
-        static_cast<unsigned long long>(pointerMatches),
-        static_cast<unsigned long long>(leaMatches),
-        static_cast<unsigned long long>(printed),
-        static_cast<unsigned long long>(failedChunks));
-    Emit(line);
-}
-
-// 0.1.99: inspect the caller that supplies an element to the native UI
-// append routine, and the common native render-element constructor itself.
-// The earlier direct-call scan proves only possible code relationships,
-// not that a particular record belongs to a hovered item. Keep this
-// diagnostic entirely static. Never detour the shared rectangle renderer,
-// change the render-element array or borrow a pointer across UI frames.
-void ReportNativeHoverBackgroundElementSource() noexcept {
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_ELEMENT_SOURCE_UNAVAILABLE version=1.0.0 reason=build-or-image no-hooks=1 no-writes=1");
-        return;
-    }
-    struct Site final {
-        const char* name;
-        std::uintptr_t callRva;
-        std::uintptr_t targetRva;
-        std::array<std::uint8_t,5> expected;
-        std::uintptr_t windowRva;
-        std::size_t windowSize;
-    };
-    // Independent MSVC-compatible byte fingerprints from the user's 0.1.99
-    // build-93847 capture. A call target by itself is NOT type information.
-    constexpr std::array<Site,3> sites{{
-        {"append-owner",0x843D87,0x880160,{{0xE8,0xD4,0xC3,0x03,0x00}},0x843BE0,0x1B0},
-        {"constructor-owner",0x87FF7B,0x8D9EB0,{{0xE8,0x30,0x9F,0x05,0x00}},0x87FEE0,0x130},
-        {"append-constructor",0x8801DD,0x8D9EB0,{{0xE8,0xCE,0x9C,0x05,0x00}},0x8D9EB0,0x300}
-    }};
-    char line[440]{};
-    for (const auto& site:sites) {
-        std::array<std::uint8_t,5> observed{};
-        if (!ReadSafe(site.callRva,observed.data(),observed.size()) ||
-            observed!=site.expected) {
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BG_ELEMENT_SOURCE_UNAVAILABLE version=1.0.0 path=%s reason=call-fingerprint-mismatch expectedTarget=D2R+0x%llX no-hooks=1 no-writes=1",
-                site.name,static_cast<unsigned long long>(site.targetRva));
-            Emit(line);
-            continue;
-        }
-        std::int32_t relative{};
-        std::memcpy(&relative,observed.data()+1,sizeof(relative));
-        const auto target=static_cast<std::int64_t>(site.callRva+5)+
-            static_cast<std::int64_t>(relative);
-        if (target!=static_cast<std::int64_t>(site.targetRva)) {
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BG_ELEMENT_SOURCE_UNAVAILABLE version=1.0.0 path=%s reason=decoded-target-mismatch no-hooks=1 no-writes=1",
-                site.name);
-            Emit(line);
-            continue;
-        }
-        if (site.windowRva>=ImageSize ||
-            site.windowSize>ImageSize-site.windowRva ||
-            site.windowSize>0x400) {
-            Emit("LOOT_HOVER_BG_ELEMENT_SOURCE_UNAVAILABLE version=1.0.0 reason=window-bounds no-hooks=1 no-writes=1");
-            continue;
-        }
-        std::array<std::uint8_t,0x400> bytes{};
-        if (!ReadSafe(site.windowRva,bytes.data(),site.windowSize)) {
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BG_ELEMENT_SOURCE_UNAVAILABLE version=1.0.0 path=%s reason=window-read no-hooks=1 no-writes=1",
-                site.name);
-            Emit(line);
-            continue;
-        }
-        DWORD64 imageBase{};
-        const auto* unwind=RtlLookupFunctionEntry(
-            static_cast<DWORD64>(Base+site.callRva),&imageBase,nullptr);
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BG_ELEMENT_SOURCE_READY version=1.0.0 path=%s callRva=D2R+0x%llX target=D2R+0x%llX fingerprint=verified unwindAvailable=%u unwindBeginRva=D2R+0x%llX unwindEndRva=D2R+0x%llX itemIdentity=unverified nativeObjectOwnership=unverified no-hooks=1 no-writes=1",
-            site.name,
-            static_cast<unsigned long long>(site.callRva),
-            static_cast<unsigned long long>(site.targetRva),
-            unwind?1U:0U,
-            unwind?static_cast<unsigned long long>(unwind->BeginAddress):0ULL,
-            unwind?static_cast<unsigned long long>(unwind->EndAddress):0ULL);
-        Emit(line);
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BG_ELEMENT_SOURCE_WINDOW_BEGIN version=1.0.0 path=%s startRva=D2R+0x%llX bytes=%zu nativeStaticCodeOnly=1 instructionAligned=unverified no-hooks=1",
-            site.name,static_cast<unsigned long long>(site.windowRva),
-            site.windowSize);
-        Emit(line);
-        for (std::size_t offset=0;offset<site.windowSize;offset+=16) {
-            char hex[49]{};
-            const auto count=std::min<std::size_t>(16,site.windowSize-offset);
-            for (std::size_t b=0;b<count;++b)
-                std::snprintf(hex+b*3,sizeof(hex)-b*3,"%02X ",
-                    unsigned(bytes[offset+b]));
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BG_ELEMENT_SOURCE_BYTES path=%s rva=D2R+0x%llX hex='%s'",
-                site.name,
-                static_cast<unsigned long long>(site.windowRva+offset),hex);
-            Emit(line);
-        }
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BG_ELEMENT_SOURCE_WINDOW_END version=1.0.0 path=%s next=offline-disassemble-argument-origin-and-element-color-initialization no-hooks=1 no-writes=1 no-overlay=1",
-            site.name);
-        Emit(line);
-    }
-}
-
-// 0.1.99: the previously captured native constructor copies a large input
-// descriptor into an element. Its R9 input is preserved in RBX, and 0xE8
-// within that input is copied to element+0x168 (the value fed to the native
-// rectangle renderer). This validates transfer, not item/tooltip ownership.
-// Read only executable bytes, and fail closed on any version mismatch.
-void ReportNativeHoverBackgroundColorTransfer() noexcept {
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BG_COLOR_TRANSFER_UNAVAILABLE version=1.0.0 reason=build-or-image no-hooks=1 no-writes=1");
-        return;
-    }
-    constexpr std::array<std::uint8_t,9> registersExpected{{
-        0x49,0x8B,0xD9,0x4D,0x8B,0xF8,0x48,0x8B,0xF9}};
-    constexpr std::array<std::uint8_t,16> copyExpected{{
-        0x48,0x8D,0x89,0x80,0x00,0x00,0x00,0x0F,
-        0x10,0x03,0x48,0x8D,0x9B,0x80,0x00,0x00}};
-    constexpr std::array<std::uint8_t,16> copyLaneExpected{{
-        0x0F,0x11,0x41,0x80,0x0F,0x10,0x4B,0x90,
-        0x0F,0x11,0x49,0x90,0x0F,0x10,0x43,0xA0}};
-    std::array<std::uint8_t,9> registers{};
-    std::array<std::uint8_t,16> copy{},lane{};
-    if (!ReadSafe(0x8D9EE1,registers.data(),registers.size()) ||
-        !ReadSafe(0x8D9F50,copy.data(),copy.size()) ||
-        !ReadSafe(0x8D9F61,lane.data(),lane.size()) ||
-        registers!=registersExpected || copy!=copyExpected ||
-        lane!=copyLaneExpected) {
-        Emit("LOOT_HOVER_BG_COLOR_TRANSFER_UNAVAILABLE version=1.0.0 reason=constructor-copy-fingerprint no-hooks=1 no-writes=1");
-        return;
-    }
-    Emit("LOOT_HOVER_BG_COLOR_TRANSFER_READY version=1.0.0 constructor=D2R+0x8D9EB0 sourceRegister=R9 sourceCopyBase=R9+0x0 sourceColorOffset=0xE8 destinationRegister=RCX destinationCopyBase=RCX+0x80 destinationColorOffset=0x168 stride=0x2E8 transfer=original-native-structure-copy itemIdentity=unverified backgroundRGBAType=not-runtime-verified writes=0 hooks=0 overlays=0");
-}
-
-// 0.1.99: focus on the actual item-label native builder rather than the
-// speculative 0x843CA0 UI-element owner. The SoE V1/V2 callbacks establish
-// the item identity at D2R+0xC0420, but V3 has observed zero overlapping
-// glyph/painter calls: no native render-element ownership is established.
-// SoE hooks the builder entry when present. Its live first bytes may be a
-// loader bridge rather than the pristine bytes of build 93847. NEVER infer a
-// native object layout from a patched entry or add another builder detour.
-// Read a few bounded code windows for offline native-code analysis only.
-void ReportHiddenHoverNativeBuilderPath() noexcept {
-    constexpr std::uintptr_t builder=InWorldFormatterRva;
-    constexpr std::uintptr_t nativeCall=0xC0F67;
-    constexpr std::uintptr_t nativeReturn=nativeCall+5;
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!build || std::string_view(build)!="93847" || !Base || !ImageSize) {
-        Emit("LOOT_HOVER_BUILDER_UNAVAILABLE version=1.0.0 reason=build-or-image-unavailable no-hook=1 no-writes=1");
-        return;
-    }
-    std::array<std::uint8_t,16> entry{};
-    std::array<std::uint8_t,5> call{};
-    if (!ReadSafe(builder,entry.data(),entry.size()) ||
-        !ReadSafe(nativeCall,call.data(),call.size())) {
-        Emit("LOOT_HOVER_BUILDER_UNAVAILABLE version=1.0.0 reason=live-builder-or-caller-read-failed no-hook=1 no-writes=1");
-        return;
-    }
-    std::int32_t displacement{};
-    std::memcpy(&displacement,call.data()+1,sizeof(displacement));
-    const auto decodedTarget=static_cast<std::int64_t>(nativeReturn)+
-        static_cast<std::int64_t>(displacement);
-    const bool callDecoded=call[0]==0xE8 && decodedTarget>=0 &&
-        static_cast<std::uint64_t>(decodedTarget)<ImageSize;
-    const bool entryPristine=entry==ExpectedInWorldFormatter;
-    // Never classify a loader's bridge format by guessed opcodes. We know
-    // which backend was attached but not that an arbitrary entry prefix is
-    // the original native function or a D2R render-element pointer.
-    const auto backend=InWorldMode.load(std::memory_order_acquire);
-    const char* mode=backend==InWorldBackend::SoEInterop?"soe-interop":
-        backend==InWorldBackend::StandaloneIdentity?"standalone":
-        backend==InWorldBackend::Blocked?"blocked":"pending";
-    char line[480]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BUILDER_READY version=1.0.0 build=93847 builder=D2R+0x%llX backend=%s entryPristine=%u caller=D2R+0x%llX callerIsE8=%u decodedTarget=D2R+0x%llX targetInsideImage=%u itemId=%u itemIdentity=SoE-V1-or-standalone-only UIElementIdentity=unverified nativeBackgroundWrites=0 newHooks=0 overlay=0",
-        static_cast<unsigned long long>(builder),mode,entryPristine?1U:0U,
-        static_cast<unsigned long long>(nativeCall),call[0]==0xE8?1U:0U,
-        static_cast<unsigned long long>(decodedTarget>=0?decodedTarget:0),
-        callDecoded?1U:0U,HoverDiffItemId.load(std::memory_order_acquire));
-    Emit(line);
-    char entryHex[16*3+1]{};
-    for (std::size_t i=0;i<entry.size();++i)
-        std::snprintf(entryHex+3*i,sizeof(entryHex)-3*i,"%02X ",unsigned(entry[i]));
-    std::snprintf(line,sizeof(line),
-        "LOOT_HOVER_BUILDER_ENTRY version=1.0.0 rva=D2R+0x%llX bytes='%s' patchedByOwnerPossible=%u never-assume-pristine=1",
-        static_cast<unsigned long long>(builder),entryHex,
-        entryPristine?0U:1U);
-    Emit(line);
-    if (!callDecoded) {
-        Emit("LOOT_HOVER_BUILDER_STOP version=1.0.0 reason=caller-not-a-valid-E8-target no-fallback-hook=1");
-        return;
-    }
-    // These windows inspect the item-label builder and the path back to its
-    // observed caller. They are NOT guaranteed instruction-aligned; code
-    // bytes alone cannot prove that the game's render record is the item.
-    struct Window {const char* name;std::uintptr_t rva;std::size_t size;};
-    constexpr std::array<Window,4> windows{{
-        {"builder-entry-and-continuation",builder,0x300},
-        {"builder-middle-early",0xC0720,0x300},
-        {"builder-middle-late",0xC0A20,0x300},
-        {"builder-return-neighborhood",0xC0D20,0x300},
-    }};
-    std::array<std::uint8_t,0x300> bytes{};
-    for (const auto& window:windows) {
-        if (!ReadSafe(window.rva,bytes.data(),window.size)) {
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BUILDER_WINDOW_UNAVAILABLE version=1.0.0 path=%s startRva=D2R+0x%llX reason=bounded-read-failed no-hook=1",
-                window.name,static_cast<unsigned long long>(window.rva));
-            Emit(line);continue;
-        }
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BUILDER_WINDOW_BEGIN version=1.0.0 path=%s startRva=D2R+0x%llX bytes=%zu staticCodeOnly=1 instructionAligned=unverified no-hook=1",
-            window.name,static_cast<unsigned long long>(window.rva),window.size);
-        Emit(line);
-        for (std::size_t offset=0;offset<window.size;offset+=16) {
-            char hex[16*3+1]{};
-            for (std::size_t i=0;i<16;++i)
-                std::snprintf(hex+3*i,sizeof(hex)-3*i,"%02X ",
-                    unsigned(bytes[offset+i]));
-            std::snprintf(line,sizeof(line),
-                "LOOT_HOVER_BUILDER_BYTES path=%s rva=D2R+0x%llX hex='%s'",
-                window.name,
-                static_cast<unsigned long long>(window.rva+offset),hex);
-            Emit(line);
-        }
-        std::snprintf(line,sizeof(line),
-            "LOOT_HOVER_BUILDER_WINDOW_END version=1.0.0 path=%s no-hook=1 no-writes=1",
-            window.name);
-        Emit(line);
-    }
-    Emit("LOOT_HOVER_BUILDER_END version=1.0.0 next=offline-trace-formatter-result-to-native-render-record builderItemIdentity=observed renderElementOwner=not-proven UIObjectPointersRetained=0 nativeColorWrites=0 globalRectDetour=0 overlay=0");
-}
-
 
 void ArmBackgroundPaintObservation() noexcept;
 
@@ -10435,9 +4553,6 @@ void __cdecl PlayNamedSoundOnGameThread(
     void* result=player(request->name.data(),nullptr,0,1);
     if(result)SoundPlayed.fetch_add(1,std::memory_order_relaxed);
     else SoundUnknown.fetch_add(1,std::memory_order_relaxed);
-    if(request->automatic) TraceLootLatency(request->code,request->unitId,
-        LootLatencyStage::NativeSound,
-        result?"native-player-returned-nonnull":"native-player-returned-null");
     char codeText[5]{};
     CodeText(request->code,codeText);
     char message[320]{};
@@ -10447,7 +4562,6 @@ void __cdecl PlayNamedSoundOnGameThread(
         request->name.data(),result?1U:0U,static_cast<unsigned long>(GetCurrentThreadId()));
     if(logger) {
         logger->LogInfo(message);
-        CaptureLine(message);
     }
 }
 
@@ -10474,8 +4588,6 @@ bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
     request->registryEpoch=automatic?observedEpoch:
         SoundRegistryEpoch.load(std::memory_order_acquire);
     request->itemTicket=itemTicket;
-    if(automatic)TraceLootLatency(code,unitId,
-        LootLatencyStage::QueueSound,"before-runOnGameThread");
     // The callback owns the raw allocation on Success. Never access it
     // after dispatch: the service may run the callback synchronously if we
     // are already on the game thread, and callback may have freed it.
@@ -10512,9 +4624,6 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     const auto* rule=ResolveGroundRule(rules.get(),item,resolvedRule) ?
         &resolvedRule : nullptr;
     if (!rule || !rule->hasDropSound) return;
-    TraceLootLatency(code,unitId,LootLatencyStage::MatchSound,
-        hiddenHover?"matched-soe-label":"matched-formatter-label",
-        0,item.quality,item.itemLevel);
     if (hiddenHover) SoundObservedHidden.fetch_add(1,std::memory_order_relaxed);
     else SoundObservedAlt.fetch_add(1,std::memory_order_relaxed);
     if (!SoundSeenMutex.try_lock()) {
@@ -10588,9 +4697,6 @@ D2RL::Inventory::IterationAction __cdecl OnSoundInventoryItem(
         item->structSize < D2RL::Items::ItemInfoRequiredSize ||
         item->container == D2RL::Items::ItemContainer::Ground)
         return D2RL::Inventory::IterationAction::Continue;
-    ObserveGroundPropertyCarriedSdk(item); // optional F8 evidence, read-only
-    ObserveSocketProbeCarriedSdk(item);
-    ObserveEtherealProbeCarriedSdk(item);
     ForgetMinimapProjectionItem(item->runtimeId);
     ForgetCarriedSoundItem(item->runtimeId,
         *static_cast<PickupPollResults*>(userData));
@@ -10646,10 +4752,7 @@ void __cdecl PollSoundInventoryOnUiThread(
                     D2RL::Items::Result::Success &&
                 info.structSize >= D2RL::Items::ItemInfoRequiredSize &&
                 info.container == D2RL::Items::ItemContainer::Cursor)
-                { ObserveGroundPropertyCarriedSdk(&info);
-                  ObserveSocketProbeCarriedSdk(&info);
-                  ObserveEtherealProbeCarriedSdk(&info);
-                  ForgetMinimapProjectionItem(info.runtimeId);
+                { ForgetMinimapProjectionItem(info.runtimeId);
                   ForgetCarriedSoundItem(info.runtimeId,results); }
         }
     }
@@ -10793,14 +4896,6 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     if (!Context || !OriginalGetItemCode ||
         !HookInstalled.load(std::memory_order_acquire)) {
         Emit("LOOT_FILTER_AUTO_INACTIVE reason=item-code-reader-unavailable");
-        return false;
-    }
-    const auto mode=ActiveGeometryMode.load(std::memory_order_acquire);
-    if ((mode!=GeometryMode::Off && mode!=GeometryMode::Rules) ||
-        RenameArmed.load(std::memory_order_acquire) ||
-        CodeRenameArmed.load(std::memory_order_acquire) ||
-        CodeBridgeArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_FILTER_AUTO_INACTIVE reason=conflicting-manual-probe");
         return false;
     }
     if (!FormatterHookInstalled.load(std::memory_order_acquire))
@@ -10978,14 +5073,13 @@ void ReportGroundSoundStatus() noexcept {
 }
 
 // The producer passes six ABI arguments, including two stack arguments.
-// This observer is opt-in, calls the original exactly once and never performs
-// file IO from the hook. Label writes require the independent rename-arm gate.
+// The formatter hook forwards all six ABI arguments exactly once and only
+// feeds verified ground-item identity to production filter services.
 std::uint8_t __fastcall HookLabelFormatter(
     void* unit, void* dest, void* record, std::uint32_t flags,
     std::uint64_t stack5, std::uint64_t stack6) noexcept {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    const int index = ActivePhase.load(std::memory_order_acquire);
-    const bool isSourceCall =
+    const bool sourceCall =
         caller == Base + LabelFormatterCallRva + DirectCallBytes ||
         caller == Base + LabelFormatterSecondCallRva + DirectCallBytes;
     const auto destAddress = reinterpret_cast<std::uintptr_t>(dest);
@@ -10993,117 +5087,12 @@ std::uint8_t __fastcall HookLabelFormatter(
     const bool paired = record && dest &&
         recordAddress <= static_cast<std::uintptr_t>(-1) - 0x24 &&
         destAddress == recordAddress + 0x24;
-    FormatterObservation* reserved{};
-    std::size_t rowIndex = FormatterSlotsPerPhase;
-    if (index >= 0 &&
-        static_cast<std::size_t>(index) < MaximumPhases &&
-        GetTickCount64() < Deadline.load(std::memory_order_relaxed)) {
-        if (PhasesMutex.try_lock()) {
-            if (ActivePhase.load(std::memory_order_acquire) == index &&
-                static_cast<std::size_t>(index) < PhaseCount) {
-                auto& f = Phases[static_cast<std::size_t>(index)].formatter;
-                ++f.seen;
-                if (!f.firstReturnAddress) f.firstReturnAddress = caller;
-                if (isSourceCall) ++f.sourceSiteHits;
-                if (paired) ++f.pairedHits;
-                if (isSourceCall && paired) {
-                    ++f.calls;
-                    ++f.sourceCallHits;
-                    for (std::size_t i = 0; i < f.rowCount; ++i) {
-                        if (f.rows[i].nativeUnit == reinterpret_cast<std::uintptr_t>(unit) &&
-                            f.rows[i].record == recordAddress) {
-                            ++f.rows[i].hits;
-                            rowIndex = i;
-                            break;
-                        }
-                    }
-                    if (rowIndex == FormatterSlotsPerPhase) {
-                        if (f.rowCount < FormatterSlotsPerPhase) {
-                            rowIndex = f.rowCount++;
-                            auto& row = f.rows[rowIndex];
-                            row.claimed = true;
-                            row.nativeUnit = reinterpret_cast<std::uintptr_t>(unit);
-                            row.record = recordAddress;
-                            row.dest = destAddress;
-                            row.caller = caller;
-                            row.fourthArg = flags;
-                            row.fifthArg = stack5;
-                            row.sixthArg = stack6;
-                            row.hits = 1;
-                            row.threadId = GetCurrentThreadId();
-                            reserved = &row;
-                        } else {
-                            ++f.skipped;
-                        }
-                    }
-                }
-            }
-            PhasesMutex.unlock();
-        } else FormatterContention.fetch_add(1, std::memory_order_relaxed);
-    }
-    FormatterObservation temp{};
-    if (reserved) {
-        SIZE_T copied{};
-        temp.preOk = ReadProcessMemory(GetCurrentProcess(), record,
-            temp.pre.data(), temp.pre.size(), &copied) &&
-            copied == temp.pre.size();
-        copied = 0;
-        temp.unitOk = unit && ReadProcessMemory(GetCurrentProcess(), unit,
-            temp.nativeFirst6, sizeof(temp.nativeFirst6), &copied) &&
-            copied == sizeof(temp.nativeFirst6);
-    }
-    // No changes to the six arguments; no extra native calls or synthetic UI.
+
     const auto result = OriginalLabelFormatter(
         unit, dest, record, flags, stack5, stack6);
-    ObserveHoverRoute(HoverStage::Formatter,caller,unit,dest,record,flags);
     FormatterCalls.fetch_add(1, std::memory_order_relaxed);
-    TryRenameDivineLabel(unit, record, isSourceCall, paired, result);
-    TryCodeRenameGroundLabel(unit, record, isSourceCall, paired, result);
-    if(isSourceCall && paired && result && unit && OriginalGetItemCode) {
-        std::array<std::uint32_t,4> identity{};
-        SIZE_T bytes{};
-        if(ReadProcessMemory(GetCurrentProcess(),unit,identity.data(),
-                sizeof(identity),&bytes) && bytes==sizeof(identity) &&
-            identity[0]==4 && identity[2] && identity[3]==3)
-            TraceLootLatency(OriginalGetItemCode(unit),identity[2],
-                LootLatencyStage::ObserveFormatter,"post-native-formatter");
-    }
-    RememberGroundIdentity(unit, record, isSourceCall, paired, result);
-    ExamineGroundSoundCandidate(unit,record,isSourceCall,paired,result);
-    if (reserved) {
-        SIZE_T copied{};
-        temp.postOk = ReadProcessMemory(GetCurrentProcess(), record,
-            temp.post.data(), temp.post.size(), &copied) &&
-            copied == temp.post.size();
-        // One-shot resolver after native formatter, with the same verified
-        // pointer and ID pair as the 0.1.16 capture. Never mutate this unit.
-        ProbeFormatterItemCode(unit, isSourceCall && paired && result != 0, temp);
-        // Only a freshly reserved row is modified. Start/Clear can race an
-        // in-flight callback; check the same pointer identity before storing.
-        if (PhasesMutex.try_lock()) {
-            if (ActivePhase.load(std::memory_order_acquire) == index &&
-                static_cast<std::size_t>(index) < PhaseCount &&
-                rowIndex < Phases[static_cast<std::size_t>(index)].formatter.rowCount) {
-                auto& row = Phases[static_cast<std::size_t>(index)].formatter.rows[rowIndex];
-                if (row.nativeUnit == reinterpret_cast<std::uintptr_t>(unit) &&
-                    row.record == recordAddress) {
-                    row.pre = temp.pre;
-                    row.post = temp.post;
-                    std::memcpy(row.nativeFirst6,temp.nativeFirst6,
-                        sizeof(row.nativeFirst6));
-                    row.preOk = temp.preOk;
-                    row.postOk = temp.postOk;
-                    row.unitOk = temp.unitOk;
-                    row.codeAttempted = temp.codeAttempted;
-                    row.codeGuardPassed = temp.codeGuardPassed;
-                    row.codeValid = temp.codeValid;
-                    row.codeValue = temp.codeValue;
-                    row.result = result;
-                }
-            }
-            PhasesMutex.unlock();
-        } else FormatterContention.fetch_add(1, std::memory_order_relaxed);
-    }
+    RememberGroundIdentity(unit, record, sourceCall, paired, result);
+    ExamineGroundSoundCandidate(unit, record, sourceCall, paired, result);
     return result;
 }
 
@@ -11139,1885 +5128,172 @@ void ArmLabelFormatter() noexcept {
         return;
     }
     FormatterHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_FORMATTER_OBSERVER_READY version=1.0.0 hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=opt-in-name-and-code-rename nativeCodeWrites=loader-managed-hook-only");
+    Emit("LOOT_FORMATTER_OBSERVER_READY version=1.0.0 hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=none nativeCodeWrites=loader-managed-hook-only");
 }
 
-// Escape a *candidate*, bounded ASCII/UTF-8 byte span. No dereference or
-// guessing at item ownership. Non-ASCII bytes are represented as \xHH so
-// the capture file stays printable and retains the exact raw byte values.
-bool CandidateText(const std::array<std::uint8_t, RecordBytes>& record,
-                   char (&output)[CandidateTextMaximum * 4 + 1]) noexcept {
-    std::size_t used = 0;
-    bool terminated = false;
-    for (std::size_t i = 0; i < CandidateTextMaximum; ++i) {
-        const auto ch = record[CandidateTextOffset + i];
-        if (!ch) { terminated = true; break; }
-        if (ch >= 0x20 && ch <= 0x7e && ch != '\\' && ch != '\'') {
-            output[used++] = static_cast<char>(ch);
-        } else if (ch == '\n' || ch == '\r' || ch == '\t' || ch == '\\' || ch == '\'') {
-            output[used++] = '\\';
-            output[used++] = ch == '\n' ? 'n' : ch == '\r' ? 'r' : ch == '\t' ? 't' : static_cast<char>(ch);
-        } else {
-            static constexpr char hex[] = "0123456789ABCDEF";
-            output[used++] = '\\'; output[used++] = 'x';
-            output[used++] = hex[ch >> 4U]; output[used++] = hex[ch & 15U];
-        }
-    }
-    output[used] = 0;
-    return terminated && used != 0;
-}
-
-void CountCandidateText(CollectionSample& sample,
-                        const std::array<std::uint8_t, RecordBytes>& record) noexcept {
-    ++sample.textSamples;
-    char text[CandidateTextMaximum * 4 + 1]{};
-    if (!CandidateText(record, text)) { ++sample.invalidTextSamples; return; }
-    for (std::size_t i = 0; i < sample.variantCount; ++i) {
-        if (std::strcmp(sample.variants[i].escaped, text) == 0) {
-            ++sample.variants[i].samples;
-            return;
-        }
-    }
-    if (sample.variantCount >= CandidateTextVariants) { ++sample.variantOverflow; return; }
-    auto& variant = sample.variants[sample.variantCount++];
-    std::memcpy(variant.escaped, text, std::strlen(text) + 1);
-    variant.samples = 1;
-}
-
-// Bounded, non-recursive reads only; scanning unused slots may observe stale
-// record bytes and is not a visibility or item-identity determination.
-void SurveySlots(void* arg3, SlotSurvey& survey, std::uint64_t atHit) noexcept {
-    survey = SlotSurvey{};
-    survey.attempted = true;
-    survey.atHelperHit = atHit;
-    if (!arg3) return;
-    const auto start = reinterpret_cast<std::uintptr_t>(arg3);
-    for (std::size_t i = 0; i < CandidateSlotCount; ++i) {
-        constexpr auto Max = static_cast<std::uintptr_t>(-1);
-        const auto offset = i * RecordBytes;
-        if (start > Max - offset) break;
-        const auto address = start + offset;
-        std::array<std::uint8_t, RecordBytes> bytes{};
-        SIZE_T copied{};
-        if (!ReadProcessMemory(GetCurrentProcess(),
-                reinterpret_cast<const void*>(address), bytes.data(),
-                bytes.size(), &copied) || copied != bytes.size())
-            continue;
-        auto& slot = survey.slots[i];
-        slot.readable = true;
-        ++survey.readable;
-        std::memcpy(slot.prefix.data(), bytes.data(), slot.prefix.size());
-        std::memcpy(slot.text.data(), bytes.data() + CandidateTextOffset,
-            slot.text.size());
-        const auto stop = std::find(slot.text.begin(), slot.text.end(), 0);
-        slot.terminated = stop != slot.text.end();
-        if (!slot.terminated || stop - slot.text.begin() < 2) continue;
-        bool hasLetter = false;
-        for (auto ch = slot.text.begin(); ch != stop; ++ch) {
-            hasLetter |= (*ch >= 'A' && *ch <= 'Z') ||
-                         (*ch >= 'a' && *ch <= 'z');
-        }
-        if (hasLetter) ++survey.textCandidates;
-    }
-}
-
-bool SlotName(const SlotCandidate& slot,
-              char (&out)[CandidateTextMaximum * 4 + 1]) noexcept {
-    if (!slot.readable || !slot.terminated) return false;
-    std::size_t used{};
-    std::size_t count{};
-    bool hasLetter = false;
-    for (const auto ch : slot.text) {
-        if (!ch) break;
-        ++count;
-        hasLetter |= (ch >= 'A' && ch <= 'Z') ||
-                     (ch >= 'a' && ch <= 'z');
-        if (ch >= 0x20 && ch <= 0x7e && ch != '\\' && ch != '\'')
-            out[used++] = static_cast<char>(ch);
-        else if (ch == '\n' || ch == '\r' || ch == '\t' || ch == '\\' || ch == '\'') {
-            out[used++] = '\\';
-            out[used++] = ch == '\n' ? 'n' : ch == '\r' ? 'r' : ch == '\t' ? 't' : static_cast<char>(ch);
-        } else {
-            static constexpr char hex[] = "0123456789ABCDEF";
-            out[used++] = '\\'; out[used++] = 'x';
-            out[used++] = hex[ch >> 4U]; out[used++] = hex[ch & 15U];
-        }
-    }
-    out[used] = 0;
-    return count >= 2 && hasLetter;
-}
-
-// Optional loader-tracked inline hook. The original function is always called
-// exactly once. The hook never changes arguments, item state, name, or visibility.
-std::uint64_t __fastcall HookCollectionHelper(
-    void* arg1, void* arg2, void* arg3, std::uint64_t limit) noexcept {
-    const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    const int beforeIndex = ActivePhase.load(std::memory_order_acquire);
-    bool firstPreClaim = false;
-    bool firstPreOk = false;
-    bool firstPreSurveyOk = false;
-    std::array<std::uint8_t, RecordBytes> firstPre{};
-    if (beforeIndex >= 0 && static_cast<std::size_t>(beforeIndex) < MaximumPhases &&
-        GetTickCount64() < Deadline.load(std::memory_order_relaxed) &&
-        !BeforeClaimed[static_cast<std::size_t>(beforeIndex)].exchange(true,
-            std::memory_order_acq_rel)) {
-        firstPreClaim = true;
-        // Claim and record the first bounded full-slot survey before the
-        // original helper runs; do not hold the phase mutex across the call.
-        if (PhasesMutex.try_lock()) {
-            if (ActivePhase.load(std::memory_order_acquire) == beforeIndex &&
-                static_cast<std::size_t>(beforeIndex) < PhaseCount) {
-                SurveySlots(arg3,
-                    Phases[static_cast<std::size_t>(beforeIndex)]
-                        .collection.firstBeforeSlots, 1);
-                firstPreSurveyOk = true;
-            }
-            PhasesMutex.unlock();
-        }
-        SIZE_T copied{};
-        if (arg3) {
-            firstPreOk = ReadProcessMemory(GetCurrentProcess(), arg3, firstPre.data(),
-                firstPre.size(), &copied) && copied == firstPre.size();
-        }
-    }
-    const auto result = OriginalCollectionHelper(arg1, arg2, arg3, limit);
-    CollectionTotal.fetch_add(1, std::memory_order_relaxed);
-    const int index = ActivePhase.load(std::memory_order_acquire);
-    if (index < 0 || static_cast<std::size_t>(index) >= MaximumPhases) return result;
-    if (GetTickCount64() >= Deadline.load(std::memory_order_relaxed)) {
-        int expected = index;
-        ActivePhase.compare_exchange_strong(expected, -1, std::memory_order_acq_rel);
-        return result;
-    }
-    if (!PhasesMutex.try_lock()) {
-        CollectionContended.fetch_add(1, std::memory_order_relaxed);
-        return result;
-    }
-    if (ActivePhase.load(std::memory_order_acquire) == index &&
-        static_cast<std::size_t>(index) < PhaseCount) {
-        auto& sample = Phases[static_cast<std::size_t>(index)].collection;
-        if (sample.hits == 0) {
-            sample.firstLimit = limit;
-            sample.minimumLimit = limit;
-            sample.maximumLimit = limit;
-            sample.firstCaller = caller;
-            sample.firstArg1 = reinterpret_cast<std::uintptr_t>(arg1);
-            sample.firstArg2 = reinterpret_cast<std::uintptr_t>(arg2);
-            sample.firstArg3 = reinterpret_cast<std::uintptr_t>(arg3);
-            sample.firstThread = GetCurrentThreadId();
-            if (firstPreClaim && beforeIndex == index) {
-                sample.beforeArg3Ok = firstPreOk;
-                if (firstPreOk) sample.beforeArg3 = firstPre;
-                if (!firstPreSurveyOk) ++sample.surveyClaimFailures;
-            } else {
-                ++sample.preClaimFailures;
-                ++sample.surveyClaimFailures;
-            }
-            SurveySlots(arg3, sample.firstAfterSlots, 1);
-            sample.lastAfterSlots = sample.firstAfterSlots;
-            sample.surveyUpdates = 1;
-            // Direct guarded reads of arg1 and arg3 only. No pointer chasing.
-            SIZE_T copied{};
-            if (arg1) {
-                sample.arg1SnapshotOk = ReadProcessMemory(GetCurrentProcess(), arg1,
-                    sample.arg1Snapshot.data(), sizeof(sample.arg1Snapshot),
-                    &copied) && copied == sizeof(sample.arg1Snapshot);
-            }
-            copied = 0;
-            if (arg3) {
-                sample.afterArg3Ok = ReadProcessMemory(GetCurrentProcess(), arg3,
-                    sample.afterArg3.data(), sample.afterArg3.size(),
-                    &copied) && copied == sample.afterArg3.size();
-                if (sample.afterArg3Ok) {
-                    std::memcpy(sample.arg3Snapshot.data(),
-                        sample.afterArg3.data(), sizeof(sample.arg3Snapshot));
-                    sample.arg3SnapshotOk = true;
-                } else { // retain short-read compatibility with the 0.1.9 census
-                    copied = 0;
-                    sample.arg3SnapshotOk = ReadProcessMemory(GetCurrentProcess(), arg3,
-                        sample.arg3Snapshot.data(), sizeof(sample.arg3Snapshot),
-                        &copied) && copied == sizeof(sample.arg3Snapshot);
-                }
-            }
-            PVOID frames[8]{};
-            sample.stackCount = CaptureStackBackTrace(0, 8, frames, nullptr);
-            for (std::uint32_t n = 0; n < sample.stackCount; ++n)
-                sample.stack[n] = reinterpret_cast<std::uintptr_t>(frames[n]);
-        }
-        ++sample.hits;
-        // At most one 32-record scan per 79 collection-helper calls.
-        // Initial survey is collected above (hit 1).
-        if (arg3 && sample.hits > 1 &&
-            sample.hits % SlotSamplingInterval == 0) {
-            SurveySlots(arg3, sample.lastAfterSlots, sample.hits);
-            ++sample.surveyUpdates;
-            if (sample.lastAfterSlots.readable != CandidateSlotCount)
-                ++sample.surveyPeriodicFailures;
-        }
-        // Sample at a non-power-of-two interval to avoid aliasing with a
-        // possible two-entry alternation. At most ~69 guarded reads per 8s.
-        if (arg3 && (sample.hits == 1 ||
-                     sample.hits % TextSamplingInterval == 0)) {
-            if (sample.hits == 1 && sample.afterArg3Ok) {
-                CountCandidateText(sample, sample.afterArg3);
-            } else {
-                std::array<std::uint8_t, RecordBytes> observed{};
-                SIZE_T copied{};
-                if (ReadProcessMemory(GetCurrentProcess(), arg3, observed.data(),
-                        observed.size(), &copied) && copied == observed.size()) {
-                    CountCandidateText(sample, observed);
-                } else {
-                    ++sample.candidateReadFailures;
-                }
-            }
-        }
-        sample.lastLimit = limit;
-        sample.minimumLimit = std::min(sample.minimumLimit, limit);
-        sample.maximumLimit = std::max(sample.maximumLimit, limit);
-        sample.lastCaller = caller;
-    }
-    PhasesMutex.unlock();
-    return result;
-}
-
-void ArmCollectionObserver() noexcept {
-    if (CollectionHookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_COLLECTION_OBSERVER_READY already-installed=1");
-        return;
-    }
-    if (!Context || !Base || !ImageSize ||
-        !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context)) != "93847") {
-        Emit("LOOT_COLLECTION_REFUSED incorrect-build-or-image");
-        return;
-    }
-    std::array<std::uint8_t, 5> call{};
-    if (!ReadSafe(CollectionCallRva, call.data(), call.size()) ||
-        call != ExpectedCollectionCaller) {
-        Emit("LOOT_COLLECTION_REFUSED historical-caller-not-observed; zero-added-hooks");
-        return;
-    }
-    if (!Context->CheckExpectedBytes(CollectionHelperRva,
-            ExpectedCollectionHelper.data(),
-            static_cast<std::uint32_t>(ExpectedCollectionHelper.size()))) {
-        Emit("LOOT_COLLECTION_REFUSED helper-fingerprint-differs-or-bridge-owned; zero-added-hooks");
-        return;
-    }
-    // Publish the trampoline through the stable global exactly as the existing
-    // item-code observer does, before the managed entry redirect goes live.
-    if (!Context->InstallInlineHook(CollectionHelperRva,
-            ExpectedCollectionHelper.data(),
-            static_cast<std::uint32_t>(ExpectedCollectionHelper.size()),
-            HookCollectionHelper, &OriginalCollectionHelper) ||
-        !OriginalCollectionHelper) {
-        Emit("LOOT_COLLECTION_REFUSED loader-hook-registration-failed; no-fallback-write");
-        return;
-    }
-    CollectionHookInstalled.store(true, std::memory_order_release);
-    Emit("LOOT_COLLECTION_OBSERVER_READY hook=D2R+0x1517C70 caller=D2R+0x1516ECC optional=1 readOnly=1 itemWrites=0 labelChanges=0");
-}
-
-
-// 0.2.19 EXPERIMENTAL, READ-ONLY: correlate the already hooked native item-
-// code reader against explicitly user-marked world/hover/pickup phases.
-// Neither the caller site nor a code-reader call proves sprite rendering or
-// targeting; site RVAs are leads for the subsequent native renderer probe.
-constexpr std::uint32_t WorldProbeExaltedCode =
-    static_cast<std::uint32_t>('e') | (static_cast<std::uint32_t>('x')<<8U) |
-    (static_cast<std::uint32_t>('o')<<16U);
-constexpr std::size_t WorldProbeSiteLimit=32, WorldProbeTrackedLimit=128;
-constexpr std::size_t WorldProbePhaseLimit=5;
-// Each action is isolated: place test items at least three tiles apart;
-// labels OFF and inventory closed throughout. The last phase is a control.
-constexpr std::array<const char*,WorldProbePhaseLimit> WorldProbePhaseNames{{
-    "isolated-hidden-hover", "isolated-hidden-click",
-    "isolated-control-hover", "isolated-control-click",
-    "both-in-view-mouse-away"}};
-struct WorldProbeSite final {
-    std::uintptr_t returnRva{};
-    std::uint32_t code{},unitId{};
-    std::uint64_t hits{},groundWitness{},otherGround{},badUnit{};
-    std::uint64_t beforeClick{},nearClick{},afterClick{};
-    ULONGLONG firstMs{},lastMs{};
-    std::uint32_t thread{};
-    std::array<std::uintptr_t,6> stack{};
-    unsigned stackSize{};
-};
-// The C0420 unit-label formatter is downstream of some in-world unit
-// selection. Its identity is a verified LABEL input, NOT the hit-test result,
-// mouse target or world-model renderer. Observe it independently from the
-// native code-reader and do not retain a borrowed unit pointer.
-struct WorldProbeLabelUnit final {
-    std::uint32_t code{},unitId{};
-    std::uint64_t calls{},withText{},noText{},beforeClick{},nearClick{},afterClick{};
-    std::uint64_t capturedStacks{},noKnownCallerStacks{},ambiguousCallerStacks{};
-    ULONGLONG firstMs{},lastMs{};
-};
-// Per-item *sampled* synchronous stack provenance from the existing SoE
-// callback or standalone identity hook. These are RETURN-ADDRESS witnesses,
-// never a retained native unit pointer and never renderer / picker proof.
-struct WorldProbeLabelCaller final {
-    std::uint32_t code{},unitId{};
-    std::uintptr_t returnRva{};
-    std::uint64_t samples{},nearClick{};
-    unsigned firstFrameIndex{};
-};
-constexpr std::size_t WorldProbeLabelCallerLimit=32;
-std::array<WorldProbeLabelCaller,WorldProbeLabelCallerLimit> WorldProbeLabelCallers{};
-std::size_t WorldProbeLabelCallerCount{};
-struct WorldProbeStackExample final {
-    std::uint32_t code{},unitId{};
-    unsigned depth{};
-    std::uint32_t matchedSite{},otherMatchedSites{};
-    std::array<std::uintptr_t,18> frameRvas{};
-};
-constexpr std::size_t WorldProbeStackExampleLimit=4;
-std::array<WorldProbeStackExample,WorldProbeStackExampleLimit> WorldProbeStackExamples{};
-std::size_t WorldProbeStackExampleCount{};
-std::atomic<std::uint32_t> WorldProbeLastStackCode{};
-std::atomic<std::uint64_t> WorldProbeStackSamples{},WorldProbeStackUnmatched{},
-    WorldProbeStackAmbiguous{},WorldProbeStackDropped{};
-constexpr std::size_t WorldProbeLabelLimit=16;
-std::array<WorldProbeLabelUnit,WorldProbeLabelLimit> WorldProbeLabelUnits{};
-std::size_t WorldProbeLabelCount{};
-std::atomic<std::uint64_t> WorldProbeLabelCalls{},WorldProbeLabelContention{},
-    WorldProbeLabelOverflow{};
-std::mutex WorldProbeMutex;
-std::array<WorldProbeSite,WorldProbeSiteLimit> WorldProbeSites{};
-std::size_t WorldProbeSiteCount{};
-std::atomic<int> WorldProbePhase{-1};
-std::atomic_bool WorldProbeRunning{};
-std::atomic_bool WorldProbePollPending{};
-std::atomic<std::uint64_t> WorldProbeReads{},WorldProbeReadFailures{},
-    WorldProbeOverflow{},WorldProbeContended{},WorldProbeGroundSamples{},
-    WorldProbeCarriedHidden{},WorldProbeCarriedControl{};
-std::atomic<std::uint32_t> WorldProbeLastCarriedHidden{},WorldProbeLastCarriedControl{};
-// Click samples are a FOREGROUND Win32 button-level observation from a worker,
-// not a D2R event and not an item-target / pickup proof. Used ONLY by probe.
-std::atomic<ULONGLONG> WorldProbeLastClickMs{};
-std::atomic<std::uint32_t> WorldProbeClickEdges{},WorldProbeBaselinePasses{},
-    WorldProbePostClickPasses{},WorldProbeMissedBaseline{},WorldProbeEpoch{};
-std::atomic_bool WorldProbeBaselineReady{};
-// Per-session identity token from the ground-label callback. The native model
-// and picker must later be independently established.
-std::array<std::atomic<std::uint64_t>,WorldProbeTrackedLimit> WorldProbeBaseline{};
-std::array<std::atomic<std::uint64_t>,WorldProbeTrackedLimit> WorldProbeReported{};
-std::atomic<std::uint32_t> WorldProbeProbeSampleMs{20};
-
-// 0.2.26 automatic, click-bounded candidate provenance. This never
-// intervenes in native mouse selection, item state, network pickup or UI.
-// A prior in-world label identity is a HINT, not the engine's click target.
-constexpr ULONGLONG PickupWindowMs=1500;
-constexpr std::size_t PickupSitesLimit=48;
-struct PickupNativeSite final {
-    std::uintptr_t returnRva{};
-    std::uint32_t code{},unitId{};
-    std::uint64_t hits{};
-    std::uint64_t sdkInventoryPollHits{},outsideSdkPollHits{};
-    ULONGLONG firstMs{},lastMs{};
-    bool recentGroundWitness{};
-    // One bounded call stack for the clicked candidate at this exact reader
-    // site. Capture addresses only; no borrowed native unit pointers.
-    std::array<std::uintptr_t,12> firstStack{};
-    unsigned firstStackDepth{},firstThreadId{};
-    bool stackAttempted{};
-};
-// Marks ONLY our synchronous SDK inventory/cursor snapshot. The native
-// code-reader hook may be called reentrantly on this exact UI thread; do not
-// mistake those reads for calls from D2R's mouse picker.
-thread_local bool PickupSdkInventoryPollActive=false;
-struct PickupSdkInventoryPollScope final {
-    bool previous;
-    PickupSdkInventoryPollScope() noexcept
-        :previous(PickupSdkInventoryPollActive){
-        PickupSdkInventoryPollActive=true;
-    }
-    ~PickupSdkInventoryPollScope() noexcept {
-        PickupSdkInventoryPollActive=previous;
-    }
-    PickupSdkInventoryPollScope(const PickupSdkInventoryPollScope&)=delete;
-    PickupSdkInventoryPollScope& operator=(const PickupSdkInventoryPollScope&)=delete;
-};
-std::mutex PickupSitesMutex;
-std::array<PickupNativeSite,PickupSitesLimit> PickupSites{};
-std::size_t PickupSiteCount{};
-std::atomic<ULONGLONG> PickupClickMs{};
-std::atomic<std::uint64_t> PickupHintToken{},PickupHoverToken{},PickupPreToken{};
-std::atomic<ULONGLONG> PickupHoverMs{},PickupPreMs{},PickupPostFirstCarriedMs{};
-// Snapshot status: 0 unavailable, 1 present snapshot/absent, 2 carried.
-std::atomic<unsigned> PickupPreStatus{},PickupPostStatus{},PickupBaselineAtClick{};
-std::atomic_bool PickupPollPending{};
-std::atomic<ULONGLONG> PickupPollScheduledMs{};
-std::atomic<std::uint32_t> PickupClickEpoch{},PickupPrePasses{},PickupPostPasses{},PickupBaselinePassesAtClick{};
-std::atomic<std::uint64_t> PickupNativeReadFailures{},PickupNativeContention{},
-    PickupNativeOverflow{};
-void HiddenPickupReset() noexcept {
-    PickupClickMs.store(0,std::memory_order_release);
-    PickupHintToken.store(0,std::memory_order_release);
-    PickupHoverToken.store(0,std::memory_order_release);
-    PickupHoverMs.store(0,std::memory_order_release);
-    PickupPreToken.store(0,std::memory_order_release);
-    PickupPreMs.store(0,std::memory_order_release);
-    PickupPollScheduledMs.store(0,std::memory_order_release);
-    PickupPreStatus.store(0,std::memory_order_release);
-    PickupPostStatus.store(0,std::memory_order_release);
-    PickupBaselineAtClick.store(0,std::memory_order_release);
-    PickupPostFirstCarriedMs.store(0,std::memory_order_release);
-    PickupClickEpoch.fetch_add(1,std::memory_order_acq_rel);
-    PickupPrePasses.store(0,std::memory_order_release);
-    PickupBaselinePassesAtClick.store(0,std::memory_order_release);
-    PickupPostPasses.store(0,std::memory_order_release);
-    PickupNativeReadFailures.store(0,std::memory_order_release);
-    PickupNativeContention.store(0,std::memory_order_release);
-    PickupNativeOverflow.store(0,std::memory_order_release);
-    // In-flight UI polling reads only owned atomic values; do NOT force-clear
-    // PickupPollPending because the scheduled callback may still be active.
-    if(PickupSitesMutex.try_lock()){
-        PickupSites.fill({});PickupSiteCount=0;PickupSitesMutex.unlock();
-    }
-}
-
-// Token = (canonical code << 32) | runtime ID. No native pointers survive.
-std::array<std::atomic<std::uint64_t>,WorldProbeTrackedLimit> WorldProbeGround{};
-std::jthread WorldProbeWorker{};
-bool WorldProbeMonitoredCode(std::uint32_t code) noexcept;
-
-// 0.2.39: Build-93847 native action witness. Consumer and queue detours always
-// forward. Dispatch only skips a qualified show:false ground-item action 22;
-// all other actions forward. No target clearing or input swallowing.
-namespace ActionTrace = NativeActionTracePolicy;
+// Build-93847 native pickup guard. The only intercepted action is native
+// item pickup (action 22, unit type 4). A pickup is blocked only after a fresh
+// native lookup proves the requested unit is still an on-ground item and the
+// current filter resolves it to Hide. Every uncertain read fails open.
 namespace PickupGuard = NativePickupGuardPolicy;
-constexpr std::uintptr_t NativeActionConsumerRva=0xF9BC0;
-constexpr std::uintptr_t NativeActionQueueRva=0xFBEF0;
 constexpr std::uintptr_t NativeActionDispatchRva=0xFABE0;
 constexpr std::uintptr_t NativeItemLookupRva=0x9A5D0;
 constexpr std::uintptr_t NativeVerifiedPickupCallRva=0x101ADF;
 using NativeItemLookupFn=void*(__fastcall*)(std::uint32_t,std::uint32_t) noexcept;
-std::atomic_bool NativePickupGuardQualified{};
-std::atomic<std::uint64_t> NativePickupGuardCandidates{},
-    NativePickupGuardBlocked{},NativePickupGuardLookupFailed{},
-    NativePickupGuardInvalidIdentity{},NativePickupGuardWrongMode{},
-    NativePickupGuardNoRule{};
-std::atomic<std::uint32_t> NativePickupGuardLastId{},
-    NativePickupGuardLastCode{},NativePickupGuardLastMode{};
-thread_local bool NativePickupGuardInside=false;
-// Always-on and independent of the optional F10 native-action capture phase.
-// Record a small immutable decision in the hook; write loader logs ONLY from
-// the existing background worker. Never store native unit/player pointers.
-struct NativePickupDecision final {
-    PickupGuard::Decision reason{PickupGuard::Decision::GuardInactive};
-    std::uint32_t code{};
-    std::uint32_t mode{0xffffffffU};
-    std::uint64_t generation{};
-};
-struct NativePickupDecisionEvent final {
-    ULONGLONG timestamp{};
-    std::uintptr_t callerRva{};
-    std::uint64_t generation{};
-    std::uint32_t itemId{},code{},mode{},threadId{};
-    std::uint32_t armed{},geometry{},qualified{};
-    PickupGuard::Decision reason{PickupGuard::Decision::GuardInactive};
-    bool callerInD2R{},captureActive{};
-};
-constexpr std::size_t NativePickupDecisionCapacity=256;
-std::mutex NativePickupDecisionMutex;
-std::array<NativePickupDecisionEvent,NativePickupDecisionCapacity> NativePickupDecisions{};
-std::size_t NativePickupDecisionCount{};
-std::atomic<std::uint64_t> NativePickupDecisionSeen{},NativePickupDecisionForwarded{},
-    NativePickupDecisionDropped{},NativePickupDecisionLogged{};
-
-using NativeActionConsumerFn=void(__fastcall*)(void*) noexcept;
-using NativeActionQueueFn=void(__fastcall*)(void*,std::uint32_t,
-    std::uint32_t,std::uint32_t) noexcept;
 using NativeActionDispatchFn=void(__fastcall*)(std::uint32_t,void*,
     std::uint32_t,std::uint32_t) noexcept;
-NativeActionConsumerFn OriginalNativeActionConsumer{};
-NativeActionQueueFn OriginalNativeActionQueue{};
 NativeActionDispatchFn OriginalNativeActionDispatch{};
-std::atomic_bool NativeActionConsumerInstalled{},NativeActionQueueInstalled{},
-    NativeActionDispatchInstalled{};
-constexpr std::size_t NativeActionMaxEvents=320;
-struct NativeActionEvent final {
-    std::uint64_t sequence{},token{};
-    ULONGLONG timestamp{};
-    std::uintptr_t callerRva{};
-    std::uint32_t thread{},action{},targetType{},targetId{};
-    std::uint32_t pendingAction{},pendingType{},pendingId{},pendingFlag{};
-    unsigned phase{},site{},stage{},pendingReadable{},callerInD2R{};
-};
-std::mutex NativeActionMutex;
-std::array<NativeActionEvent,NativeActionMaxEvents> NativeActionEvents{};
-std::size_t NativeActionCount{};
-std::atomic<std::uint64_t> NativeActionDropped{},NativeActionConsumerEmpty{},
-    NativeActionConsumerPendingOther{},NativeActionDispatchOther{},
-    NativeActionQueueOther{},NativeActionReadFailures{},NativeActionSequence{};
-std::atomic<int> NativeActionPhase{-1};
-std::atomic<unsigned> NativeActionEpoch{};
-std::atomic<ULONGLONG> NativeActionStarted{},NativeActionDeadline{},
-    NativeActionClickMs{};
-std::atomic<unsigned> NativeActionClickCount{};
-constexpr std::array<const char*,3> NativeActionPhaseNames{{
-    "hidden-exalted", "visible-divine", "empty-ground"}};
-constexpr std::array<const char*,3> NativeActionSites{{
-    "F9BC0-consumer", "FBEF0-queue", "FABE0-dispatch"}};
-constexpr std::array<const char*,2> NativeActionStages{{"entry", "return"}};
+std::atomic_bool NativePickupGuardQualified{};
+std::atomic_bool NativeActionDispatchInstalled{};
+thread_local bool NativePickupGuardInside=false;
+std::jthread RuntimeWorker{};
 
-bool NativeActionReadPending(void* player,ActionTrace::Pending& pending) noexcept {
-    if (!player) return false;
-    // Native unit header type 0 is the player. The interface is read-only and
-    // guarded for a stale, null or otherwise unreadable pointer.
-    std::uint32_t unitType=0xffffffffU;
-    SIZE_T count{};
-    if (!ReadProcessMemory(GetCurrentProcess(),player,&unitType,
-            sizeof(unitType),&count) || count!=sizeof(unitType) || unitType!=0)
-        return false;
-    void* state{};
-    count=0;
-    if (!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const std::byte*>(player) +
-                ActionTrace::PlayerInteractionDataOffset,
-            &state,sizeof(state),&count) || count!=sizeof(state) || !state)
-        return false;
-    count=0;
-    return ReadProcessMemory(GetCurrentProcess(),
-        reinterpret_cast<const std::byte*>(state) +
-            ActionTrace::PendingActionFieldsOffset,
-        &pending,sizeof(pending),&count)!=0 && count==sizeof(pending);
-}
-
-void NativeActionObserve(unsigned site,unsigned stage,void* player,
-    std::uint32_t action,std::uint32_t type,std::uint32_t id,
-    std::uintptr_t caller) noexcept {
-    const int phase=NativeActionPhase.load(std::memory_order_acquire);
-    if (phase<0 || phase>=static_cast<int>(NativeActionPhaseNames.size()))return;
-    const auto now=GetTickCount64();
-    if (now>NativeActionDeadline.load(std::memory_order_acquire))return;
-    ActionTrace::Pending pending{};
-    const bool readable=NativeActionReadPending(player,pending);
-    if (!readable)NativeActionReadFailures.fetch_add(1,std::memory_order_relaxed);
-    if(site==0) {
-        // F9BC0 processes queued actions, generally every frame. Retain the
-        // entry identity on return so we still observe when it was cleared.
-        if(stage==0) {
-            if(!readable || pending.flag==0){
-                NativeActionConsumerEmpty.fetch_add(1,std::memory_order_relaxed);
-                return;
-            }
-            if(!ActionTrace::IsPendingItem(pending)){
-                NativeActionConsumerPendingOther.fetch_add(1,
-                    std::memory_order_relaxed);return;
-            }
-            action=pending.action;type=pending.targetType;id=pending.targetId;
-        } else if(!ActionTrace::IsItemInteraction(type,id))return;
-    } else if (!ActionTrace::IsItemInteraction(type,id)) {
-        (site==1?NativeActionQueueOther:NativeActionDispatchOther)
-            .fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    if(!NativeActionMutex.try_lock()){
-        NativeActionDropped.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    if(NativeActionPhase.load(std::memory_order_acquire)!=phase ||
-        now>NativeActionDeadline.load(std::memory_order_relaxed)){
-        NativeActionMutex.unlock();return;
-    }
-    if(NativeActionCount>=NativeActionMaxEvents){
-        NativeActionDropped.fetch_add(1,std::memory_order_relaxed);
-        NativeActionMutex.unlock();return;
-    }
-    const auto witness=WorldProbeGround[id%WorldProbeTrackedLimit].load(
-        std::memory_order_acquire);
-    auto& e=NativeActionEvents[NativeActionCount++];
-    e={};
-    e.sequence=NativeActionSequence.fetch_add(1,std::memory_order_relaxed)+1;
-    e.timestamp=now;
-    e.thread=GetCurrentThreadId();
-    e.action=action;e.targetType=type;e.targetId=id;
-    e.pendingAction=pending.action;
-    e.pendingType=pending.targetType;e.pendingId=pending.targetId;
-    e.pendingFlag=pending.flag;e.pendingReadable=readable?1U:0U;
-    e.phase=static_cast<unsigned>(phase);e.site=site;e.stage=stage;
-    e.callerInD2R=(caller>=Base && caller-Base<ImageSize)?1U:0U;
-    e.callerRva=e.callerInD2R?caller-Base:0;
-    // Only annotate code where a previous label/painter observation explicitly
-    // linked the same native unit ID to exo/divo. NOT fresh target proof.
-    if(static_cast<std::uint32_t>(witness)==id &&
-       WorldProbeMonitoredCode(static_cast<std::uint32_t>(witness>>32U)))
-        e.token=witness;
-    NativeActionMutex.unlock();
-}
-
-void __fastcall HookNativeActionConsumer(void* player) noexcept {
-    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    ActionTrace::Pending entry{};
-    const bool observing=NativeActionPhase.load(std::memory_order_acquire)>=0;
-    if(observing){
-        (void)NativeActionReadPending(player,entry);
-        NativeActionObserve(0,0,player,0,0,0,caller);
-    }
-    OriginalNativeActionConsumer(player);
-    if(observing && ActionTrace::IsPendingItem(entry))
-        NativeActionObserve(0,1,player,entry.action,
-            entry.targetType,entry.targetId,caller);
-}
-void __fastcall HookNativeActionQueue(void* player,std::uint32_t action,
+PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     std::uint32_t type,std::uint32_t id) noexcept {
-    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    NativeActionObserve(1,0,player,action,type,id,caller);
-    OriginalNativeActionQueue(player,action,type,id);
-    NativeActionObserve(1,1,player,action,type,id,caller);
-}
-// 0.2.39 build-93847: an action-22/type-4 candidate is independent of
-// caller provenance. Both direct and deferred native action dispatches use
-// fresh type/id lookup, current ground mode, and current show:false rules.
-// The caller RVA is retained for diagnostics only; unknown callers never
-// authorize a block without all of the same identity/rule checks. No native
-// unit, item, target-slot, input, or player memory is written.
-NativePickupDecision QualifyGroundPickup(std::uint32_t action,void* player,
-    std::uint32_t type,std::uint32_t id) noexcept {
-    NativePickupDecision result{};
-    const auto fail=[&result](PickupGuard::Decision reason) noexcept {
-        result.reason=reason;
-        return result;
-    };
     if(!NativePickupGuardQualified.load(std::memory_order_acquire))
-        return fail(PickupGuard::Decision::GuardInactive);
-    if(id==0) return fail(PickupGuard::Decision::InvalidTargetId);
-    // Caller origin is NOT a filter authorization criterion. The observed
-    // D2R+0x101AE4 immediate and D2R+0xFA11A deferred paths must share the
-    // identical fresh item/mode/rule qualification; caller is logged below.
+        return PickupGuard::Decision::GuardInactive;
     if(!PickupGuard::Candidate(action,type,id))
-        return fail(PickupGuard::Decision::InvalidTargetId);
+        return PickupGuard::Decision::InvalidTargetId;
     if(!HideGroundArmed.load(std::memory_order_acquire))
-        return fail(PickupGuard::Decision::VisibilityNotArmed);
+        return PickupGuard::Decision::VisibilityNotArmed;
     if(ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
-        return fail(PickupGuard::Decision::RulesModeInactive);
+        return PickupGuard::Decision::RulesModeInactive;
     if(!HookInstalled.load(std::memory_order_acquire) || !OriginalGetItemCode)
-        return fail(PickupGuard::Decision::CodeReaderUnavailable);
-    if(!player) return fail(PickupGuard::Decision::NullPlayer);
-    if(NativePickupGuardInside) return fail(PickupGuard::Decision::Reentrant);
+        return PickupGuard::Decision::CodeReaderUnavailable;
+    if(!player) return PickupGuard::Decision::NullPlayer;
+    if(NativePickupGuardInside) return PickupGuard::Decision::Reentrant;
+
     const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
         std::memory_order_acquire);
     if(!rules || !rules->hiddenRules)
-        return fail(PickupGuard::Decision::NoHiddenRules);
-    result.generation=rules->generation;
-    NativePickupGuardCandidates.fetch_add(1,std::memory_order_relaxed);
-    std::uint32_t playerType=0xffffffff;
+        return PickupGuard::Decision::NoHiddenRules;
+
+    std::uint32_t playerType=0xffffffffU;
     SIZE_T copied{};
     if(!ReadProcessMemory(GetCurrentProcess(),player,&playerType,
             sizeof(playerType),&copied) || copied!=sizeof(playerType) ||
-       playerType!=0) {
-        NativePickupGuardInvalidIdentity.fetch_add(1,std::memory_order_relaxed);
-        return fail(PickupGuard::Decision::InvalidPlayer);
-    }
-    // Direct lookup admitted only after exact callsite/entry checks in
-    // NativeActionInstall. No cached label hint authorizes a block.
+       playerType!=0)
+        return PickupGuard::Decision::InvalidPlayer;
+
     NativePickupGuardInside=true;
     auto* unit=reinterpret_cast<NativeItemLookupFn>(Base+NativeItemLookupRva)(
         id,PickupGuard::ItemUnitType);
     NativePickupGuardInside=false;
-    if(!unit){
-        NativePickupGuardLookupFailed.fetch_add(1,std::memory_order_relaxed);
-        return fail(PickupGuard::Decision::LookupFailed);
-    }
+    if(!unit) return PickupGuard::Decision::LookupFailed;
+
     std::array<std::uint32_t,4> header{};
     copied=0;
     if(!ReadProcessMemory(GetCurrentProcess(),unit,header.data(),
             sizeof(header),&copied) || copied!=sizeof(header) ||
-       !PickupGuard::SameItemIdentity(header[0],header[2],id)){
-        NativePickupGuardInvalidIdentity.fetch_add(1,std::memory_order_relaxed);
-        return fail(PickupGuard::Decision::InvalidUnit);
-    }
-    result.mode=header[3];
-    NativePickupGuardLastMode.store(header[3],std::memory_order_relaxed);
-    // UnitAny.mode DWORD at +0xC; do not broaden mode 3 speculatively.
-    if(!PickupGuard::GroundMode(header[3])){
-        NativePickupGuardWrongMode.fetch_add(1,std::memory_order_relaxed);
-        return fail(PickupGuard::Decision::NotGround);
-    }
+       !PickupGuard::SameItemIdentity(header[0],header[2],id))
+        return PickupGuard::Decision::InvalidUnit;
+    if(!PickupGuard::GroundMode(header[3]))
+        return PickupGuard::Decision::NotGround;
+
     NativePickupGuardInside=true;
-    result.code=CanonicalItemCode(OriginalGetItemCode(unit));
+    const auto code=CanonicalItemCode(OriginalGetItemCode(unit));
     NativePickupGuardInside=false;
-    if(!PrintableItemCode(result.code)){
-        NativePickupGuardInvalidIdentity.fetch_add(1,std::memory_order_relaxed);
-        return fail(PickupGuard::Decision::InvalidCode);
-    }
-    const auto ruleItem=GroundRuleItem(result.code,unit,rules.get(),id);
+    if(!PrintableItemCode(code))
+        return PickupGuard::Decision::InvalidCode;
+
+    const auto ruleItem=GroundRuleItem(code,unit,rules.get(),id);
     GroundRuleDecision resolvedRule{};
     const auto* matchedRule=ResolveGroundRule(rules.get(),ruleItem,resolvedRule) ?
         &resolvedRule : nullptr;
-    if(!matchedRule || matchedRule->show){
-        NativePickupGuardNoRule.fetch_add(1,std::memory_order_relaxed);
-        return fail(PickupGuard::Decision::NoHiddenRule);
-    }
-    NativePickupGuardLastId.store(id,std::memory_order_relaxed);
-    NativePickupGuardLastCode.store(result.code,std::memory_order_relaxed);
-    NativePickupGuardBlocked.fetch_add(1,std::memory_order_relaxed);
-    // FUN_1400fabe0 returns void; neither direct nor deferred caller consumes a result.
-    result.reason=PickupGuard::Decision::Blocked;
-    return result;
-}
-
-void RecordPickupDecision(std::uint32_t id,std::uintptr_t caller,
-    const NativePickupDecision& result) noexcept {
-    NativePickupDecisionSeen.fetch_add(1,std::memory_order_relaxed);
-    if(result.reason!=PickupGuard::Decision::Blocked)
-        NativePickupDecisionForwarded.fetch_add(1,std::memory_order_relaxed);
-    if(!NativePickupDecisionMutex.try_lock()){
-        NativePickupDecisionDropped.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    if(NativePickupDecisionCount>=NativePickupDecisionCapacity){
-        NativePickupDecisionDropped.fetch_add(1,std::memory_order_relaxed);
-        NativePickupDecisionMutex.unlock();return;
-    }
-    auto& e=NativePickupDecisions[NativePickupDecisionCount++];
-    e={};
-    e.timestamp=GetTickCount64();
-    e.itemId=id;e.code=result.code;e.mode=result.mode;
-    e.generation=result.generation;
-    e.reason=result.reason;
-    e.threadId=GetCurrentThreadId();
-    e.callerInD2R=caller>=Base && caller-Base<ImageSize;
-    e.callerRva=e.callerInD2R?caller-Base:0;
-    e.armed=HideGroundArmed.load(std::memory_order_relaxed)?1U:0U;
-    e.geometry=static_cast<unsigned>(ActiveGeometryMode.load(
-        std::memory_order_relaxed));
-    e.qualified=NativePickupGuardQualified.load(std::memory_order_relaxed)?1U:0U;
-    e.captureActive=NativeActionPhase.load(std::memory_order_relaxed)>=0;
-    NativePickupDecisionMutex.unlock();
-}
-
-// Worker-only drain. No window, phase, hotkey, or seven-second timer gates it.
-void DrainPickupDecisions() noexcept {
-    std::array<NativePickupDecisionEvent,NativePickupDecisionCapacity> rows{};
-    std::size_t count{};
-    {
-        std::lock_guard lock(NativePickupDecisionMutex);
-        count=NativePickupDecisionCount;
-        if(count) std::copy_n(NativePickupDecisions.begin(),count,rows.begin());
-        NativePickupDecisionCount=0;
-    }
-    for(std::size_t i=0;i<count;++i){
-        const auto& e=rows[i];
-        char code[5]{};
-        CodeText(e.code,code);
-        char line[470]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_PICKUP_GUARD_DECISION version=1.0.0 ms=%llu "
-            "outcome=%s reason=%s action=22 targetType=4 targetId=%u "
-            "code='%.4s' unitMode=%u callerRva=D2R+0x%llX "
-            "callerInD2R=%u rulesGeneration=%llu qualified=%u "
-            "visibilityArmed=%u geometryMode=%u captureActive=%u "
-            "tid=%u phaseIndependent=1",
-            static_cast<unsigned long long>(e.timestamp),
-            e.reason==PickupGuard::Decision::Blocked?"BLOCKED":"FORWARDED",
-            PickupGuard::DecisionName(e.reason),e.itemId,code,e.mode,
-            static_cast<unsigned long long>(e.callerRva),
-            e.callerInD2R?1U:0U,
-            static_cast<unsigned long long>(e.generation),e.qualified,e.armed,
-            e.geometry,e.captureActive?1U:0U,e.threadId);
-        Emit(line);
-    }
-    NativePickupDecisionLogged.fetch_add(count,std::memory_order_relaxed);
+    if(!matchedRule || matchedRule->show)
+        return PickupGuard::Decision::NoHiddenRule;
+    return PickupGuard::Decision::Blocked;
 }
 
 void __fastcall HookNativeActionDispatch(std::uint32_t action,void* player,
     std::uint32_t type,std::uint32_t id) noexcept {
-    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    NativeActionObserve(2,0,player,action,type,id,caller);
-    // Never call a native helper for other action codes/unit types. Logging is
-    // active for EVERY observed action-22 item dispatch, regardless of F10.
-    if(action==PickupGuard::PickupAction && type==PickupGuard::ItemUnitType){
-        const auto decision=QualifyGroundPickup(action,player,type,id);
-        RecordPickupDecision(id,caller,decision);
-        if(decision.reason==PickupGuard::Decision::Blocked)return;
-    }
+    if(action==PickupGuard::PickupAction && type==PickupGuard::ItemUnitType &&
+       QualifyGroundPickup(action,player,type,id)==PickupGuard::Decision::Blocked)
+        return;
     OriginalNativeActionDispatch(action,player,type,id);
-    NativeActionObserve(2,1,player,action,type,id,caller);
 }
 
-bool NativeActionCallMatches(std::uintptr_t callRva,
+bool NativeCallMatches(std::uintptr_t callRva,
     std::uintptr_t targetRva) noexcept {
     std::array<std::uint8_t,5> bytes{};
-    if(!ReadSafe(callRva,bytes.data(),bytes.size()) || bytes[0]!=0xe8)
+    if(!ReadSafe(callRva,bytes.data(),bytes.size()) || bytes[0]!=0xE8)
         return false;
     std::int32_t relative{};
     std::memcpy(&relative,bytes.data()+1,sizeof(relative));
     return static_cast<std::int64_t>(callRva)+5+relative==
         static_cast<std::int64_t>(targetRva);
 }
-void NativeActionInstall() noexcept {
+
+void InstallNativePickupGuard() noexcept {
     if(!Context || !Base || !ImageSize ||
        !D2RL::GetBuildName(Context) ||
        std::string_view(D2RL::GetBuildName(Context))!="93847"){
-        Emit("LOOT_NATIVE_ACTION_REFUSED reason=wrong-build-or-image zero-new-hooks=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=wrong-build-or-image forward-only=1");
         return;
     }
-    IMAGE_DOS_HEADER dos{};IMAGE_NT_HEADERS64 nt{};
+
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
     if(!ReadSafe(0,&dos,sizeof(dos)) || dos.e_magic!=IMAGE_DOS_SIGNATURE ||
        dos.e_lfanew<=0 || dos.e_lfanew>0x1000 ||
        !ReadSafe(static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
        nt.Signature!=IMAGE_NT_SIGNATURE ||
        nt.FileHeader.TimeDateStamp!=0x6AB3782C ||
        nt.OptionalHeader.SizeOfImage!=ImageSize){
-        Emit("LOOT_NATIVE_ACTION_REFUSED reason=PE-timestamp-or-image-size-mismatch zero-new-hooks=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=PE-timestamp-or-image-size-mismatch forward-only=1");
         return;
     }
-    // All six observed E8 edges come from the user's raw-image Ghidra report.
-    // Validate their live targets, rather than assuming a decompilation proves
-    // an RVAs' entry is still unowned after other plugins are loaded.
-    constexpr std::array<std::pair<std::uintptr_t,std::uintptr_t>,8> edges{{
-        {0x8BF71,NativeActionConsumerRva},
-        {0x95041,NativeActionConsumerRva},
-        {0xF9ED5,NativeActionQueueRva},
-        {0xF9F35,NativeActionQueueRva},
-        {0xFA094,NativeActionQueueRva},
-        {0xFA103,NativeActionQueueRva},
-        {0xFA115,NativeActionDispatchRva},
-        {0xFBF30,NativeActionDispatchRva}
+
+    // These build-93847 call edges qualify both the immediate and deferred
+    // routes into the dispatch function, plus the unit-by-id lookup used by
+    // that dispatch. They are validation witnesses only; caller provenance is
+    // never used to authorize a block.
+    constexpr std::array<std::uintptr_t,3> dispatchWitnesses{{
+        0xFA115,0xFBF30,NativeVerifiedPickupCallRva
     }};
-    for(const auto& edge:edges){
-        if(!NativeActionCallMatches(edge.first,edge.second)){
-            char line[230]{};
-            std::snprintf(line,sizeof(line),
-                "LOOT_NATIVE_ACTION_REFUSED reason=callsite-witness-mismatch site=D2R+0x%llX zero-new-hooks=1",
-                static_cast<unsigned long long>(edge.first));
-            Emit(line);return;
+    for(const auto callRva:dispatchWitnesses){
+        if(!NativeCallMatches(callRva,NativeActionDispatchRva)){
+            Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=dispatch-callsite-witness-mismatch forward-only=1");
+            return;
         }
     }
-    // Keep the observed direct call edge as a BUILD/ABI integrity witness,
-    // NOT a requirement on the live caller. The deferred path D2R+0xFA115
-    // -> FABE0 is also independently checked in edges above. Qualify the
-    // native unit-by-id helper used by FABE0 itself. No global event veto.
     constexpr std::array<std::uint8_t,3> lookupEntry{{0x4C,0x63,0xCA}};
-    const bool lookupQualified=
-        NativeActionCallMatches(NativeVerifiedPickupCallRva,
-            NativeActionDispatchRva) &&
-        NativeActionCallMatches(0xFACB9,NativeItemLookupRva) &&
-        Context->CheckExpectedBytes(NativeItemLookupRva,
-            lookupEntry.data(),static_cast<std::uint32_t>(lookupEntry.size()));
-    if(!lookupQualified)
-        Emit("LOOT_PICKUP_GUARD_REFUSED reason=direct-call-edge-or-lookup-witness-mismatch forward-only=1");
-    // F9BC0 is recorded instruction-for-instruction; additional entry checks
-    // for FBEF0/FABE0 use an exact snapshot of LIVE bytes after validating the
-    // PE, call graph and absence of existing JMP/FF25 bridge. This is NOT an
-    // independent static fingerprint. Loader still rejects changed bytes.
-    constexpr std::array<std::uint8_t,18> consumerEntry{{
-        0x48,0x85,0xC9,0x0F,0x84,0x78,0x05,0x00,0x00,
-        0x55,0x53,0x48,0x8B,0xEC,0x48,0x83,0xEC,0x68}};
-    if(!Context->CheckExpectedBytes(NativeActionConsumerRva,
-            consumerEntry.data(),static_cast<std::uint32_t>(consumerEntry.size()))){
-        Emit("LOOT_NATIVE_ACTION_REFUSED reason=consumer-exact-entry-mismatch zero-new-hooks=1");
+    if(!NativeCallMatches(0xFACB9,NativeItemLookupRva) ||
+       !Context->CheckExpectedBytes(NativeItemLookupRva,
+            lookupEntry.data(),static_cast<std::uint32_t>(lookupEntry.size()))){
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=item-lookup-witness-mismatch forward-only=1");
         return;
     }
-    std::array<std::uint8_t,20> queueEntry{},dispatchEntry{};
-    if(!ReadSafe(NativeActionQueueRva,queueEntry.data(),queueEntry.size()) ||
-       !ReadSafe(NativeActionDispatchRva,dispatchEntry.data(),dispatchEntry.size()) ||
-       !((queueEntry[0]==0x40)||(queueEntry[0]==0x48)||
-         (queueEntry[0]>=0x50 && queueEntry[0]<=0x57)) ||
+
+    // Take an exact live snapshot only after the immutable build/call-graph
+    // witnesses above pass. Reject an entry already owned by an obvious bridge;
+    // the loader performs the final expected-byte check during registration.
+    std::array<std::uint8_t,20> dispatchEntry{};
+    if(!ReadSafe(NativeActionDispatchRva,dispatchEntry.data(),
+            dispatchEntry.size()) ||
        !((dispatchEntry[0]==0x40)||(dispatchEntry[0]==0x48)||
          (dispatchEntry[0]>=0x50 && dispatchEntry[0]<=0x57)) ||
-       (queueEntry[0]==0x48 && queueEntry[1]==0xFF && queueEntry[2]==0x25) ||
-       (dispatchEntry[0]==0x48 && dispatchEntry[1]==0xFF && dispatchEntry[2]==0x25) ||
-       !Context->CheckExpectedBytes(NativeActionQueueRva,
-            queueEntry.data(),static_cast<std::uint32_t>(queueEntry.size())) ||
+       (dispatchEntry[0]==0x48 && dispatchEntry[1]==0xFF &&
+        dispatchEntry[2]==0x25) ||
        !Context->CheckExpectedBytes(NativeActionDispatchRva,
-            dispatchEntry.data(),static_cast<std::uint32_t>(dispatchEntry.size()))){
-        Emit("LOOT_NATIVE_ACTION_REFUSED reason=queue-or-dispatch-entry-unqualified zero-new-hooks=1");
+            dispatchEntry.data(),
+            static_cast<std::uint32_t>(dispatchEntry.size()))){
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=dispatch-entry-unqualified forward-only=1");
         return;
     }
-    // Install deepest callee first; dispatch blocks only qualified hidden
-    // ground-item action 22, while queue and consumer always forward.
+
     if(!Context->InstallInlineHook(NativeActionDispatchRva,
             dispatchEntry.data(),static_cast<std::uint32_t>(dispatchEntry.size()),
             HookNativeActionDispatch,&OriginalNativeActionDispatch) ||
        !OriginalNativeActionDispatch){
-        Emit("LOOT_NATIVE_ACTION_REFUSED reason=dispatch-loader-hook-failed no-probe-armed=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=dispatch-hook-registration-failed forward-only=1");
         return;
     }
+
     NativeActionDispatchInstalled.store(true,std::memory_order_release);
-    if(!Context->InstallInlineHook(NativeActionQueueRva,
-            queueEntry.data(),static_cast<std::uint32_t>(queueEntry.size()),
-            HookNativeActionQueue,&OriginalNativeActionQueue) ||
-       !OriginalNativeActionQueue){
-        Emit("LOOT_NATIVE_ACTION_PARTIAL reason=queue-loader-hook-failed no-probe-armed=1 dispatch-forward-only=1");
-        return;
-    }
-    NativeActionQueueInstalled.store(true,std::memory_order_release);
-    if(!Context->InstallInlineHook(NativeActionConsumerRva,
-            consumerEntry.data(),static_cast<std::uint32_t>(consumerEntry.size()),
-            HookNativeActionConsumer,&OriginalNativeActionConsumer) ||
-       !OriginalNativeActionConsumer){
-        Emit("LOOT_NATIVE_ACTION_PARTIAL reason=consumer-loader-hook-failed no-probe-armed=1 other-hooks-forward-only=1");
-        return;
-    }
-    NativeActionConsumerInstalled.store(true,std::memory_order_release);
-    NativePickupGuardQualified.store(lookupQualified,std::memory_order_release);
-    Emit(lookupQualified ?
-        "LOOT_PICKUP_GUARD_READY version=1.0.0 action=22 type=4 callerPolicy=none observedImmediate=D2R+0x101AE4 observedDeferred=D2R+0xFA11A mode=3 freshLookup=D2R+0x9A5D0 codeSource=qualified-original-helper rule=show:false stateWrites=0 returnContract=void decisionLog=always-on captureKey=optional" :
-        "LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=lookup-or-caller-witness forward-only=1");
-    Emit("LOOT_NATIVE_ACTION_READY version=1.0.0 build=93847 "
-        "hooks=F9BC0,FBEF0,FABE0 forwardOriginal=1 "
-        "qualifier=PE-timestamp+eight-exact-E8-edges+entry-guards "
-        "F9BC0-entry=static-exact FBEF0/FABE0-entry=live-snapshot-not-static-fingerprint "
-        "capture=Ctrl+Shift+F10 click-observation=Win32 edge "
-        "gameplayWrites=0 slotWrites=0 clickSuppression=qualified-show-false-only");
-}
-
-void NativeActionStartPhase(ULONGLONG now) noexcept {
-    if(!NativeActionConsumerInstalled.load(std::memory_order_acquire) ||
-       !NativeActionQueueInstalled.load(std::memory_order_acquire) ||
-       !NativeActionDispatchInstalled.load(std::memory_order_acquire)){
-        Emit("LOOT_NATIVE_ACTION_UNAVAILABLE reason=not-all-three-hooks-qualified");
-        return;
-    }
-    if(NativeActionPhase.load(std::memory_order_acquire)>=0){
-        Emit("LOOT_NATIVE_ACTION_BUSY wait-for-current-seven-second-phase");
-        return;
-    }
-    const unsigned phase=NativeActionEpoch.fetch_add(1,
-        std::memory_order_acq_rel)%static_cast<unsigned>(NativeActionPhaseNames.size());
-    NativeActionPhase.store(-1,std::memory_order_release);
-    {
-        std::lock_guard lock(NativeActionMutex);
-        NativeActionCount=0;
-        NativeActionEvents.fill({});
-    }
-    NativeActionDropped.store(0);NativeActionConsumerEmpty.store(0);
-    NativeActionConsumerPendingOther.store(0);
-    NativeActionQueueOther.store(0);NativeActionDispatchOther.store(0);
-    NativeActionReadFailures.store(0);
-    NativeActionClickMs.store(0,std::memory_order_release);
-    NativeActionClickCount.store(0,std::memory_order_release);
-    NativeActionStarted.store(now,std::memory_order_release);
-    NativeActionDeadline.store(now+ActionTrace::PhaseDurationMs,
-        std::memory_order_release);
-    NativeActionPhase.store(static_cast<int>(phase),std::memory_order_release);
-    char msg[360]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_NATIVE_ACTION_PHASE_BEGIN version=1.0.0 phase=%s durationMs=%llu "
-        "trigger=Ctrl+Shift+F10 instruction=perform-one-isolated-click "
-        "noItemOrTargetWrites=1 pickupGuard=qualified-show-false-only",
-        NativeActionPhaseNames[phase],
-        static_cast<unsigned long long>(ActionTrace::PhaseDurationMs));
-    Emit(msg);
-}
-void NativeActionFinishPhase(ULONGLONG now) noexcept {
-    int phase=NativeActionPhase.load(std::memory_order_acquire);
-    if(phase<0 || now<NativeActionDeadline.load(std::memory_order_acquire))return;
-    if(!NativeActionPhase.compare_exchange_strong(phase,-1,
-            std::memory_order_acq_rel))return;
-    // Publish no active phase BEFORE waiting for any in-flight hook recorder.
-    std::array<NativeActionEvent,NativeActionMaxEvents> rows{};
-    std::size_t count{};
-    {
-        std::lock_guard lock(NativeActionMutex);
-        count=NativeActionCount;
-        for(std::size_t i=0;i<count;++i)rows[i]=NativeActionEvents[i];
-    }
-    const auto click=NativeActionClickMs.load(std::memory_order_acquire);
-    const auto totalClicks=NativeActionClickCount.load(std::memory_order_acquire);
-    char line[610]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_ACTION_PHASE_END version=1.0.0 phase=%s events=%zu "
-        "clickEdges=%u lastClickMs=%llu consumerNoPending=%llu "
-        "consumerNonItemPending=%llu queueNonItem=%llu dispatchNonItem=%llu "
-        "pendingReadFailure=%llu eventOverflowOrContention=%llu "
-        "meaning=bounded-native-interaction-correlation-with-guard",
-        NativeActionPhaseNames[static_cast<unsigned>(phase)],count,totalClicks,
-        static_cast<unsigned long long>(click),
-        static_cast<unsigned long long>(NativeActionConsumerEmpty.load()),
-        static_cast<unsigned long long>(NativeActionConsumerPendingOther.load()),
-        static_cast<unsigned long long>(NativeActionQueueOther.load()),
-        static_cast<unsigned long long>(NativeActionDispatchOther.load()),
-        static_cast<unsigned long long>(NativeActionReadFailures.load()),
-        static_cast<unsigned long long>(NativeActionDropped.load()));
-    Emit(line);
-    {
-        char guard[260]{};
-        std::snprintf(guard,sizeof(guard),
-            "LOOT_PICKUP_GUARD_PHASE version=1.0.0 phase=%s candidates=%llu blocked=%llu "
-            "lastBlockedId=%u lastMode=%u",
-            NativeActionPhaseNames[static_cast<unsigned>(phase)],
-            static_cast<unsigned long long>(NativePickupGuardCandidates.load()),
-            static_cast<unsigned long long>(NativePickupGuardBlocked.load()),
-            NativePickupGuardLastId.load(),NativePickupGuardLastMode.load());
-        Emit(guard);
-    }
-    for(std::size_t i=0;i<count;++i){
-        const auto& e=rows[i];char code[5]{};
-        CodeText(static_cast<std::uint32_t>(e.token>>32U),code);
-        std::snprintf(line,sizeof(line),
-            "LOOT_NATIVE_ACTION_EVENT phase=%s seq=%llu site=%s stage=%s "
-            "ms=%llu clickDeltaMs=%lld nearClick=%u "
-            "action=%u targetType=%u targetId=%u "
-            "groundCodeHint='%.4s' hintMatchesTargetId=%u "
-            "pendingReadable=%u pendingFlag=%u pendingAction=%u "
-            "pendingType=%u pendingId=%u callerRva=D2R+0x%llX "
-            "callerInD2R=%u tid=%u recorderWrites=0",
-            NativeActionPhaseNames[e.phase],
-            static_cast<unsigned long long>(e.sequence),
-            NativeActionSites[e.site],NativeActionStages[e.stage],
-            static_cast<unsigned long long>(e.timestamp),
-            click?static_cast<long long>(e.timestamp)-
-                static_cast<long long>(click):0LL,
-            ActionTrace::NearClick(e.timestamp,click)?1U:0U,
-            e.action,e.targetType,e.targetId,code,e.token?1U:0U,
-            e.pendingReadable,e.pendingFlag,e.pendingAction,e.pendingType,
-            e.pendingId,static_cast<unsigned long long>(e.callerRva),
-            e.callerInD2R,e.thread);
-        Emit(line);
-    }
-}
-
-bool WorldProbeMonitoredCode(std::uint32_t code) noexcept {
-    return code == DivineCode || code == WorldProbeExaltedCode;
-}
-std::uint64_t WorldProbeToken(std::uint32_t code,std::uint32_t id) noexcept {
-    return (static_cast<std::uint64_t>(code)<<32U) | id;
-}
-void WorldProbeResetGround() noexcept {
-    HiddenPickupReset();
-    WorldProbePhase.store(-1,std::memory_order_release);
-    for (auto& slot: WorldProbeGround)slot.store(0,std::memory_order_release);
-    for (auto& slot: WorldProbeBaseline)slot.store(0,std::memory_order_release);
-    for (auto& slot: WorldProbeReported)slot.store(0,std::memory_order_release);
-    WorldProbeLastClickMs.store(0);
-    WorldProbeClickEdges.store(0);
-    WorldProbeBaselineReady.store(false);
-    WorldProbeCarriedHidden.store(0,std::memory_order_release);
-    WorldProbeCarriedControl.store(0,std::memory_order_release);
-    WorldProbeLastCarriedHidden.store(0,std::memory_order_release);
-    WorldProbeLastCarriedControl.store(0,std::memory_order_release);
-}
-void WorldProbeObserveGround(std::uint32_t code,std::uint32_t id) noexcept {
-    if (!WorldProbeRunning.load(std::memory_order_relaxed) || !id ||
-        !WorldProbeMonitoredCode(code)) return;
-    WorldProbeGround[id%WorldProbeTrackedLimit].store(WorldProbeToken(code,id),
-        std::memory_order_release);
-    PickupHoverToken.store(WorldProbeToken(code,id),std::memory_order_release);
-    PickupHoverMs.store(GetTickCount64(),std::memory_order_release);
-    WorldProbeGroundSamples.fetch_add(1,std::memory_order_relaxed);
-}
-void WorldProbeObserveSelectedLabel(std::uint32_t code,std::uint32_t id,
-                                    bool textAvailable) noexcept {
-    const auto phase=WorldProbePhase.load(std::memory_order_acquire);
-    if(phase<0 || !WorldProbeRunning.load(std::memory_order_relaxed) ||
-       !id || !WorldProbeMonitoredCode(code))return;
-    const auto epoch=WorldProbeEpoch.load(std::memory_order_acquire);
-    const auto sequence=WorldProbeLabelCalls.fetch_add(1,std::memory_order_relaxed)+1;
-    const bool differentCode=WorldProbeLastStackCode.exchange(code,
-        std::memory_order_acq_rel)!=code;
-    // A full Win64 unwind on EVERY hover callback would needlessly burden
-    // the render/UI thread. Capture early samples, changes of item code,
-    // and then one per 16 eligible callbacks. Captures are NOT exact counts.
-    const bool capture=sequence<=16 || (sequence%16)==0 || differentCode;
-    std::array<PVOID,32> frames{};
-    unsigned frameCount{};
-    WorldProbeLabelStack::Witness witness{};
-    if(capture){
-        frameCount=CaptureStackBackTrace(1,
-            static_cast<DWORD>(frames.size()),frames.data(),nullptr);
-        witness=WorldProbeLabelStack::Identify(
-            std::span<const PVOID>(frames.data(),frameCount),Base,ImageSize);
-    }
-    if(!WorldProbeMutex.try_lock()){
-        WorldProbeLabelContention.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    // Never attribute a stack unwind to the next user-marked phase.
-    if(phase!=WorldProbePhase.load(std::memory_order_acquire) ||
-       epoch!=WorldProbeEpoch.load(std::memory_order_acquire)){
-        WorldProbeMutex.unlock();return;
-    }
-    WorldProbeLabelUnit* row=nullptr;
-    for(std::size_t i=0;i<WorldProbeLabelCount;++i)
-        if(WorldProbeLabelUnits[i].code==code &&
-           WorldProbeLabelUnits[i].unitId==id){row=&WorldProbeLabelUnits[i];break;}
-    if(!row && WorldProbeLabelCount<WorldProbeLabelUnits.size()){
-        row=&WorldProbeLabelUnits[WorldProbeLabelCount++];
-        *row={};row->code=code;row->unitId=id;
-    }
-    if(row){
-        const auto now=GetTickCount64();
-        const auto click=WorldProbeLastClickMs.load(std::memory_order_acquire);
-        ++row->calls;
-        if(textAvailable)++row->withText;else ++row->noText;
-        if(!row->firstMs)row->firstMs=now;
-        row->lastMs=now;
-        if(!click || now<click)++row->beforeClick;
-        else if(WorldProbeEvidence::NearObservedClick(now,click))++row->nearClick;
-        else ++row->afterClick;
-        if(capture){
-            ++row->capturedStacks;
-            WorldProbeStackSamples.fetch_add(1,std::memory_order_relaxed);
-            if(witness.distinctSiteCount==0){
-                ++row->noKnownCallerStacks;
-                WorldProbeStackUnmatched.fetch_add(1,std::memory_order_relaxed);
-            }else if(witness.distinctSiteCount>1){
-                ++row->ambiguousCallerStacks;
-                WorldProbeStackAmbiguous.fetch_add(1,std::memory_order_relaxed);
-            }else{
-                WorldProbeLabelCaller* caller=nullptr;
-                for(std::size_t i=0;i<WorldProbeLabelCallerCount;++i)
-                    if(WorldProbeLabelCallers[i].code==code &&
-                       WorldProbeLabelCallers[i].unitId==id &&
-                       WorldProbeLabelCallers[i].returnRva==witness.returnRva){
-                        caller=&WorldProbeLabelCallers[i];break;
-                    }
-                if(!caller && WorldProbeLabelCallerCount<WorldProbeLabelCallers.size()){
-                    caller=&WorldProbeLabelCallers[WorldProbeLabelCallerCount++];
-                    *caller={};caller->code=code;caller->unitId=id;
-                    caller->returnRva=witness.returnRva;
-                    caller->firstFrameIndex=witness.frameIndex;
-                }
-                if(caller){
-                    ++caller->samples;
-                    if(click && now>=click && WorldProbeEvidence::NearObservedClick(now,click))
-                        ++caller->nearClick;
-                }else WorldProbeStackDropped.fetch_add(1,std::memory_order_relaxed);
-            }
-            // Keep up to two examples per code per phase. Record ONLY D2R
-            // module-relative return RVAs, not foreign library addresses or
-            // native/SoE pointers. This helps diagnose truncated unwinds.
-            std::size_t existing{};
-            for(std::size_t i=0;i<WorldProbeStackExampleCount;++i)
-                if(WorldProbeStackExamples[i].code==code)++existing;
-            if(existing<2 && WorldProbeStackExampleCount<WorldProbeStackExamples.size()){
-                auto& example=WorldProbeStackExamples[WorldProbeStackExampleCount++];
-                example={};example.code=code;example.unitId=id;
-                example.depth=frameCount;
-                example.matchedSite=static_cast<std::uint32_t>(witness.returnRva);
-                example.otherMatchedSites=witness.distinctSiteCount>0?
-                    witness.distinctSiteCount-1:0;
-                for(std::size_t i=0;i<example.frameRvas.size() && i<frameCount;++i){
-                    const auto address=reinterpret_cast<std::uintptr_t>(frames[i]);
-                    example.frameRvas[i]=address>=Base && address-Base<ImageSize?
-                        address-Base:0;
-                }
-            }
-        }
-    }else WorldProbeLabelOverflow.fetch_add(1,std::memory_order_relaxed);
-    WorldProbeMutex.unlock();
-}
-void WorldProbeObserveItem(void* item,std::uint32_t rawCode,
-                           std::uintptr_t caller) noexcept {
-    if (WorldProbePhase.load(std::memory_order_relaxed)<0 || !item ||
-        !WorldProbeMonitoredCode(CanonicalItemCode(rawCode)) ||
-        caller<Base || caller>=Base+ImageSize) return;
-    const auto code=CanonicalItemCode(rawCode);
-    WorldProbeReads.fetch_add(1,std::memory_order_relaxed);
-    std::array<std::uint32_t,3> hdr{};
-    SIZE_T copied{};
-    if (!ReadProcessMemory(GetCurrentProcess(),item,hdr.data(),
-            sizeof(hdr),&copied) || copied!=sizeof(hdr) ||
-        hdr[0]!=4 || !hdr[2]) {
-        WorldProbeReadFailures.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    if (!WorldProbeMutex.try_lock()) {
-        WorldProbeContended.fetch_add(1,std::memory_order_relaxed);
-        return;
-    }
-    const auto rva=caller-Base;
-    WorldProbeSite* row=nullptr;
-    for (std::size_t n=0;n<WorldProbeSiteCount;++n)
-        if (WorldProbeSites[n].returnRva==rva &&
-            WorldProbeSites[n].code==code &&
-            WorldProbeSites[n].unitId==hdr[2]){row=&WorldProbeSites[n];break;}
-    if (!row && WorldProbeSiteCount<WorldProbeSites.size()) {
-        row=&WorldProbeSites[WorldProbeSiteCount++];
-        *row={}; row->returnRva=rva;row->code=code;row->unitId=hdr[2];
-        row->thread=GetCurrentThreadId();
-        PVOID frames[6]{};
-        row->stackSize=CaptureStackBackTrace(1,6,frames,nullptr);
-        for (unsigned n=0;n<row->stackSize;++n)
-            row->stack[n]=reinterpret_cast<std::uintptr_t>(frames[n]);
-    }
-    if (row) {
-        const auto now=GetTickCount64();
-        const auto clickMs=WorldProbeLastClickMs.load(std::memory_order_acquire);
-        ++row->hits;row->unitId=hdr[2];
-        if (!row->firstMs)row->firstMs=now;
-        row->lastMs=now;
-        if (!clickMs || now<clickMs)++row->beforeClick;
-        else if (WorldProbeEvidence::NearObservedClick(now,clickMs))
-            ++row->nearClick;
-        else ++row->afterClick;
-        const auto witness=WorldProbeGround[hdr[2]%WorldProbeTrackedLimit]
-            .load(std::memory_order_acquire);
-        if(witness==WorldProbeToken(code,hdr[2]))++row->groundWitness;
-        else ++row->otherGround;
-    } else WorldProbeOverflow.fetch_add(1,std::memory_order_relaxed);
-    WorldProbeMutex.unlock();
-}
-// Called only from the existing verified get-item-code hook. Never calls
-// OriginalGetItemCode again or logs on a game/render thread. Item read is
-// bounded by a live click window, verified ITEM type and monitored code.
-void HiddenPickupObserveNativeItem(void* item,std::uint32_t rawCode,
-                                   std::uintptr_t caller) noexcept {
-    const auto click=PickupClickMs.load(std::memory_order_acquire);
-    if(!click || !item || caller<Base || caller-Base>=ImageSize ||
-       !WorldProbeMonitoredCode(CanonicalItemCode(rawCode)))return;
-    const auto now=GetTickCount64();
-    if(!HiddenPickupTracePolicy::InCaptureWindow(now,click,PickupWindowMs))return;
-    const auto epoch=PickupClickEpoch.load(std::memory_order_acquire);
-    std::array<std::uint32_t,3> hdr{};
-    SIZE_T copied{};
-    if(!ReadProcessMemory(GetCurrentProcess(),item,hdr.data(),sizeof(hdr),&copied)
-       ||copied!=sizeof(hdr)||hdr[0]!=4||!hdr[2]) {
-        PickupNativeReadFailures.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    if(!PickupSitesMutex.try_lock()) {
-        PickupNativeContention.fetch_add(1,std::memory_order_relaxed);return;
-    }
-    if(epoch!=PickupClickEpoch.load(std::memory_order_acquire) ||
-       click!=PickupClickMs.load(std::memory_order_acquire)) {
-        PickupSitesMutex.unlock();return;
-    }
-    const auto code=CanonicalItemCode(rawCode);
-    const auto returnRva=caller-Base;
-    PickupNativeSite* row=nullptr;
-    for(std::size_t n=0;n<PickupSiteCount;++n)
-        if(PickupSites[n].returnRva==returnRva &&
-           PickupSites[n].unitId==hdr[2] && PickupSites[n].code==code){
-            row=&PickupSites[n];break;
-        }
-    if(!row && PickupSiteCount<PickupSites.size()){
-        row=&PickupSites[PickupSiteCount++];*row={};
-        row->returnRva=returnRva;row->unitId=hdr[2];row->code=code;
-        row->recentGroundWitness=WorldProbeGround[
-            hdr[2]%WorldProbeTrackedLimit].load(std::memory_order_acquire)
-            ==WorldProbeToken(code,hdr[2]);
-    }
-    if(row){
-        ++row->hits;
-        if(PickupSdkInventoryPollActive)++row->sdkInventoryPollHits;
-        else ++row->outsideSdkPollHits;
-        if(!row->firstMs)row->firstMs=now;
-        row->lastMs=now;
-        // Capture only the matching clicked candidate, once per code-reader
-        // return site, with a strict per-click cap. Not a picker callback.
-        if(!row->stackAttempted &&
-           WorldProbeToken(code,hdr[2])==
-               PickupHintToken.load(std::memory_order_acquire)){
-            unsigned capturedRows{};
-            for(std::size_t n=0;n<PickupSiteCount;++n)
-                if(PickupSites[n].stackAttempted)++capturedRows;
-            if(capturedRows<4){
-                row->stackAttempted=true;
-                void* frames[12]{};
-                const auto depth=CaptureStackBackTrace(0,12,frames,nullptr);
-                row->firstStackDepth=static_cast<unsigned>(depth);
-                row->firstThreadId=GetCurrentThreadId();
-                for(unsigned j=0;j<depth && j<row->firstStack.size();++j)
-                    row->firstStack[j]=reinterpret_cast<std::uintptr_t>(frames[j]);
-            }
-        }
-    } else PickupNativeOverflow.fetch_add(1,std::memory_order_relaxed);
-    PickupSitesMutex.unlock();
-}
-
-// Read-only PE/unwind witness for offline disassembly of the code-reader
-// callsites. A function containing a code read is NOT identified as a native
-// world-model renderer or mouse picker by this check.
-void WorldProbeNativeSite(std::uintptr_t returnRva) noexcept {
-    if(returnRva<16 || returnRva>=ImageSize)return;
-    std::array<std::uint8_t,24> bytes{};
-    if(!ReadSafe(returnRva-12,bytes.data(),bytes.size()))return;
-    char hex[sizeof(bytes)*3+1]{};
-    for(std::size_t i=0;i<bytes.size();++i)
-        std::snprintf(hex+3*i,sizeof(hex)-3*i,"%02X%s",
-            static_cast<unsigned>(bytes[i]),i+1==bytes.size()?"":" ");
-    DWORD64 ownerBase{};
-    const auto* unwind=RtlLookupFunctionEntry(
-        static_cast<DWORD64>(Base+returnRva-1),&ownerBase,nullptr);
-    const bool owned=unwind && ownerBase==static_cast<DWORD64>(Base) &&
-        unwind->BeginAddress<=returnRva-1 &&
-        returnRva-1<unwind->EndAddress;
-    char line[480]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_NATIVE_SITE returnRva=D2R+0x%llX "
-        "functionBeginRva=0x%X functionEndRva=0x%X "
-        "unwindOwned=%u bytesFromReturnMinus12=[%s] "
-        "meaning=code-reader-caller-not-model-renderer-or-picker-proof",
-        static_cast<unsigned long long>(returnRva),
-        owned?static_cast<unsigned>(unwind->BeginAddress):0U,
-        owned?static_cast<unsigned>(unwind->EndAddress):0U,
-        owned?1U:0U,hex);
-    Emit(line);
-}
-void WorldProbeSummary(int phase) noexcept {
-    if (phase<0 || phase>=static_cast<int>(WorldProbePhaseLimit))return;
-    char line[570]{};
-    std::lock_guard lock(WorldProbeMutex);
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_SUMMARY phase=%s codeReader=%llu badItem=%llu rows=%zu overflow=%llu contention=%llu groundedLabelSamples=%llu carriedHidden=%llu carriedControl=%llu lastHiddenId=%u lastControlId=%u sampledClickEdges=%u baselinePasses=%u postClickPasses=%u baselineMissing=%u clickSamplingMs=%u note=click-edge-is-sampled-not-native-input-and-carried-delta-is-temporal-not-pick-proof",
-        WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-        static_cast<unsigned long long>(WorldProbeReads.load()),
-        static_cast<unsigned long long>(WorldProbeReadFailures.load()),
-        WorldProbeSiteCount,
-        static_cast<unsigned long long>(WorldProbeOverflow.load()),
-        static_cast<unsigned long long>(WorldProbeContended.load()),
-        static_cast<unsigned long long>(WorldProbeGroundSamples.load()),
-        static_cast<unsigned long long>(WorldProbeCarriedHidden.load()),
-        static_cast<unsigned long long>(WorldProbeCarriedControl.load()),
-        WorldProbeLastCarriedHidden.load(),WorldProbeLastCarriedControl.load(),
-        WorldProbeClickEdges.load(),WorldProbeBaselinePasses.load(),
-        WorldProbePostClickPasses.load(),WorldProbeMissedBaseline.load(),
-        WorldProbeProbeSampleMs.load());
-    Emit(line);
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_LABEL_SUMMARY phase=%s labelCalls=%llu retained=%zu overflow=%llu contention=%llu source=native-C0420-label-unit-via-SoE-interop-or-standalone unitPointersRetained=0 pickerProof=0 rendererProof=0",
-        WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-        static_cast<unsigned long long>(WorldProbeLabelCalls.load()),
-        WorldProbeLabelCount,
-        static_cast<unsigned long long>(WorldProbeLabelOverflow.load()),
-        static_cast<unsigned long long>(WorldProbeLabelContention.load()));
-    Emit(line);
-    for(std::size_t n=0;n<WorldProbeLabelCount;++n){
-        const auto& row=WorldProbeLabelUnits[n];
-        char code[5]{};std::memcpy(code,&row.code,4);
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_LABEL_UNIT phase=%s code=%.4s unitId=%u calls=%llu withText=%llu noText=%llu beforeClick=%llu nearClick=%llu afterClick=%llu firstMs=%llu lastMs=%llu role=confirmed-inworld-label-input-not-native-mouse-hit-test",
-            WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-            code,row.unitId,static_cast<unsigned long long>(row.calls),
-            static_cast<unsigned long long>(row.withText),
-            static_cast<unsigned long long>(row.noText),
-            static_cast<unsigned long long>(row.beforeClick),
-            static_cast<unsigned long long>(row.nearClick),
-            static_cast<unsigned long long>(row.afterClick),
-            static_cast<unsigned long long>(row.firstMs),
-            static_cast<unsigned long long>(row.lastMs));
-        Emit(line);
-    }
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_LABEL_CALLER_SUMMARY phase=%s sampledStacks=%llu unmatched=%llu ambiguous=%llu dropped=%llu callerRows=%zu examples=%zu frameSource=CaptureStackBackTrace siteMatch=exact-D2R-return-RVA source=callback-sync-not-picker-proof",
-        WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-        static_cast<unsigned long long>(WorldProbeStackSamples.load()),
-        static_cast<unsigned long long>(WorldProbeStackUnmatched.load()),
-        static_cast<unsigned long long>(WorldProbeStackAmbiguous.load()),
-        static_cast<unsigned long long>(WorldProbeStackDropped.load()),
-        WorldProbeLabelCallerCount,WorldProbeStackExampleCount);
-    Emit(line);
-    for(std::size_t n=0;n<WorldProbeLabelCallerCount;++n){
-        const auto& caller=WorldProbeLabelCallers[n];
-        char code[5]{};std::memcpy(code,&caller.code,4);
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_LABEL_CALLER phase=%s code=%.4s unitId=%u returnRva=D2R+0x%llX samples=%llu nearSampledClick=%llu stackFrameIndex=%u meaning=formatter-caller-on-observer-stack-not-initial-hit-test-proof",
-            WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-            code,caller.unitId,
-            static_cast<unsigned long long>(caller.returnRva),
-            static_cast<unsigned long long>(caller.samples),
-            static_cast<unsigned long long>(caller.nearClick),
-            caller.firstFrameIndex);
-        Emit(line);
-    }
-    for(std::size_t n=0;n<WorldProbeStackExampleCount;++n){
-        const auto& example=WorldProbeStackExamples[n];
-        char code[5]{};std::memcpy(code,&example.code,4);
-        char frameText[320]{};
-        std::size_t used{};
-        for(std::size_t i=0;i<example.frameRvas.size();++i){
-            const auto written=std::snprintf(frameText+used,sizeof(frameText)-used,
-                "%s%llX",i?",":"",
-                static_cast<unsigned long long>(example.frameRvas[i]));
-            if(written<=0 || static_cast<std::size_t>(written)>=sizeof(frameText)-used)
-                break;
-            used+=static_cast<std::size_t>(written);
-        }
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_LABEL_STACK_SAMPLE phase=%s code=%.4s unitId=%u depth=%u knownSite=D2R+0x%X otherKnownSites=%u first18D2rReturnRvas=[%s] zero=outside-D2R-or-missing",
-            WorldProbePhaseNames[static_cast<std::size_t>(phase)],code,
-            example.unitId,example.depth,example.matchedSite,
-            example.otherMatchedSites,frameText);
-        Emit(line);
-    }
-    for(std::size_t n=0;n<WorldProbeSiteCount;++n) {
-        const auto& row=WorldProbeSites[n];
-        char code[5]{};std::memcpy(code,&row.code,4);
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_SITE phase=%s returnRva=D2R+0x%llX code=%.4s sampleUnitId=%u calls=%llu priorGroundLabelWitness=%llu noWitness=%llu beforeClick=%llu nearClick=%llu afterClick=%llu firstMs=%llu lastMs=%llu tid=%u stack0=D2R+0x%llX stack1=D2R+0x%llX qualification=code-helper-caller-only",
-            WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-            static_cast<unsigned long long>(row.returnRva),code,row.unitId,
-            static_cast<unsigned long long>(row.hits),
-            static_cast<unsigned long long>(row.groundWitness),
-            static_cast<unsigned long long>(row.otherGround),
-            static_cast<unsigned long long>(row.beforeClick),
-            static_cast<unsigned long long>(row.nearClick),
-            static_cast<unsigned long long>(row.afterClick),
-            static_cast<unsigned long long>(row.firstMs),
-            static_cast<unsigned long long>(row.lastMs),row.thread,
-            static_cast<unsigned long long>(row.stackSize && row.stack[0]>=Base && row.stack[0]<Base+ImageSize?
-                row.stack[0]-Base:0),
-            static_cast<unsigned long long>(row.stackSize>1 && row.stack[1]>=Base && row.stack[1]<Base+ImageSize?
-                row.stack[1]-Base:0));
-        Emit(line);
-        bool first=true;
-        for(std::size_t j=0;j<n;++j)
-            if(WorldProbeSites[j].returnRva==row.returnRva){first=false;break;}
-        if(first)WorldProbeNativeSite(row.returnRva);
-    }
-}
-void WorldProbeAdvance() noexcept {
-    const int former=WorldProbePhase.exchange(-1,std::memory_order_acq_rel);
-    if (former>=0)WorldProbeSummary(former);
-    const int next=former+1;
-    if(next>=static_cast<int>(WorldProbePhaseLimit)) {
-        Emit("LOOT_WORLD_PROBE_DONE all-phases-captured-no-gameplay-changes=1");
-        return;
-    }
-    {
-        std::lock_guard lock(WorldProbeMutex);
-        WorldProbeSites.fill({});WorldProbeSiteCount=0;
-        WorldProbeLabelUnits.fill({});WorldProbeLabelCount=0;
-        WorldProbeLabelCallers.fill({});WorldProbeLabelCallerCount=0;
-        WorldProbeStackExamples.fill({});WorldProbeStackExampleCount=0;
-    }
-    WorldProbeLabelCalls.store(0);WorldProbeLabelOverflow.store(0);
-    WorldProbeLastStackCode.store(0);
-    WorldProbeStackSamples.store(0);WorldProbeStackUnmatched.store(0);
-    WorldProbeStackAmbiguous.store(0);WorldProbeStackDropped.store(0);
-    WorldProbeLabelContention.store(0);
-    WorldProbeReads.store(0);WorldProbeReadFailures.store(0);
-    WorldProbeOverflow.store(0);WorldProbeContended.store(0);
-    WorldProbeGroundSamples.store(0);
-    WorldProbeCarriedHidden.store(0);WorldProbeCarriedControl.store(0);
-    WorldProbeLastCarriedHidden.store(0);WorldProbeLastCarriedControl.store(0);
-    WorldProbeLastClickMs.store(0);
-    WorldProbeClickEdges.store(0);
-    WorldProbeBaselinePasses.store(0);
-    WorldProbePostClickPasses.store(0);
-    WorldProbeMissedBaseline.store(0);
-    WorldProbeBaselineReady.store(false,std::memory_order_release);
-    WorldProbeEpoch.fetch_add(1,std::memory_order_acq_rel);
-    for(auto& slot:WorldProbeBaseline)slot.store(0,std::memory_order_release);
-    for(auto& slot:WorldProbeReported)slot.store(0,std::memory_order_release);
-    WorldProbePhase.store(next,std::memory_order_release);
-    char msg[300]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_WORLD_PROBE_PHASE_ENTER index=%d name=%s advance=Ctrl+Shift+F11 no-keyboard-visibility-dependency=1",
-        next+1,WorldProbePhaseNames[static_cast<std::size_t>(next)]);
-    Emit(msg);
-}
-struct WorldProbeInventoryPass final {
-    int phase{-1};
-    std::uint32_t epoch{};
-    ULONGLONG sampledClickMs{};
-    bool baseline{};
-    std::uint32_t hidden{},control{};
-};
-D2RL::Inventory::IterationAction __cdecl WorldProbeInventoryItem(
-    const D2RL::PluginContext*,const D2RL::Items::ItemInfo* info,
-    void* userData) noexcept {
-    auto* pass=static_cast<WorldProbeInventoryPass*>(userData);
-    if (!pass || !WorldProbeRunning.load(std::memory_order_relaxed) ||
-        WorldProbePhase.load(std::memory_order_acquire)!=pass->phase ||
-        WorldProbeEpoch.load(std::memory_order_acquire)!=pass->epoch || !info ||
-        info->structSize<D2RL::Items::ItemInfoRequiredSize ||
-        info->container==D2RL::Items::ItemContainer::Ground ||
-        !info->runtimeId)
-        return D2RL::Inventory::IterationAction::Continue;
-    const auto pos=info->runtimeId%WorldProbeTrackedLimit;
-    const auto token=WorldProbeGround[pos].load(std::memory_order_acquire);
-    if(static_cast<std::uint32_t>(token)!=info->runtimeId || !token)
-        return D2RL::Inventory::IterationAction::Continue;
-    const auto code=static_cast<std::uint32_t>(token>>32U);
-    if(!WorldProbeMonitoredCode(code))
-        return D2RL::Inventory::IterationAction::Continue;
-    if(code==WorldProbeExaltedCode)++pass->hidden;
-    else if(code==DivineCode)++pass->control;
-    if(pass->baseline){
-        const auto old=WorldProbeBaseline[pos].load(std::memory_order_relaxed);
-        if(!old || old==token)WorldProbeBaseline[pos].store(token,std::memory_order_release);
-        return D2RL::Inventory::IterationAction::Continue;
-    }
-    // A late first snapshot cannot distinguish an already-carried item from a
-    // new pickup. Refuse to report a transition if pre-click baseline missed.
-    if(!WorldProbeBaselineReady.load(std::memory_order_acquire) ||
-        !pass->sampledClickMs ||
-        WorldProbeBaseline[pos].load(std::memory_order_acquire)!=0)
-        return D2RL::Inventory::IterationAction::Continue;
-    if(WorldProbeReported[pos].exchange(token,std::memory_order_acq_rel)==token)
-        return D2RL::Inventory::IterationAction::Continue;
-    if(code==WorldProbeExaltedCode){
-        WorldProbeCarriedHidden.fetch_add(1,std::memory_order_relaxed);
-        WorldProbeLastCarriedHidden.store(info->runtimeId);
-    }else{
-        WorldProbeCarriedControl.fetch_add(1,std::memory_order_relaxed);
-        WorldProbeLastCarriedControl.store(info->runtimeId);
-    }
-    char textCode[5]{};CodeText(code,textCode);
-    char line[270]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_CARRIED_DELTA phase=%s code=%.4s unitId=%u "
-        "baseline=absent current=carried sampledClickMs=%llu "
-        "meaning=SDK-temporal-transition-not-native-click-target-proof",
-        WorldProbePhaseNames[static_cast<std::size_t>(pass->phase)],
-        textCode,info->runtimeId,
-        static_cast<unsigned long long>(pass->sampledClickMs));
-    Emit(line);
-    return D2RL::Inventory::IterationAction::Continue;
-}
-void __cdecl WorldProbePollInventoryUi(const D2RL::PluginContext* context,
-                                       void*) noexcept {
-    const auto finish=[]() noexcept {
-        WorldProbePollPending.store(false,std::memory_order_release);
-    };
-    const auto phase=WorldProbePhase.load(std::memory_order_acquire);
-    if(!WorldProbeRunning.load(std::memory_order_acquire) || phase<0 ||
-       !context || !SoundInventory || !SoundInventory->getLocalPlayer ||
-       !SoundInventory->forEachInventoryItem){finish();return;}
-    WorldProbeInventoryPass pass{};
-    pass.phase=phase;
-    pass.epoch=WorldProbeEpoch.load(std::memory_order_acquire);
-    pass.sampledClickMs=WorldProbeLastClickMs.load(std::memory_order_acquire);
-    pass.baseline=pass.sampledClickMs==0;
-    D2RL::PlayerHandle player{};
-    if(SoundInventory->getLocalPlayer(context,&player)!=
-        D2RL::Inventory::Result::Success){finish();return;}
-    constexpr auto mask=
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Inventory)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Equipment)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Belt)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Cube)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::PersonalStash)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::SharedStash)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::CustomPage);
-    const D2RL::Inventory::ItemFilter filter{
-        D2RL::Inventory::ItemFilterSize,0,mask,0};
-    const auto result=SoundInventory->forEachInventoryItem(context,player,
-        &filter,&WorldProbeInventoryItem,&pass);
-    if(result!=D2RL::Inventory::Result::Success){finish();return;}
-    if(SoundInventory->getCursorItem && SoundInventoryItems &&
-       SoundInventoryItems->getItemInfo){
-        D2RL::ItemHandle cursor{};
-        if(SoundInventory->getCursorItem(context,player,&cursor)==
-            D2RL::Inventory::Result::Success){
-            D2RL::Items::ItemInfo info{};
-            info.structSize=D2RL::Items::ItemInfoSize;
-            if(SoundInventoryItems->getItemInfo(context,cursor,&info)==
-                D2RL::Items::Result::Success &&
-                info.container==D2RL::Items::ItemContainer::Cursor)
-                (void)WorldProbeInventoryItem(context,&info,&pass);
-        }
-    }
-    if(WorldProbeEpoch.load(std::memory_order_acquire)!=pass.epoch ||
-       WorldProbePhase.load(std::memory_order_acquire)!=phase){
-        finish();return;
-    }
-    if(pass.baseline){
-        WorldProbeBaselineReady.store(true,std::memory_order_release);
-        WorldProbeBaselinePasses.fetch_add(1,std::memory_order_relaxed);
-    }else{
-        WorldProbePostClickPasses.fetch_add(1,std::memory_order_relaxed);
-        if(!WorldProbeBaselineReady.load(std::memory_order_acquire))
-            WorldProbeMissedBaseline.fetch_add(1,std::memory_order_relaxed);
-    }
-    char line[300]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_SDK_SNAPSHOT phase=%s stage=%s "
-        "trackedCarriedHidden=%u trackedCarriedControl=%u "
-        "baselineReady=%u sampledClickMs=%llu "
-        "note=SDK-inventory-and-cursor-with-prior-ground-identity-only",
-        WorldProbePhaseNames[static_cast<std::size_t>(phase)],
-        pass.baseline?"pre-click":"post-click",pass.hidden,pass.control,
-        WorldProbeBaselineReady.load()?1U:0U,
-        static_cast<unsigned long long>(pass.sampledClickMs));
-    // Print only the first 3 snapshots before/after, not a log line every 125ms.
-    if((pass.baseline?WorldProbeBaselinePasses.load():
-          WorldProbePostClickPasses.load())<=3)Emit(line);
-    finish();
-}
-// SDK possession is a secondary witness. Inventory/cursor transitions are
-// not proof of which native click target was selected. Poll only through the
-// SDK UI thread, never inspect inventory on the background/native hook thread.
-struct HiddenPickupInventoryPass final {
-    std::uint32_t id{};
-    bool seen{};
-};
-D2RL::Inventory::IterationAction __cdecl HiddenPickupCheckCarried(
-    const D2RL::PluginContext*,const D2RL::Items::ItemInfo* info,
-    void* userData) noexcept {
-    auto* pass=static_cast<HiddenPickupInventoryPass*>(userData);
-    if(pass && info && info->structSize>=D2RL::Items::ItemInfoRequiredSize &&
-       info->runtimeId==pass->id &&
-       info->container!=D2RL::Items::ItemContainer::Ground)
-        pass->seen=true;
-    return D2RL::Inventory::IterationAction::Continue;
-}
-void __cdecl HiddenPickupPollUi(const D2RL::PluginContext* context,
-                                void*) noexcept {
-    const auto finish=[]() noexcept {
-        PickupPollPending.store(false,std::memory_order_release);
-    };
-    const auto now=GetTickCount64();
-    const auto click=PickupClickMs.load(std::memory_order_acquire);
-    const auto token=click?PickupHintToken.load(std::memory_order_acquire):
-        PickupHoverToken.load(std::memory_order_acquire);
-    const auto hintMs=PickupHoverMs.load(std::memory_order_acquire);
-    if(!context || !SoundInventory || !SoundInventory->getLocalPlayer ||
-       !SoundInventory->forEachInventoryItem || !token ||
-       (!click && !HiddenPickupTracePolicy::FreshHint(now,hintMs,1500))){
-        finish();return;
-    }
-    // Exact dynamic extent: SDK getLocalPlayer, inventory iteration,
-    // getCursorItem and getItemInfo. Destruction clears this TLS marker on
-    // every early return, without marking unrelated UI work or other threads.
-    const PickupSdkInventoryPollScope sdkPollScope{};
-    const auto epoch=PickupClickEpoch.load(std::memory_order_acquire);
-    D2RL::PlayerHandle player{};
-    if(SoundInventory->getLocalPlayer(context,&player)!=
-        D2RL::Inventory::Result::Success){finish();return;}
-    HiddenPickupInventoryPass pass{static_cast<std::uint32_t>(token),false};
-    constexpr auto mask=
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Inventory)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Equipment)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Belt)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Cube)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::PersonalStash)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::SharedStash)|
-        D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::CustomPage);
-    const D2RL::Inventory::ItemFilter filter{
-        D2RL::Inventory::ItemFilterSize,0,mask,0};
-    if(SoundInventory->forEachInventoryItem(context,player,&filter,
-            &HiddenPickupCheckCarried,&pass)!=
-        D2RL::Inventory::Result::Success){finish();return;}
-    if(SoundInventory->getCursorItem && SoundInventoryItems &&
-       SoundInventoryItems->getItemInfo){
-        D2RL::ItemHandle cursor{};
-        if(SoundInventory->getCursorItem(context,player,&cursor)==
-            D2RL::Inventory::Result::Success){
-            D2RL::Items::ItemInfo info{};
-            info.structSize=D2RL::Items::ItemInfoSize;
-            if(SoundInventoryItems->getItemInfo(context,cursor,&info)==
-                D2RL::Items::Result::Success &&
-                info.container==D2RL::Items::ItemContainer::Cursor)
-                (void)HiddenPickupCheckCarried(context,&info,&pass);
-        }
-    }
-    // No attribution across game joins or overlapping click windows.
-    if(epoch!=PickupClickEpoch.load(std::memory_order_acquire)){
-        finish();return;
-    }
-    const auto actualClick=PickupClickMs.load(std::memory_order_acquire);
-    if(!actualClick && token==PickupHoverToken.load(std::memory_order_acquire)){
-        PickupPreToken.store(token,std::memory_order_release);
-        PickupPreStatus.store(pass.seen?2U:1U,std::memory_order_release);
-        PickupPreMs.store(GetTickCount64(),std::memory_order_release);
-        PickupPrePasses.fetch_add(1,std::memory_order_relaxed);
-    }else if(actualClick==click && click &&
-             token==PickupHintToken.load(std::memory_order_acquire)){
-        PickupPostStatus.store(pass.seen?2U:1U,std::memory_order_release);
-        PickupPostPasses.fetch_add(1,std::memory_order_relaxed);
-        if(pass.seen){
-            ULONGLONG expected{};
-            (void)PickupPostFirstCarriedMs.compare_exchange_strong(expected,
-                GetTickCount64(),std::memory_order_acq_rel);
-        }
-    }
-    finish();
-}
-void HiddenPickupBeginClick(ULONGLONG now) noexcept {
-    // The latest selected label input is just a candidate. A stale bulk
-    // painter item MUST NOT become a pickup target if labels were toggled.
-    auto token=PickupHoverToken.load(std::memory_order_acquire);
-    const auto hoverMs=PickupHoverMs.load(std::memory_order_acquire);
-    if(!HiddenPickupTracePolicy::FreshHint(now,hoverMs,1400)) token=0;
-    if(!token){
-        const auto bulkMs=HiddenGroundLastPainterSkipMs.load(std::memory_order_acquire);
-        if(HiddenPickupTracePolicy::FreshHint(now,bulkMs,900)) {
-            const auto code=HiddenGroundLastPainterSkipCode.load(std::memory_order_relaxed);
-            const auto id=HiddenGroundLastPainterSkipId.load(std::memory_order_relaxed);
-            if(id && WorldProbeMonitoredCode(code))token=WorldProbeToken(code,id);
-        }
-    }
-    if(!token)return;
-    if(PickupClickMs.load(std::memory_order_acquire))return;
-    PickupClickEpoch.fetch_add(1,std::memory_order_acq_rel);
-    PickupHintToken.store(token,std::memory_order_release);
-    const bool baseline=PickupPreToken.load(std::memory_order_acquire)==token &&
-        HiddenPickupTracePolicy::FreshHint(now,
-            PickupPreMs.load(std::memory_order_acquire),1600);
-    PickupBaselineAtClick.store(baseline?
-        PickupPreStatus.load(std::memory_order_acquire):0U,
-        std::memory_order_release);
-    PickupPostStatus.store(0,std::memory_order_release);
-    PickupPostFirstCarriedMs.store(0,std::memory_order_release);
-    PickupBaselinePassesAtClick.store(PickupPrePasses.load(
-        std::memory_order_acquire),std::memory_order_release);
-    PickupPostPasses.store(0,std::memory_order_release);
-    PickupNativeReadFailures.store(0,std::memory_order_release);
-    PickupNativeContention.store(0,std::memory_order_release);
-    PickupNativeOverflow.store(0,std::memory_order_release);
-    {
-        std::lock_guard lock(PickupSitesMutex);
-        PickupSites.fill({});PickupSiteCount=0;
-    }
-    PickupClickMs.store(now,std::memory_order_release);
-    char code[5]{};CodeText(static_cast<std::uint32_t>(token>>32U),code);
-    char line[370]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_PICKUP_TRACE_CLICK version=1.0.0 sampledMs=%llu "
-        "candidate=%.4s unitId=%u baseline=%u "
-        "source=recent-inworld-label-or-bulk-identity "
-        "nativeClickTarget=UNKNOWN inputSuppression=0",
-        static_cast<unsigned long long>(now),code,
-        static_cast<std::uint32_t>(token),
-        PickupBaselineAtClick.load(std::memory_order_acquire));
-    Emit(line);
-}
-void HiddenPickupFinishClick(ULONGLONG now) noexcept {
-    auto click=PickupClickMs.load(std::memory_order_acquire);
-    if(!click || !HiddenPickupTracePolicy::CaptureFinished(now,click,
-        PickupWindowMs+200))return;
-    if(!PickupClickMs.compare_exchange_strong(click,0,
-        std::memory_order_acq_rel))return;
-    const auto token=PickupHintToken.load(std::memory_order_acquire);
-    std::array<PickupNativeSite,PickupSitesLimit> rows{};
-    std::size_t rowCount{};
-    {
-        std::lock_guard lock(PickupSitesMutex);
-        rowCount=PickupSiteCount;
-        for(std::size_t i=0;i<rowCount;++i)rows[i]=PickupSites[i];
-    }
-    std::uint64_t sdkPollReads=0,outsideSdkPollReads=0;
-    for(std::size_t i=0;i<rowCount;++i){
-        sdkPollReads+=rows[i].sdkInventoryPollHits;
-        outsideSdkPollReads+=rows[i].outsideSdkPollHits;
-    }
-    char code[5]{};CodeText(static_cast<std::uint32_t>(token>>32U),code);
-    char msg[610]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_PICKUP_TRACE_SUMMARY version=1.0.0 candidate=%.4s unitId=%u "
-        "baseline=%u post=%u firstCarriedMs=%llu prePasses=%u postPasses=%u "
-        "nativeCodeReaderSites=%zu sdkPollReads=%llu outsideSdkPollReads=%llu "
-        "readFailures=%llu contention=%llu overflow=%llu "
-        "meaning=SDK-poll-excluded-NOT-native-selection-proof",
-        code,static_cast<std::uint32_t>(token),
-        PickupBaselineAtClick.load(std::memory_order_acquire),
-        PickupPostStatus.load(std::memory_order_acquire),
-        static_cast<unsigned long long>(PickupPostFirstCarriedMs.load()),
-        PickupBaselinePassesAtClick.load(),PickupPostPasses.load(),rowCount,
-        static_cast<unsigned long long>(sdkPollReads),
-        static_cast<unsigned long long>(outsideSdkPollReads),
-        static_cast<unsigned long long>(PickupNativeReadFailures.load()),
-        static_cast<unsigned long long>(PickupNativeContention.load()),
-        static_cast<unsigned long long>(PickupNativeOverflow.load()));
-    Emit(msg);
-    for(std::size_t i=0;i<rowCount;++i){
-        const auto& r=rows[i];char siteCode[5]{};CodeText(r.code,siteCode);
-        std::snprintf(msg,sizeof(msg),
-            "LOOT_PICKUP_TRACE_READER_SITE version=1.0.0 code=%.4s "
-            "unitId=%u callerReturnRva=D2R+0x%llX calls=%llu "
-            "firstDeltaMs=%llu lastDeltaMs=%llu "
-            "sdkPollHits=%llu outsideSdkPollHits=%llu "
-            "recentGroundWitness=%u matchesCandidate=%u "
-            "role=code-reader-origin-witness-not-proven-picker",
-            siteCode,r.unitId,
-            static_cast<unsigned long long>(r.returnRva),
-            static_cast<unsigned long long>(r.hits),
-            static_cast<unsigned long long>(r.firstMs-click),
-            static_cast<unsigned long long>(r.lastMs-click),
-            static_cast<unsigned long long>(r.sdkInventoryPollHits),
-            static_cast<unsigned long long>(r.outsideSdkPollHits),
-            r.recentGroundWitness?1U:0U,
-            WorldProbeToken(r.code,r.unitId)==token?1U:0U);
-        Emit(msg);
-    }
-    // Reconstruct frames on the worker, never emit inside a game hook. A
-    // zero frame RVA means an address outside D2R (including Loader/SoE),
-    // or an unavailable frame; no invented function/unwind boundaries.
-    for(std::size_t i=0;i<rowCount;++i){
-        const auto& row=rows[i];
-        if(!row.firstStackDepth ||
-           WorldProbeToken(row.code,row.unitId)!=token)continue;
-        std::string frames;
-        unsigned outside{};
-        for(unsigned j=0;j<row.firstStackDepth &&
-                j<row.firstStack.size();++j){
-            const auto addr=row.firstStack[j];
-            const bool inD2r=addr>=Base && addr-Base<ImageSize;
-            if(!inD2r)++outside;
-            char component[38]{};
-            std::snprintf(component,sizeof(component),"%s%llX",
-                frames.empty()?"":",",
-                static_cast<unsigned long long>(inD2r?addr-Base:0));
-            frames+=component;
-        }
-        char line[570]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_PICKUP_TRACE_CALLSTACK version=1.0.0 "
-            "code=%.4s unitId=%u returnRva=D2R+0x%llX thread=%u "
-            "depth=%u nonD2rFrames=%u rvas=[%s] "
-            "meaning=item-code-read-stack-not-picker-proof",
-            code,row.unitId,
-            static_cast<unsigned long long>(row.returnRva),
-            row.firstThreadId,row.firstStackDepth,outside,frames.c_str());
-        Emit(line);
-    }
-    // Prefer this click's candidate-unit code-reader sites (including the
-    // formerly truncated D2R+0x6624D2). These are STILL not verified picker
-    // callsites. At most eight tiny read-only instruction windows.
-    std::array<std::uintptr_t,8> unique{};std::size_t count{};
-    for(int priority=0;priority<2 && count<unique.size();++priority){
-        for(std::size_t i=0;i<rowCount && count<unique.size();++i){
-            const auto& row=rows[i];
-            const bool match=WorldProbeToken(row.code,row.unitId)==token;
-            if(match!=(priority==0))continue;
-            const auto rva=row.returnRva;
-            bool seen=false;
-            for(std::size_t j=0;j<count;++j)if(unique[j]==rva)seen=true;
-            if(!seen){
-                unique[count++]=rva;
-                WorldProbeNativeSite(rva);
-                // Extend the previous 24-byte window to 128 bytes, for up
-                // to three matching candidate sites only. Runtime .text is
-                // read-only; we never install hooks at these unqualified RVAs.
-                if(match && rva>=64 && rva+64<=ImageSize){
-                    std::array<std::uint8_t,128> codeWindow{};
-                    if(ReadSafe(rva-64,codeWindow.data(),codeWindow.size())){
-                        for(std::size_t offset=0;offset<codeWindow.size();offset+=16){
-                            char hex[16*3+1]{};
-                            for(std::size_t b=0;b<16;++b){
-                                const auto pos=b*3;
-                                std::snprintf(hex+pos,sizeof(hex)-pos,
-                                    "%02X%s",codeWindow[offset+b],
-                                    b==15?"":" ");
-                            }
-                            char line[300]{};
-                            std::snprintf(line,sizeof(line),
-                                "LOOT_PICKUP_TRACE_CODE_WINDOW version=1.0.0 "
-                                "returnRva=D2R+0x%llX startRva=D2R+0x%llX "
-                                "bytes='%s' qualifier=read-only-not-disassembly",
-                                static_cast<unsigned long long>(rva),
-                                static_cast<unsigned long long>(rva-64+offset),hex);
-                            Emit(line);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-void HiddenPickupPump(ULONGLONG now) noexcept {
-    HiddenPickupFinishClick(now);
-    if(!Context || !SoundThreads || !SoundThreads->runOnUiThread ||
-       !SoundInventory || !SoundInventory->getLocalPlayer ||
-       !SoundInventory->forEachInventoryItem ||
-       PickupPollPending.load(std::memory_order_acquire))return;
-    const auto click=PickupClickMs.load(std::memory_order_acquire);
-    const auto hover=PickupHoverMs.load(std::memory_order_acquire);
-    if(!click && !HiddenPickupTracePolicy::FreshHint(now,hover,1500))return;
-    const auto last=PickupPollScheduledMs.load(std::memory_order_acquire);
-    if(now<last || now-last<140)return;
-    if(PickupPollPending.exchange(true,std::memory_order_acq_rel))return;
-    PickupPollScheduledMs.store(now,std::memory_order_release);
-    if(SoundThreads->runOnUiThread(Context,&HiddenPickupPollUi,nullptr)!=
-        D2RL::Threads::Result::Success)
-        PickupPollPending.store(false,std::memory_order_release);
+    NativePickupGuardQualified.store(true,std::memory_order_release);
+    Emit("LOOT_PICKUP_GUARD_READY version=1.0.0 action=22 type=4 mode=3 "
+         "freshLookup=D2R+0x9A5D0 rule=show:false failOpen=1 stateWrites=0");
 }
 
 void RuntimeWorkerLoop(std::stop_token stop) noexcept {
@@ -13093,260 +5369,10 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
         lastReloadChord=reloadChord;
     }
 }
-// The best currently verified downstream unit-consumer is the in-world
-// formatter D2R+0xC0420. Discover its potential *direct* callers in build
-// 93847 executable .text, bounded and read-only. The byte pattern E8-rel32
-// is not an instruction-boundary proof; offline disassembly is mandatory.
-void WorldProbeScanLabelEntryCallers() noexcept {
-    if(!Base || !ImageSize || !Context || !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847")return;
-    IMAGE_DOS_HEADER dos{};
-    if(!ReadSafe(0,&dos,sizeof(dos)) || dos.e_magic!=IMAGE_DOS_SIGNATURE ||
-       dos.e_lfanew<=0 || dos.e_lfanew>0x1000){
-        Emit("LOOT_WORLD_PROBE_LABEL_XREF_UNAVAILABLE reason=pe-dos-header");return;
-    }
-    IMAGE_NT_HEADERS64 nt{};
-    if(!ReadSafe(static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
-       nt.Signature!=IMAGE_NT_SIGNATURE ||
-       nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
-       !nt.FileHeader.NumberOfSections ||
-       nt.FileHeader.NumberOfSections>96){
-        Emit("LOOT_WORLD_PROBE_LABEL_XREF_UNAVAILABLE reason=pe-nt-header");return;
-    }
-    const auto sectionsRva=static_cast<std::uintptr_t>(dos.e_lfanew)+
-        sizeof(DWORD)+sizeof(IMAGE_FILE_HEADER)+nt.FileHeader.SizeOfOptionalHeader;
-    std::array<IMAGE_SECTION_HEADER,96> sections{};
-    if(!ReadSafe(sectionsRva,sections.data(),
-            static_cast<std::size_t>(nt.FileHeader.NumberOfSections)*
-            sizeof(IMAGE_SECTION_HEADER))){
-        Emit("LOOT_WORLD_PROBE_LABEL_XREF_UNAVAILABLE reason=pe-sections");return;
-    }
-    std::uintptr_t begin{};std::size_t size{};
-    for(std::size_t i=0;i<nt.FileHeader.NumberOfSections;++i){
-        const auto& section=sections[i];
-        if(std::memcmp(section.Name,".text",5) ||
-           !(section.Characteristics&IMAGE_SCN_MEM_EXECUTE))continue;
-        begin=section.VirtualAddress;size=section.Misc.VirtualSize;break;
-    }
-    if(!begin || begin>=ImageSize || size<5 ||
-       size>0x8000000U || size>ImageSize-begin){
-        Emit("LOOT_WORLD_PROBE_LABEL_XREF_UNAVAILABLE reason=text-section-bounds");return;
-    }
-    constexpr std::size_t chunk=0x4000, maxPrinted=16;
-    std::vector<std::uint8_t> data{};
-    try{data.resize(chunk+4);}catch(const std::exception&){
-        Emit("LOOT_WORLD_PROBE_LABEL_XREF_UNAVAILABLE reason=allocation");return;
-    }
-    std::size_t candidates{},printed{},failed{};
-    const auto end=begin+size;
-    for(auto at=begin;at<end;at+=chunk){
-        const auto actual=std::min<std::size_t>(chunk+4,end-at);
-        if(actual<5 || !ReadSafe(at,data.data(),actual)){++failed;continue;}
-        const auto count=std::min<std::size_t>(chunk,actual-4);
-        for(std::size_t i=0;i<count;++i){
-            if(data[i]!=0xE8)continue;
-            std::int32_t displacement{};
-            std::memcpy(&displacement,data.data()+i+1,sizeof(displacement));
-            const auto target=static_cast<std::int64_t>(at+i+5)+
-                static_cast<std::int64_t>(displacement);
-            if(target!=static_cast<std::int64_t>(InWorldFormatterRva))continue;
-            ++candidates;
-            if(printed>=maxPrinted)continue;
-            const auto site=at+i;
-            char line[480]{};
-            std::snprintf(line,sizeof(line),
-                "LOOT_WORLD_PROBE_LABEL_XREF callRva=D2R+0x%llX returnRva=D2R+0x%llX target=D2R+0xC0420 rawE8Candidate=1 aligned=unverified picker=unverified modelRenderer=unverified",
-                static_cast<unsigned long long>(site),
-                static_cast<unsigned long long>(site+5));
-            Emit(line);
-            constexpr std::size_t pre=32,post=48;
-            if(site>=pre && site+post<=ImageSize){
-                std::array<std::uint8_t,pre+post> window{};
-                if(ReadSafe(site-pre,window.data(),window.size())){
-                    for(std::size_t offset=0;offset<window.size();offset+=16){
-                        char hex[49]{};
-                        for(std::size_t k=0;k<16;++k)
-                            std::snprintf(hex+k*3,sizeof(hex)-k*3,
-                                "%02X ",unsigned(window[offset+k]));
-                        std::snprintf(line,sizeof(line),
-                            "LOOT_WORLD_PROBE_LABEL_XREF_BYTES callRva=D2R+0x%llX rva=D2R+0x%llX hex='%s'",
-                            static_cast<unsigned long long>(site),
-                            static_cast<unsigned long long>(site-pre+offset),hex);
-                        Emit(line);
-                    }
-                }
-            }
-            ++printed;
-        }
-    }
-    char line[340]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_LABEL_XREF_SUMMARY candidates=%zu printed=%zu failedChunks=%zu target=D2R+0xC0420 scan=executable-text-only indirectCallersUnobserved=1 noHooks=1 instructionAlignmentUnverified=1",
-        candidates,printed,failed);
-    Emit(line);
-}
-// Static instruction-context witness only. These three calls are the exact
-// E8-rel32 byte candidates observed in 0.2.17; this bounded read does not
-// claim a verified containing function or dereference a candidate unit.
-void WorldProbeDumpLabelCallerContext() noexcept {
-    constexpr std::array<std::uintptr_t,3> sites{{0x880AA5,0x880AE3,0x880B0C}};
-    if(!Base || ImageSize<0x880B60)return;
-    for(const auto site:sites){
-        std::array<std::uint8_t,5> bytes{};
-        if(!ReadSafe(site,bytes.data(),bytes.size()) || bytes[0]!=0xE8){
-            Emit("LOOT_WORLD_PROBE_CALLER_CONTEXT_UNAVAILABLE reason=unexpected-call-byte");return;
-        }
-        std::int32_t displacement{};
-        std::memcpy(&displacement,bytes.data()+1,sizeof(displacement));
-        if(static_cast<std::int64_t>(site+5)+displacement !=
-           static_cast<std::int64_t>(InWorldFormatterRva)){
-            Emit("LOOT_WORLD_PROBE_CALLER_CONTEXT_UNAVAILABLE reason=call-target-mismatch");return;
-        }
-    }
-    constexpr std::uintptr_t begin=0x880960, end=0x880B60;
-    char line[440]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_WORLD_PROBE_CALLER_CONTEXT_READY beginRva=D2R+0x%llX endRva=D2R+0x%llX directCalls=3 readOnly=1 disassembly=required modelRenderer=unknown picker=unknown",
-        static_cast<unsigned long long>(begin),
-        static_cast<unsigned long long>(end));
-    Emit(line);
-    for(auto rva=begin;rva<end;rva+=16){
-        std::array<std::uint8_t,16> bytes{};
-        if(!ReadSafe(rva,bytes.data(),bytes.size())){
-            Emit("LOOT_WORLD_PROBE_CALLER_CONTEXT_UNAVAILABLE reason=window-read");return;
-        }
-        char hex[49]{};
-        for(std::size_t i=0;i<bytes.size();++i)
-            std::snprintf(hex+i*3,sizeof(hex)-i*3,"%02X ",
-                static_cast<unsigned>(bytes[i]));
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_CALLER_CONTEXT_BYTES rva=D2R+0x%llX hex='%s'",
-            static_cast<unsigned long long>(rva),hex);
-        Emit(line);
-    }
-}
-// 0.2.19: Analyze the immediate predecessor call chain in the EXISTING
-// label-producing path. We already know C0420 is a label formatter, not the
-// world renderer and not the native pickup target. The 0.2.18 code window
-// shows that each of its three direct callers receives a value from a
-// distinct preceding CALL. Verify all E8-rel32 targets on the LIVE 93847
-// module before printing bounded callee-entry windows for offline analysis.
-// No guessed signature, detour, unit pointer dereference, or gameplay write.
-void WorldProbeDumpUpstreamCandidates() noexcept {
-    if(!Base || !Context || !ImageSize ||
-       !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") {
-        Emit("LOOT_WORLD_PROBE_UPSTREAM_UNAVAILABLE reason=build-or-image");
-        return;
-    }
-    for(const auto& branch:WorldProbeUpstream::Branches) {
-        const std::array<std::uintptr_t,3> sites{{
-            branch.sourceCall,branch.producerCall,branch.formatterCall}};
-        const std::array<std::uintptr_t,3> targets{{
-            branch.expectedSource,branch.expectedProducer,
-            InWorldFormatterRva}};
-        for(std::size_t i=0;i<sites.size();++i) {
-            std::array<std::uint8_t,5> bytes{};
-            if(!ReadSafe(sites[i],bytes.data(),bytes.size())) {
-                char line[260]{};
-                std::snprintf(line,sizeof(line),
-                    "LOOT_WORLD_PROBE_UPSTREAM_REFUSED branch=%s stage=%zu reason=unreadable-callsite rva=D2R+0x%llX",
-                    branch.name,i,
-                    static_cast<unsigned long long>(sites[i]));
-                Emit(line);return;
-            }
-            std::uintptr_t target{};
-            if(!WorldProbeUpstream::DecodeRelCall(bytes,sites[i],target) ||
-               target!=targets[i]) {
-                char line[280]{};
-                std::snprintf(line,sizeof(line),
-                    "LOOT_WORLD_PROBE_UPSTREAM_REFUSED branch=%s stage=%zu reason=changed-direct-call rva=D2R+0x%llX expectedTarget=D2R+0x%llX actualTarget=D2R+0x%llX",
-                    branch.name,i,
-                    static_cast<unsigned long long>(sites[i]),
-                    static_cast<unsigned long long>(targets[i]),
-                    static_cast<unsigned long long>(target));
-                Emit(line);return;
-            }
-        }
-        // Only assert exact register-move bytes where shown by the captured
-        // 0.2.18 native sequence. This is static value-flow evidence, NOT a
-        // verified C++ return signature or initial mouse hit-test contract.
-        std::array<std::uint8_t,3> forward{};
-        if(!ReadSafe(branch.forwardRva,forward.data(),forward.size()) ||
-           forward!=branch.expectedForward) {
-            char line[260]{};
-            std::snprintf(line,sizeof(line),
-                "LOOT_WORLD_PROBE_UPSTREAM_REFUSED branch=%s reason=changed-value-forward rva=D2R+0x%llX",
-                branch.name,
-                static_cast<unsigned long long>(branch.forwardRva));
-            Emit(line);return;
-        }
-    }
-    Emit("LOOT_WORLD_PROBE_UPSTREAM_READY version=1.0.0 branches=3 callsVerified=9 valueForwards=3 mode=read-only newHooks=0 modelRenderer=unknown mousePicker=unknown nativeItemWrites=0");
-    for(const auto& branch:WorldProbeUpstream::Branches) {
-        char line[420]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_UPSTREAM_BRANCH name=%s sourceCall=D2R+0x%llX sourceTarget=D2R+0x%llX producerCall=D2R+0x%llX producerTarget=D2R+0x%llX forwardAt=D2R+0x%llX formatterCall=D2R+0x%llX formatterTarget=D2R+0xC0420 qualification=verified-live-E8-and-value-forward producerRole=unit-input-lead-not-native-picker-proof",
-            branch.name,
-            static_cast<unsigned long long>(branch.sourceCall),
-            static_cast<unsigned long long>(branch.expectedSource),
-            static_cast<unsigned long long>(branch.producerCall),
-            static_cast<unsigned long long>(branch.expectedProducer),
-            static_cast<unsigned long long>(branch.forwardRva),
-            static_cast<unsigned long long>(branch.formatterCall));
-        Emit(line);
-    }
-    for(const auto& target:WorldProbeUpstream::Targets) {
-        constexpr std::size_t windowSize=128;
-        if(target.rva>=ImageSize || windowSize>ImageSize-target.rva) {
-            char line[240]{};
-            std::snprintf(line,sizeof(line),
-                "LOOT_WORLD_PROBE_UPSTREAM_TARGET_UNAVAILABLE name=%s rva=D2R+0x%llX reason=image-range",
-                target.name,static_cast<unsigned long long>(target.rva));
-            Emit(line);continue;
-        }
-        std::array<std::uint8_t,windowSize> bytes{};
-        if(!ReadSafe(target.rva,bytes.data(),bytes.size())) {
-            char line[240]{};
-            std::snprintf(line,sizeof(line),
-                "LOOT_WORLD_PROBE_UPSTREAM_TARGET_UNAVAILABLE name=%s rva=D2R+0x%llX reason=read-failed",
-                target.name,static_cast<unsigned long long>(target.rva));
-            Emit(line);continue;
-        }
-        DWORD64 ownerBase{};
-        const auto* unwind=RtlLookupFunctionEntry(
-            static_cast<DWORD64>(Base+target.rva),&ownerBase,nullptr);
-        const bool owned=unwind && ownerBase==static_cast<DWORD64>(Base) &&
-            unwind->BeginAddress<=target.rva && target.rva<unwind->EndAddress;
-        char line[420]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_WORLD_PROBE_UPSTREAM_TARGET name=%s rva=D2R+0x%llX entry=[%02X %02X %02X %02X %02X] beginRva=D2R+0x%X endRva=D2R+0x%X unwindOwned=%u entryKind=%s readOnly=1 requiredNext=disassemble-and-confirm-native-ABI",
-            target.name,static_cast<unsigned long long>(target.rva),
-            static_cast<unsigned>(bytes[0]),static_cast<unsigned>(bytes[1]),
-            static_cast<unsigned>(bytes[2]),static_cast<unsigned>(bytes[3]),
-            static_cast<unsigned>(bytes[4]),
-            owned?static_cast<unsigned>(unwind->BeginAddress):0U,
-            owned?static_cast<unsigned>(unwind->EndAddress):0U,owned?1U:0U,
-            bytes[0]==0xFF && bytes[1]==0x25?"rip-indirect-bridge":
-            bytes[0]==0xE9?"jmp-bridge":"no-obvious-entry-jump");
-        Emit(line);
-        for(std::size_t offset=0;offset<bytes.size();offset+=16) {
-            char hex[49]{};
-            for(std::size_t n=0;n<16;++n)
-                std::snprintf(hex+n*3,sizeof(hex)-n*3,"%02X ",
-                    static_cast<unsigned>(bytes[offset+n]));
-            std::snprintf(line,sizeof(line),
-                "LOOT_WORLD_PROBE_UPSTREAM_BYTES name=%s rva=D2R+0x%llX hex='%s'",
-                target.name,static_cast<unsigned long long>(target.rva+offset),hex);
-            Emit(line);
-        }
-    }
-    Emit("LOOT_WORLD_PROBE_UPSTREAM_DONE review-targets=0xF1900,0x18D960,0x18DCA0 no-abi-assumption=1 no-native-hooks=1");
-}
 void RuntimeWorkerStart() noexcept {
-    if(WorldProbeWorker.joinable()) return;
+    if(RuntimeWorker.joinable()) return;
     try {
-        WorldProbeWorker=std::jthread([](std::stop_token stop) noexcept {
+        RuntimeWorker=std::jthread([](std::stop_token stop) noexcept {
             RuntimeWorkerLoop(stop);
         });
     } catch(const std::exception&) {
@@ -13354,9 +5380,9 @@ void RuntimeWorkerStart() noexcept {
     }
 }
 void RuntimeWorkerStop() noexcept {
-    if(WorldProbeWorker.joinable()) {
-        WorldProbeWorker.request_stop();
-        WorldProbeWorker.join();
+    if(RuntimeWorker.joinable()) {
+        RuntimeWorker.request_stop();
+        RuntimeWorker.join();
     }
 }
 
@@ -13392,53 +5418,6 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     OriginalInWorldFormatter = nullptr;
 
     Base = context->exeBase;
-    MinimapProbeArmed.store(false,std::memory_order_release);
-    { std::lock_guard lock(MinimapProbeMutex);
-      MinimapProbeRows.fill({});MinimapProbeCount=0;MinimapProbeReported=0; }
-    MinimapProbeContended.store(0,std::memory_order_relaxed);
-    LootLatencyArmed.store(false,std::memory_order_release);
-    GroundPropertyEvidenceArmed.store(false,std::memory_order_release);
-    SocketProbeArmed.store(false,std::memory_order_release);
-    EtherealProbeArmed.store(false,std::memory_order_release);
-    MinimapProbeArmed.store(false,std::memory_order_release);
-    { std::lock_guard lock(EtherealProbeMutex);
-      EtherealProbeRows.fill({});EtherealProbeCount=0; }
-    EtherealProbeContended.store(0);
-    { std::lock_guard lock(SocketProbeMutex);
-      SocketProbeRows.fill({});SocketProbeCount=0; }
-    SocketProbeContention.store(0);
-    { std::lock_guard lock(GroundPropertyEvidenceMutex);
-      GroundPropertyEvidenceRows.fill({});
-      GroundPropertyEvidenceCount=0; GroundPropertyEvidenceReported=0; }
-    GroundPropertyEvidenceReadFailed.store(0);
-    GroundPropertyEvidenceContended.store(0);
-    HoverEventArmed.store(false);HoverEventDeadline.store(0);
-    HoverEventItems.store(nullptr,std::memory_order_release);HoverEventBus=nullptr;
-    HoverEventListener=D2RL::SharedEvents::InvalidHandle;
-    UiTextArmed.store(false);UiTextDeadline.store(0);
-    UiTextCalls.store(0);UiTextKnownReturnCalls.store(0);
-    UiTextOtherReturnCalls.store(0);UiTextContended.store(0);
-    UiTextOverflow.store(0);UiTextPhase.fill(0);
-    UiTextSites.fill({});UiTextSiteCount=0;
-    TooltipProducerArmed.store(false,std::memory_order_relaxed);
-    TooltipProducerDeadline.store(0,std::memory_order_relaxed);
-    TooltipProducerCalls.store(0);TooltipProducerSamples.store(0);
-    TooltipProducerContended.store(0);TooltipProducerOverflow.store(0);
-    for(auto& count:TooltipProducerSiteCalls) count.store(0);
-    TooltipProducerOtherCalls.store(0);
-    TooltipProducerPhase.fill(0);TooltipProducerRows.fill({});
-    TooltipProducerRowCount=0;TooltipProducerInstalled.store(false);
-    OriginalTooltipProducer=nullptr;
-    TooltipRouteArmed.store(false,std::memory_order_relaxed);
-    TooltipRouteDeadline.store(0,std::memory_order_relaxed);
-    TooltipRouteHits.store(0);TooltipRouteSkipped.store(0);
-    TooltipRouteContended.store(0);TooltipRouteOverflow.store(0);
-    TooltipRoutePhase.fill(0);TooltipRouteRows.fill({});TooltipRouteCount=0;
-    HoverProbeArmed.store(false,std::memory_order_relaxed);
-    HoverProbeDeadline.store(0,std::memory_order_relaxed);
-    HoverProbePhase.fill(0);
-    for(auto& group:HoverProbeCallers) group.fill({});
-    HoverProbeSizes.fill(0);HoverProbeHits.fill(0);HoverProbeOverflow.fill(0);
     SoundArmed.store(false,std::memory_order_relaxed);
     SoundLoaderBase.store(0,std::memory_order_relaxed);
     SoundArmMs.store(0,std::memory_order_relaxed);
@@ -13483,18 +5462,9 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
             peOk?unsigned(nt.OptionalHeader.SizeOfImage):0U,
             SoundThreads?1U:0U);
         Emit(line);
-        ArmMinimapTracking();
+        ResetMinimapTracking();
     }
 
-    CodeBridgeArmed.store(false, std::memory_order_relaxed);
-    CodeBridgeAttempts.store(0, std::memory_order_relaxed);
-    CodeBridgeSuccess.store(0, std::memory_order_relaxed);
-    CodeBridgeGuardReject.store(0, std::memory_order_relaxed);
-    CodeBridgeInvalid.store(0, std::memory_order_relaxed);
-    CodeBridgeDivine.store(0, std::memory_order_relaxed);
-    CodeBridgeMap.store(0, std::memory_order_relaxed);
-    CodeBridgeOther.store(0, std::memory_order_relaxed);
-    CodeBridgeDivineMismatch.store(0, std::memory_order_relaxed);
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_relaxed);
     BackgroundPaintObserveArmed.store(false,std::memory_order_relaxed);
     BackgroundPaintHookInstalled.store(false,std::memory_order_relaxed);
@@ -13576,29 +5546,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     GeometryNoTerminator.store(0,std::memory_order_relaxed);
     GeometryWrites.store(0,std::memory_order_relaxed);
     GeometryObserved.store(0,std::memory_order_relaxed);
-    CodeRenameArmed.store(false, std::memory_order_relaxed);
-    CodeRenameQualified.store(0, std::memory_order_relaxed);
-    CodeRenameIdMismatch.store(0, std::memory_order_relaxed);
-    CodeRenameLookups.store(0, std::memory_order_relaxed);
-    CodeRenameInvalid.store(0, std::memory_order_relaxed);
-    CodeRenameNoRule.store(0, std::memory_order_relaxed);
-    CodeRenameRuleMatches.store(0, std::memory_order_relaxed);
-    CodeRenameTextLengthMismatch.store(0, std::memory_order_relaxed);
-    CodeRenameReadFailures.store(0, std::memory_order_relaxed);
-    CodeRenameWrites.store(0, std::memory_order_relaxed);
-    RenameArmed.store(false, std::memory_order_relaxed);
-    RenameQualified.store(0, std::memory_order_relaxed);
-    RenameNonDivine.store(0, std::memory_order_relaxed);
-    RenameIdMismatch.store(0, std::memory_order_relaxed);
-    RenameTextMismatch.store(0, std::memory_order_relaxed);
-    RenameReadFailures.store(0, std::memory_order_relaxed);
-    RenameWrites.store(0, std::memory_order_relaxed);
     FormatterHookInstalled.store(false, std::memory_order_relaxed);
     FormatterCalls.store(0,std::memory_order_relaxed);
-    FormatterContention.store(0,std::memory_order_relaxed);
-    CollectionHookInstalled.store(false, std::memory_order_relaxed);
-    CollectionTotal.store(0, std::memory_order_relaxed);
-    CollectionContended.store(0, std::memory_order_relaxed);
     std::atomic_store_explicit(&PublishedFilterRules,
         std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterGeneration.store(0);
@@ -13644,7 +5593,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         return true;
     }
     HookInstalled.store(true, std::memory_order_release);
-    (void)InstallStandaloneAutomapProjectionObserver();
+    (void)InstallStandaloneAutomapProjection();
     // Reuse the qualified native filter pipeline automatically once the
     // complete JSON ruleset is published and the item-code reader is ready.
     if (std::atomic_load_explicit(&PublishedFilterRules,
@@ -13653,7 +5602,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     else Emit("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
     RegisterInWorldLifecycle();
     StartSoundInventoryObserver();
-    NativeActionInstall();
+    InstallNativePickupGuard();
     RuntimeWorkerStart();
 
     return true;
@@ -13665,16 +5614,12 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     MinimapOverlayRenderer::Shutdown();
     AutomapProjectionHookInstalled.store(false,std::memory_order_release);
     FilterLiveReloadAvailable.store(false,std::memory_order_release);
-    NativeActionPhase.store(-1,std::memory_order_release);
     NativePickupGuardQualified.store(false,std::memory_order_release);
     GroundQuantityReader.store(nullptr,std::memory_order_release);
     HideGroundArmed.store(false,std::memory_order_release);
     ResetNativeRowFontColor();
     NativeRowBgLiveEnabled.store(false,std::memory_order_release);
     NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
-    NativeRowBgTrialEnabled.store(false,std::memory_order_release);
-    NativeRowActivePhase.store(NativeRowPhase::Off,std::memory_order_release);
-    NativeRowDeadline.store(0,std::memory_order_release);
     InWorldRenderScopeApi.store(nullptr,std::memory_order_release);
     // Stop background scheduling before allowing loader-owned service pointers
     // or the plugin context to become invalid. No new inventory callback is
@@ -13698,12 +5643,6 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     InWorldJoinedListener = D2RL::Lifecycle::InvalidHandle;
     DetachInWorldInterop();
 
-    ReleaseHoverEventObserver();
-    UiTextArmed.store(false,std::memory_order_release);
-    HoverSpatialArmed.store(false,std::memory_order_release);
-    TooltipProducerArmed.store(false,std::memory_order_release);
-    TooltipRouteArmed.store(false,std::memory_order_release);
-    HoverProbeArmed.store(false,std::memory_order_release);
     SoundArmed.store(false,std::memory_order_release);
     SoundLoaderBase.store(0,std::memory_order_release);
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_release);
@@ -13711,16 +5650,11 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     BackgroundPaintObserveArmed.store(false,std::memory_order_release);
     GroundTextObserveArmed.store(false,std::memory_order_release);
     GroundTextCyanArmed.store(false,std::memory_order_release);
-    CodeRenameArmed.store(false, std::memory_order_release);
-    RenameArmed.store(false, std::memory_order_release);
-    CodeBridgeArmed.store(false, std::memory_order_release);
 
     std::atomic_store_explicit(&PublishedFilterRules,
         std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterConfigPath.clear();
     HookInstalled.store(false, std::memory_order_release);
-    CollectionHookInstalled.store(false, std::memory_order_release);
-    OriginalCollectionHelper = nullptr;
     OriginalGetItemCode = nullptr;
     // The loader owns detour removal. Do not null out native trampolines
     // while other thread callbacks could still be forwarding through them.

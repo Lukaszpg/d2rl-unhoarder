@@ -2,12 +2,12 @@
 #include <cstdint>
 
 namespace SoE::LootFilter::NativePickupGuardPolicy {
-// Build 93847: action 0x16, UnitAny type 4. Caller is diagnostic only.
+// Build 93847: action 0x16, UnitAny type 4.
 inline constexpr std::uint32_t PickupAction=22;
 inline constexpr std::uint32_t ItemUnitType=4;
 inline constexpr std::uint32_t OnGroundMode=3;
 // One terminal reason for every action-22/type-4 dispatch, including when
-// the original is forwarded. Does not depend on the optional F10 phase.
+// the original is forwarded. The guard does not depend on capture phases.
 enum class Decision : std::uint8_t {
     Blocked, GuardInactive, InvalidTargetId,
     VisibilityNotArmed, RulesModeInactive, CodeReaderUnavailable,

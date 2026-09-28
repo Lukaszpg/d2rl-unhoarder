@@ -13,8 +13,8 @@ assert 'dest.identifiedExpected=it.value().get<bool>();' in s
 assert 'rule.conditions.identifiedEnabled) fresh->usesIdentified=true;' in s
 assert 'NextProperty::Identified' in s and 'NextProperty::Identified' in r
 assert 'if(!fields.identifiedKnown)' in s
-assert 'GroundCandidateProbe::ReadLe32(itemData.data()+0x18)' in s
-assert 'GroundCandidateProbe::ReadLe32(check.data()+0x18)' in s
+assert 'GroundPropertyReader::ReadLe32(itemData.data()+0x18)' in s
+assert 'GroundPropertyReader::ReadLe32(check.data()+0x18)' in s
 assert 'if((includeEthereal || includeIdentified) &&' in s
 assert 'if(includeIdentified && scalars.qualityKnown && scalars.itemLevelKnown)' in s
 assert 'for(unsigned propertyGroup=0;propertyGroup<4 && table;++propertyGroup)' in s
