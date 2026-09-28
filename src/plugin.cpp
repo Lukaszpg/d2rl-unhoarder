@@ -3444,7 +3444,8 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
     GroundRuleDecision resolvedRule{};
     const auto* selected=ResolveGroundRule(table.get(),scalars,resolvedRule) ?
         &resolvedRule : nullptr;
-    if(selected && (selected->hasBackground || selected->hasTextColor))
+    // Ordinary items may have no matching filter rule. Keep this guard
+    // unconditional before any selected-> field access.
     if (!selected || (!selected->hasBackground &&
         !selected->hasTextColor && selected->show)) {
         BackgroundNoMatch.fetch_add(1,std::memory_order_relaxed);
