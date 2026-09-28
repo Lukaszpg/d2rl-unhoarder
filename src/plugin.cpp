@@ -1612,7 +1612,7 @@ constexpr D2RL::PluginInfo Info{
     .infoSize = D2RL::PluginInfoSize,
     .apiVersion = D2RL_PLUGIN_API_VERSION,
     .id = "loot-filter",
-    .name = "Loot Filter",
+    .name = "UnHoarder",
     .version = "1.0.0",
     .author = "MindH1ve",
     .description = "Live-reloadable JSON loot filter with Show/Hide rules, tooltip styling, sounds and automap icons (D2R 93847).",
@@ -5401,7 +5401,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     Context = context;
     if(GetModuleHandleW(L"loot-filter-probe.dll")!=nullptr ||
        GetModuleHandleW(L"d2rl-loot-filter-probe.dll")!=nullptr) {
-        context->LogError("LOOT_FILTER_REFUSED legacy loot-filter-probe DLL is also loaded; remove the old plugin before enabling Loot Filter");
+        context->LogError("LOOT_FILTER_REFUSED legacy loot-filter-probe DLL is also loaded; remove the old plugin before enabling UnHoarder");
         Context=nullptr;
         return false;
     }

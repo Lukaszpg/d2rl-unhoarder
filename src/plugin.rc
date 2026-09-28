@@ -16,7 +16,7 @@ BEGIN
       VALUE "FileVersion", "1.0.0"
       VALUE "InternalName", "loot-filter"
       VALUE "OriginalFilename", "loot-filter.dll"
-      VALUE "ProductName", "Loot Filter"
+      VALUE "ProductName", "UnHoarder"
       VALUE "ProductVersion", "1.0.0"
     END
   END
