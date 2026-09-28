@@ -14,6 +14,32 @@ It provides ordered `Show` / `Hide` rules, ground-label styling, custom names, s
 
 I would like to say huge THANK YOU to RuffnecKk for allowing me to use his code and research from MapSense in this plugin. He's an amazing guy, go check out his work [here](https://github.com/RuffDood/RuffnecKk-D2RLoader-Suite/tree/main)!
 
+## Known incompatibilities
+
+Loot Filter 1.0.0 expects exclusive or qualified access to several Diablo II: Resurrected native functions on build 93847. Plugins that detour, patch, or replace these functions may disable some or all Loot Filter functionality:
+
+| D2R RVA | Native code / role | Loot Filter dependency |
+|---|---|---|
+| `0x36EF50` | Item-code helper | **CRITICAL** |
+| `0x1FA9F0` | Ground-label formatter | **CRITICAL** |
+| `0xCBEB0` | Ground-name writer | **CRITICAL** |
+| `0x1FA8E0` | Ground-label painter | Background / Hide / text identity |
+| `0x658510` | Native glyph renderer | Text color / Hide |
+| `0xFABE0` | Native action dispatcher | Hidden-item pickup suppression |
+| `0x9A5D0` | Unit lookup | Pickup-guard dependency |
+| `0xD76E0` | Automap unit renderer | Minimap markers |
+| `0xD4910` | Client-to-automap projection | Minimap dependency |
+| `0x8B2D0` | Local data-context lookup | Minimap dependency |
+| `0x9A480` | Local-player lookup | Minimap dependency |
+| `0xC0420` | In-world item formatter | Standalone in-world backend |
+| `0x880160` | Native styled-text append | Hidden-hover styling |
+| `0x8DA7E0` | Native UI row renderer | Hidden-hover styling |
+| `0x2F5020` | Native stat reader | Quantity / sockets |
+
+Loot Filter generally fails open rather than blindly chaining an unknown native hook. Depending on the overlap, this can result in the entire filter remaining inactive or only a specific feature—such as minimap icons, colors, hover styling, or pickup suppression—being disabled.
+
+One additional incompatibility surface is outside D2R native code: the standalone minimap renderer hooks D3D12/DXGI methods for ExecuteCommandLists, Present, and ResizeBuffers (vtable slots 54, 140 and 145). Another overlay that hooks those methods poorly could conflict with Loot Filter's minimap renderer even if it never touches D2R's automap code. The example here is RuffnecKk's MapSense.
+
 ## Features
 
 - PoE-style ordered **Show / Hide** rule blocks.
