@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "rules": [
+    {
+      "show": {
+        "conditions": {
+          "code": [
+            "divo"
+          ]
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(110, 35, 160, 0.82)",
+          "textColor": "RGBA(180, 140, 255, 1)"
+        },
+        "dropSound": "Drop_Zing"
+      }
+    },
+    {
+      "show": {
+        "conditions": {
+          "baseName": [
+            "Sacred Armor"
+          ],
+          "rarity": [
+            "unique"
+          ]
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(255, 50, 0, 0.82)"
+        },
+        "dropSound": "Drop_Zing"
+      }
+    }
+  ]
+}

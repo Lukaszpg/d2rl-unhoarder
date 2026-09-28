@@ -1,0 +1,29 @@
+{
+  "version": 3,
+  "rules": [
+    {
+      "show": {
+        "conditions": {
+          "baseName": "Sacred Armor",
+          "ethereal": true
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(30, 65, 110, 0.82)",
+          "textColor": "RGBA(130, 197, 255, 1)"
+        },
+        "dropSound": "Drop_Zing"
+      }
+    },
+    {
+      "show": {
+        "conditions": {
+          "baseName": "Sacred Armor",
+          "ethereal": false
+        },
+        "tooltip": {
+          "textColor": "RGBA(255, 255, 255, 1)"
+        }
+      }
+    }
+  ]
+}

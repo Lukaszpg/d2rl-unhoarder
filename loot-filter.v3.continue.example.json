@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "rules": [
+    {
+      "show": {
+        "conditions": {
+          "itemType": "Currency"
+        },
+        "tooltip": {
+          "textColor": "RGBA(220, 220, 220, 1)"
+        },
+        "continue": true
+      }
+    },
+    {
+      "show": {
+        "conditions": {
+          "code": "divo"
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(110, 35, 160, 0.82)"
+        },
+        "dropSound": "Drop_Zing",
+        "minimapIcon": {
+          "shape": "diamond",
+          "borderColor": "RGBA(225, 205, 255, 1)",
+          "fillColor": "RGBA(180, 140, 255, 0.82)",
+          "size": 20
+        }
+      }
+    },
+    {
+      "hide": {}
+    }
+  ]
+}

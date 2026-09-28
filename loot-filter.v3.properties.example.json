@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "rules": [
+    {
+      "show": {
+        "conditions": {
+          "code": "lbw",
+          "rarity": "rare",
+          "itemLevel": {
+            "gte": 85
+          }
+        },
+        "tooltip": {
+          "textColor": "RGBA(180, 140, 255, 1)"
+        }
+      }
+    },
+    {
+      "hide": {
+        "conditions": {
+          "code": "lbw",
+          "rarity": [
+            "inferior",
+            "normal",
+            "superior"
+          ],
+          "itemLevel": {
+            "lte": 84
+          }
+        }
+      }
+    }
+  ]
+}

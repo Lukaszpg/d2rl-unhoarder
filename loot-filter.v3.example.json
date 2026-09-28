@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "rules": [
+    {
+      "show": {
+        "conditions": {
+          "code": [
+            "divo"
+          ]
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(110, 35, 160, 0.82)",
+          "textColor": "RGBA(180, 140, 255, 1)"
+        },
+        "dropSound": "Drop_Zing",
+        "minimapIcon": {
+          "shape": "diamond",
+          "borderColor": "RGBA(225, 205, 255, 1)",
+          "fillColor": "RGBA(180, 140, 255, 0.82)",
+          "size": 24
+        }
+      }
+    },
+    {
+      "hide": {
+        "conditions": {
+          "code": [
+            "exo",
+            "bst"
+          ]
+        }
+      }
+    }
+  ]
+}

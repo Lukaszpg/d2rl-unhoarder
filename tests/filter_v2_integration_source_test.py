@@ -1,0 +1,23 @@
+from pathlib import Path
+p=Path(__file__).resolve().parents[1]
+s=(p/'src/plugin.cpp').read_text()
+h=(p/'src/filter_rule_engine.hpp').read_text()
+assert '.version = "1.0.0"' in s
+assert 'config["version"].get<int>() != 2' in s
+assert 'ParseV2Conditions((*block)["conditions"],rule.conditions,' in s
+assert 'std::atomic_store_explicit(&PublishedFilterRules,published,' in s
+assert 'ResolveGroundRule(' in s and 'RuleEngine::ResolveMatchingRulesFailOpen' in s
+assert 'if (rule.schema2 ? rule.conditions.Matches(item)' in h
+assert 'seen.insert(codeValue)' in s and 'fresh->schema==1' in s
+assert 'rule.show=fresh->schema==3 ? wrapperShow :' in s
+assert 'if (rule.conditions.quantity.enabled) fresh->usesQuantity=true;' in s
+assert 'unsupported-ground-condition:' in s
+assert 'GroundRuleItem(result.code,unit,rules.get(),id)' in s
+assert 'CachedGroundRuleItem(verifiedCode,verifiedClassId,' in s
+assert 'rowItem.classId=append.classId;' in s
+assert 'rowItem.quantityKnown=append.quantityKnown;' in s
+assert 'ObserveGroundSoundIdentity(unitId,code,true,nativeUnit,classId);' in s
+assert 'ResolveGroundRule(snapshot.get(),' in s
+assert 'NativePickupGuardCandidates.fetch_add' in s
+assert 'NativeActionPhase' not in s[s.index('NativePickupDecision QualifyGroundPickup('):s.index('void RecordPickupDecision(')]
+print('v1/v2 migration + v3 composite shared ground and pickup integration: ok')

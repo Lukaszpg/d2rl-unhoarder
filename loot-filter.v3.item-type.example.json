@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "rules": [
+    {
+      "show": {
+        "conditions": {
+          "itemType": [
+            "swor",
+            "axe"
+          ],
+          "rarity": [
+            "unique"
+          ]
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(255, 110, 0, 0.82)"
+        },
+        "dropSound": "Drop_Zing"
+      }
+    },
+    {
+      "show": {
+        "conditions": {
+          "itemType": "tors",
+          "ethereal": true,
+          "sockets": {
+            "gte": 4
+          }
+        },
+        "tooltip": {
+          "backgroundColor": "RGBA(130, 197, 255, 0.82)"
+        }
+      }
+    },
+    {
+      "show": {
+        "conditions": {
+          "itemType": "shld",
+          "identified": false
+        },
+        "tooltip": {
+          "textColor": "RGBA(130, 197, 255, 1)"
+        }
+      }
+    },
+    {
+      "show": {
+        "conditions": {
+          "code": "divo"
+        },
+        "dropSound": "Drop_Zing"
+      }
+    }
+  ]
+}
