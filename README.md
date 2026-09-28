@@ -1,6 +1,6 @@
-# Loot Filter
+# D2RL Loot Filter
 
-**Loot Filter** is a native, JSON-configurable loot filter for **Diablo II: Resurrected**.
+**D2RL Loot Filter** is a native, JSON-configurable loot filter for **Diablo II: Resurrected**.
 
 It provides ordered `Show` / `Hide` rules, ground-label styling, custom names, sounds, stack-aware conditions, pickup suppression for hidden items, and configurable automap markers — all driven by a live-reloadable `filter.json`.
 
