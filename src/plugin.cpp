@@ -226,8 +226,8 @@ std::atomic<std::uint64_t> FilterGuardFailures{};
 std::atomic<std::uint64_t> FilterReloadSucceeded{};
 std::atomic<std::uint64_t> FilterReloadRefused{};
 std::atomic_bool FilterLiveReloadAvailable{};
-constexpr std::size_t MaximumFilterFileBytes = 64 * 1024;
-constexpr std::size_t MaximumFilterRules = 256;
+constexpr std::size_t MaximumFilterFileBytes = 4 * 1024 * 1024;
+constexpr std::size_t MaximumFilterRules = 4096;
 constexpr std::size_t MaximumFilterNameBytes = 79; // measured in BYTES (no NUL)
 // 0.1.52 verified on D2R 93847: per-ground-label 4xfloat RGBA at
 // record+0x14. 0x1517AE6 / 0x1519E36 passes record+0x14 as third arg
@@ -2854,7 +2854,7 @@ bool ReloadFilterRules() {
         std::error_code error;
         const auto length = std::filesystem::file_size(FilterConfigPath, error);
         if (error || length == 0 || length > MaximumFilterFileBytes) {
-            Emit("LOOT_RULES_REFUSED config-missing-empty-or-over-64KiB last-valid-rules-preserved=1");
+            Emit("LOOT_RULES_REFUSED config-missing-empty-or-over-4MiB last-valid-rules-preserved=1");
             return false;
         }
         std::ifstream file(FilterConfigPath, std::ios::binary);
@@ -2874,7 +2874,7 @@ bool ReloadFilterRules() {
         }
         const auto& entries = config["rules"];
         if (entries.size() > MaximumFilterRules) {
-            Emit("LOOT_RULES_REFUSED over-256-rules last-valid-rules-preserved=1");
+            Emit("LOOT_RULES_REFUSED over-4096-rules last-valid-rules-preserved=1");
             return false;
         }
         auto fresh = std::make_shared<FilterRuleTable>();
