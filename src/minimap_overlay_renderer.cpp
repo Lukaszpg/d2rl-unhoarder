@@ -562,7 +562,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
 }
 
 [[nodiscard]] bool BuildMethodTable() noexcept {
-    const wchar_t* className = L"SoELootFilterMinimapProbe";
+    const wchar_t* className = L"UnHoarderMinimapBootstrap";
     WNDCLASSEXW windowClass{};
     windowClass.cbSize = sizeof(windowClass);
     windowClass.lpfnWndProc = DefWindowProcW;
@@ -572,11 +572,11 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
         && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return false;
     }
-    HWND probeWindow = CreateWindowExW(
+    HWND bootstrapWindow = CreateWindowExW(
         0U, className, L"UnHoarder Minimap Overlay",
         WS_OVERLAPPEDWINDOW, 0, 0, 100, 100,
         nullptr, nullptr, Module, nullptr);
-    if (probeWindow == nullptr) return false;
+    if (bootstrapWindow == nullptr) return false;
 
     using D3D12CreateDeviceFn = HRESULT(WINAPI*)(
         IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
@@ -587,7 +587,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
             GetProcAddress(d3d12Module, "D3D12CreateDevice"))
         : nullptr;
     if (createDevice == nullptr) {
-        DestroyWindow(probeWindow);
+        DestroyWindow(bootstrapWindow);
         UnregisterClassW(className, Module);
         return false;
     }
@@ -623,7 +623,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
         swapDesc.SampleDesc.Count = 1U;
         swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         swapDesc.BufferCount = 2U;
-        swapDesc.OutputWindow = probeWindow;
+        swapDesc.OutputWindow = bootstrapWindow;
         swapDesc.Windowed = TRUE;
         swapDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         if (FAILED(factory->CreateSwapChain(
@@ -642,7 +642,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
         success = true;
     } while (false);
 
-    DestroyWindow(probeWindow);
+    DestroyWindow(bootstrapWindow);
     UnregisterClassW(className, Module);
     return success;
 }

@@ -87,11 +87,6 @@ constexpr std::array<std::uint8_t, 32> ExpectedGetItemCode{
     0x75, 0x13, 0x88, 0x4C, 0x24, 0x30, 0x48, 0x8D,
     0x4C, 0x24, 0x30, 0xE8, 0x80, 0x83, 0xFF, 0xFF,
 };
-constexpr std::uint32_t DivineCode =
-    static_cast<std::uint32_t>('d') |
-    (static_cast<std::uint32_t>('i') << 8U) |
-    (static_cast<std::uint32_t>('v') << 16U) |
-    (static_cast<std::uint32_t>('o') << 24U);
 constexpr std::size_t CandidateTextMaximum = 96;
 constexpr std::uintptr_t LabelFormatterRva = 0x1FA9F0;
 // _ReturnAddress() points AFTER the 5-byte CALL, not at the CALL opcode.
@@ -229,50 +224,24 @@ std::atomic_bool FilterLiveReloadAvailable{};
 constexpr std::size_t MaximumFilterFileBytes = 4 * 1024 * 1024;
 constexpr std::size_t MaximumFilterRules = 4096;
 constexpr std::size_t MaximumFilterNameBytes = 79; // measured in BYTES (no NUL)
-// 0.1.52 verified on D2R 93847: per-ground-label 4xfloat RGBA at
-// record+0x14. 0x1517AE6 / 0x1519E36 passes record+0x14 as third arg
-// to 0x1FA8E0, which forwards that pointer as fifth argument to
-// 0x657B90. 0x657B90 reads offsets 0,4,8,12 and converts them to RGBA
-// bytes before drawing the filled rectangle, then 0x1FA8E0 draws text.
-// The native baseline captured by 0.1.23 is (0,0,0,0.6f).
+// Build-93847 ground-label background contract: record+0x14 is the native
+// float[4] RGBA passed by the qualified ground-label route into D2R+0x1FA8E0.
+// UnHoarder forwards a stack-local replacement pointer for the synchronous
+// draw only; it never persists color data into the native label record.
 constexpr std::uintptr_t GroundColorOffset = 0x14;
 constexpr std::array<float,4> OriginalGroundBackground{{0.0f,0.0f,0.0f,0.6f}};
-constexpr std::array<float,4> PurpleDivineBackground{{0.45f,0.08f,0.55f,0.82f}};
 std::atomic_bool BackgroundTintArmed{};
 std::atomic_bool HideGroundArmed{};
-std::atomic<std::uint64_t> HiddenGroundPaints{};
-std::atomic<std::uint64_t> HiddenGroundInteractionPainterSkips{};
-std::atomic<std::uint32_t> HiddenGroundLastPainterSkipId{};
-std::atomic<std::uint32_t> HiddenGroundLastPainterSkipCode{};
-std::atomic<ULONGLONG> HiddenGroundLastPainterSkipMs{};
-std::atomic<std::uint64_t> HiddenHoverRowsSuppressed{};
-std::atomic_bool BackgroundTintEverArmed{};
-std::atomic<std::uint64_t> BackgroundQualified{};
-std::atomic<std::uint64_t> BackgroundMatched{};
-std::atomic<std::uint64_t> BackgroundNoMatch{};
-std::atomic<std::uint64_t> BackgroundGuardFailures{};
-std::atomic<std::uint64_t> BackgroundWrites{};
-std::atomic<std::uint64_t> BackgroundRestores{};
 
-// Observe the NATIVE color at the shared paint boundary and optionally
-// forward a per-item RGBA pointer into the original paint helper.
-// The native label records are NEVER changed by the 0.1.52 tint test.
 using SharedLabelPaintFn = void(__fastcall*)(void*,void*,void*) noexcept;
 SharedLabelPaintFn OriginalSharedLabelPaint{};
 std::atomic_bool BackgroundPaintHookInstalled{};
-std::atomic_bool BackgroundPaintObserveArmed{};
-std::atomic<std::uintptr_t> LastDivineTintRecord{};
-std::atomic<std::uintptr_t> LastMapTintRecord{};
-// Unit IDs were paired with native item code through the verified formatter.
-// This is an intentionally single-Divine proof of concept, not a production cache.
-std::atomic<std::uint32_t> LastDivineTintUnitId{};
-std::atomic<std::uint32_t> LastMapTintUnitId{};
-// A bounded, ephemeral identity bridge: the formatter can inspect native unit
-// and code; the renderer has the unit ID but no native unit pointer. A label
-// may be rendered from a *different* record address. No heap allocation or
-// blocking lock in the paint hook; stale IDs are rejected after three seconds.
+
+// Bounded ephemeral identity bridge between the formatter and painter. The
+// formatter has the native item pointer while the painter has only the unit ID.
+// No native pointers are retained, and stale identities expire after 3 seconds.
 constexpr std::size_t IdentitySlots = 512;
-constexpr std::size_t IdentityProbeSlots = 8;
+constexpr std::size_t IdentityLookupWindow = 8;
 constexpr ULONGLONG IdentityTtlMs = 3000;
 struct VerifiedGroundIdentity {
     std::uint32_t unitId{};
@@ -280,9 +249,7 @@ struct VerifiedGroundIdentity {
     std::uint32_t classId{};
     ULONGLONG seenMs{};
     std::array<char,80> visibleName{};
-    std::uint32_t quantity{}; // sampled from this exact formatter item
-    // Only scalar facts copied from the same verified formatter unit;
-    // never retain native pointers across paint calls.
+    std::uint32_t quantity{};
     bool qualityKnown{};
     std::uint32_t quality{};
     bool itemLevelKnown{};
@@ -296,138 +263,10 @@ struct VerifiedGroundIdentity {
 };
 std::array<VerifiedGroundIdentity,IdentitySlots> GroundIdentities{};
 std::mutex GroundIdentityMutex;
-std::atomic<std::uint64_t> GroundIdentityUpdates{};
-std::atomic<std::uint64_t> GroundIdentitySkips{};
-std::atomic<std::uint64_t> BackgroundRuleForwarded{};
-std::atomic<std::uint64_t> BackgroundRuleNoColor{};
-std::atomic<std::uint64_t> BackgroundRuleNoIdentity{};
-std::atomic<std::uint64_t> BackgroundPaintForwardedPurple{}; // historical diagnostic alias
 
-std::atomic<std::uint64_t> BackgroundPaintIdQualified{};
-std::atomic<std::uint64_t> BackgroundPaintIdRejected{};
-std::atomic<std::uint64_t> BackgroundPaintNameRejected{};
-std::atomic<std::uint64_t> BackgroundPaintColorRejected{};
-std::atomic<std::uint64_t> BackgroundPaintCalls{};
-std::atomic<std::uint64_t> BackgroundPaintGroundCalls{};
-std::atomic<std::uint64_t> BackgroundPaintNeighborCalls{};
-std::atomic<std::uint64_t> BackgroundPaintDivineCalls{};
-std::atomic<std::uint64_t> BackgroundPaintDivinePurple{};
-std::atomic<std::uint64_t> BackgroundPaintDivineBlack{};
-std::atomic<std::uint64_t> BackgroundPaintMapCalls{};
-std::atomic<std::uint64_t> BackgroundPaintMapPurple{};
-std::atomic<std::uint64_t> BackgroundPaintMapBlack{};
-std::atomic<std::uint64_t> BackgroundPaintOtherCalls{};
-std::atomic<std::uint64_t> BackgroundPaintReadFailures{};
-std::atomic<std::uint64_t> BackgroundPaintLockContention{};
-struct BackgroundPaintSample {
-    std::uintptr_t rect{};
-    std::uintptr_t text{};
-    std::uintptr_t color{};
-    std::array<float,4> rgba{}; // native input, BEFORE optional override
-    std::array<char,64> name{};
-    std::uint32_t recordId{};
-    bool forwardedPurple{};
-    std::uint64_t hits{};
-    bool valid{};
-};
-std::mutex BackgroundPaintSampleMutex;
-BackgroundPaintSample BackgroundPaintLastDivine{};
-BackgroundPaintSample BackgroundPaintLastMap{};
-BackgroundPaintSample BackgroundPaintLastOther{};
-
-// 0.1.52: observe native glyph RGBA at the ALREADY VERIFIED shared paint
-// boundary. Do not hook 0x902E20 with a three-argument C++ function: the
-// native caller passes a packed 128-bit render value in VOLATILE XMM3,
-// which the 0.1.32 forwarding thunk did not preserve (invisible glyphs).
-constexpr std::uintptr_t GroundGlyphColorOffset=0xAC; // record+0xA4 style + 8
-constexpr std::array<std::uint32_t,4> NativeDivineGlyphColor{240,240,240,255};
-constexpr std::array<std::uint32_t,4> ProbeCyanGlyphColor{60,225,255,255};
-std::atomic_bool GroundTextObserveArmed{};
-std::atomic_bool GroundTextCyanArmed{};
-std::atomic<std::uint64_t> GroundTextSamples{};
-std::atomic<std::uint64_t> GroundTextDivine{};
-std::atomic<std::uint64_t> GroundTextMap{};
-std::atomic<std::uint64_t> GroundTextReadFailures{};
-std::atomic<std::uint64_t> GroundTextUnverified{};
-std::atomic<std::uint64_t> GroundTextCyanWrites{};
-std::atomic<std::uint64_t> GroundTextCyanRestores{};
-std::atomic<std::uint64_t> GroundTextCyanAlreadyPresent{};
-std::atomic<std::uint64_t> GroundTextCyanAfterOriginal{};
-std::atomic<std::uint64_t> GroundTextNativeAfterOriginal{};
-std::atomic<std::uint64_t> GroundTextCyanAfterReadFailures{};
-std::atomic<std::uint64_t> GroundTextCyanColorRejects{};
-std::atomic<std::uint64_t> GroundTextCyanWriteGuards{};
-std::atomic<std::uint64_t> GroundTextCyanContended{};
-std::mutex GroundTextCyanWriteMutex;
-struct GroundGlyphColorSample {
-    std::array<std::uint32_t,4> rgba{};
-    std::uint32_t unitId{};
-    std::uint64_t hits{};
-    bool valid{};
-};
-std::mutex GroundGlyphColorSamplesMutex;
-GroundGlyphColorSample GroundDivineGlyphSample{};
-GroundGlyphColorSample GroundMapGlyphSample{};
-
-bool WritableRange(void* address,std::size_t bytes) noexcept {
-    if (!address || !bytes) return false;
-    MEMORY_BASIC_INFORMATION memory{};
-    if (!VirtualQuery(address,&memory,sizeof(memory)) ||
-        memory.State!=MEM_COMMIT ||
-        (memory.Protect & (PAGE_NOACCESS|PAGE_GUARD))) return false;
-    const auto protection=memory.Protect & 0xFFU;
-    if (protection!=PAGE_READWRITE && protection!=PAGE_WRITECOPY &&
-        protection!=PAGE_EXECUTE_READWRITE &&
-        protection!=PAGE_EXECUTE_WRITECOPY) return false;
-    const auto start=reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
-    const auto target=reinterpret_cast<std::uintptr_t>(address);
-    return start<=target && memory.RegionSize<=UINTPTR_MAX-start &&
-        start+memory.RegionSize>=target &&
-        start+memory.RegionSize-target>=bytes;
-}
-
-// Declared before the ground-text status reporter; defined below.
 void Emit(const char* message) noexcept;
-// Declared before 0.2.39 ground evidence drainers; defined with other text helpers.
 void CodeText(std::uint32_t code, char (&out)[5]) noexcept;
 bool PrintableItemCode(std::uint32_t code) noexcept;
-
-void ReportGroundGlyphStatus() noexcept {
-    char msg[620]{};
-    std::snprintf(msg,sizeof(msg),
-        "LOOT_GROUND_TEXT_STYLE_STATUS version=1.0.0 observing=%u cyanArmed=%u sharedPaintHook=%u samples=%llu divine=%llu map=%llu readFailures=%llu unverified=%llu cyanWrites=%llu restored=%llu retainedCyan=%llu afterDrawCyan=%llu afterDrawNative=%llu afterDrawReadFailures=%llu nativeColorRejected=%llu guards=%llu contended=%llu textRendererHook=0 glyphRGBA=record+0xAC recordWrites=guarded-persistent-style-until-off itemWrites=0",
-        GroundTextObserveArmed.load()?1U:0U,GroundTextCyanArmed.load()?1U:0U,
-        BackgroundPaintHookInstalled.load()?1U:0U,
-        static_cast<unsigned long long>(GroundTextSamples.load()),
-        static_cast<unsigned long long>(GroundTextDivine.load()),
-        static_cast<unsigned long long>(GroundTextMap.load()),
-        static_cast<unsigned long long>(GroundTextReadFailures.load()),
-        static_cast<unsigned long long>(GroundTextUnverified.load()),
-        static_cast<unsigned long long>(GroundTextCyanWrites.load()),
-        static_cast<unsigned long long>(GroundTextCyanRestores.load()),
-        static_cast<unsigned long long>(GroundTextCyanAlreadyPresent.load()),
-        static_cast<unsigned long long>(GroundTextCyanAfterOriginal.load()),
-        static_cast<unsigned long long>(GroundTextNativeAfterOriginal.load()),
-        static_cast<unsigned long long>(GroundTextCyanAfterReadFailures.load()),
-        static_cast<unsigned long long>(GroundTextCyanColorRejects.load()),
-        static_cast<unsigned long long>(GroundTextCyanWriteGuards.load()),
-        static_cast<unsigned long long>(GroundTextCyanContended.load()));
-    Emit(msg);
-    std::lock_guard lock(GroundGlyphColorSamplesMutex);
-    const auto report=[](const char* tag,const GroundGlyphColorSample& sample) noexcept {
-        if (!sample.valid) return;
-        char line[270]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_GROUND_TEXT_STYLE type=%s hits=%llu unitId=%u nativeRGBA=%u,%u,%u,%u recordOffset=+0xAC",
-            tag,static_cast<unsigned long long>(sample.hits),sample.unitId,
-            sample.rgba[0],sample.rgba[1],sample.rgba[2],sample.rgba[3]);
-        Emit(line);
-    };
-    report("divine",GroundDivineGlyphSample);
-    report("map",GroundMapGlyphSample);
-}
-
-
 
 constexpr std::int32_t GroundQuantityStatId=70;
 constexpr std::uintptr_t GroundQuantityReaderRva=0x2F5020;
@@ -583,7 +422,7 @@ bool GroundCandidatePageReadable(std::uintptr_t address,
 
 // Build 93847 production automap projection for JSON-configured item markers.
 // These contracts were qualified during development and are retained with
-// fingerprint validation; no diagnostic sample/capture buffers remain.
+// fingerprint validation; no capture buffers are used.
 constexpr std::uintptr_t AutomapRenderUnitRva=0xD76E0;
 constexpr std::uintptr_t ProjectClientToAutomapRva=0xD4910;
 constexpr std::uintptr_t GetLocalDataContextRva=0x8B2D0;
@@ -1261,8 +1100,8 @@ bool ResolveGroundRule(const FilterRuleTable* table,
         });
 }
 
-// 0.1.99: backend selection occurs after plugin startup so either load order
-// is safe. SoE owns both native entry + merge when available; no double detour.
+// Backend selection occurs after plugin startup so either load order is safe.
+// SoE owns the native entry and merge when available; UnHoarder never double-detours it.
 enum class InWorldBackend : int {
     Pending = 0, SoEInterop = 1, StandaloneIdentity = 2, Blocked = 3
 };
@@ -1275,19 +1114,6 @@ constexpr std::array<std::uint8_t, 16> ExpectedInWorldFormatter{{
 using InWorldFormatterFn = std::uintptr_t(__fastcall*)(void*) noexcept;
 InWorldFormatterFn OriginalInWorldFormatter{};
 std::atomic<InWorldBackend> InWorldMode{InWorldBackend::Pending};
-std::atomic<std::uint64_t> InWorldCalls{};
-std::atomic<std::uint64_t> InWorldDivineCalls{};
-std::atomic<std::uint64_t> InWorldTextCalls{};
-std::mutex InWorldSampleMutex{};
-struct InWorldSample final {
-    std::int32_t type{-1};
-    std::uint32_t classId{};
-    std::uint32_t unitId{};
-    std::uint32_t code{};
-    std::uint32_t sourceLength{};
-    std::array<std::uint8_t, 16> firstBytes{};
-};
-InWorldSample LastInWorldSample{};
 const D2RL::LifecycleServiceV1* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 using GetSoEInteropFn = const SoE::Interop::InWorldLabelApiV1*(__cdecl*)() noexcept;
@@ -1295,16 +1121,11 @@ using GetSoEInteropFn = const SoE::Interop::InWorldLabelApiV1*(__cdecl*)() noexc
 using GetSoEStyleFn = const SoE::Interop::InWorldLabelStyleApiV2*(__cdecl*)() noexcept;
 using GetSoERenderScopeFn = const SoE::Interop::InWorldRenderScopeApiV3*(__cdecl*)() noexcept;
 std::atomic<const SoE::Interop::InWorldRenderScopeApiV3*> InWorldRenderScopeApi{};
-// Opt-in read-only native row observation. No row or rectangle hook at startup.
+// Native hover-row integration is armed only after SoE V3 scope and filter state qualify.
 void ResetNativeRowLiveSession() noexcept;
 void EnableAutomaticNativeHover() noexcept;
 
 std::atomic_bool InWorldStyleAttached{false};
-std::atomic<std::uint64_t> InWorldStyleCalls{};
-std::atomic<std::uint64_t> InWorldStyleWrites{};
-std::atomic<std::uint64_t> InWorldStyleNoRule{};
-std::atomic<std::uint64_t> InWorldStyleUnsupportedColor{};
-std::atomic<std::uint64_t> InWorldStyleGuarded{};
 // These observers are used by SoE V1 and the standalone identity fallback.
 // Their implementations are below; forward declarations are necessary because
 // production cleanup retained the call sites but dropped the definitions.
@@ -1321,7 +1142,7 @@ void ObserveNativeRowLiveReplacement(std::uint32_t classId,
 
 void RuntimeWorkerStart() noexcept;
 void RuntimeWorkerStop() noexcept;
-void RecordInWorldSample(std::int32_t type, std::uint32_t classId,
+void ObserveInWorldItem(std::int32_t type, std::uint32_t classId,
     std::uint32_t unitId, std::uint32_t code,
     const void* nativeUnit,
     const char* source, std::uint32_t sourceLength) noexcept {
@@ -1338,20 +1159,18 @@ void __cdecl OnSoEInWorldLabel(
         !event->sourceLength || event->sourceLength > 255U) return;
     const auto code = OriginalGetItemCode ? OriginalGetItemCode(
         const_cast<void*>(event->nativeUnit)) : 0U;
-    RecordInWorldSample(event->unitType,event->classId,event->unitId,
+    ObserveInWorldItem(event->unitType,event->classId,event->unitId,
         code,event->nativeUnit,event->source,event->sourceLength);
 }
 
 // Definitions occur later; no parser or other file I/O on native hover path.
 bool __cdecl OnSoEInWorldStyle(const SoE::Interop::InWorldLabelEventV1* event,
     char* replacement, std::uint32_t capacity, void*) noexcept {
-    InWorldStyleCalls.fetch_add(1, std::memory_order_relaxed);
     if (!event || event->structSize < sizeof(*event) || event->unitType != 4 ||
         !event->nativeUnit || !event->source || !event->sourceLength ||
         event->sourceLength > 255U || !replacement || capacity == 0U ||
         !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire) ||
         ActiveGeometryMode.load(std::memory_order_acquire) != GeometryMode::Rules) {
-        InWorldStyleGuarded.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     const auto snapshot = std::atomic_load_explicit(&PublishedFilterRules,
@@ -1371,18 +1190,11 @@ bool __cdecl OnSoEInWorldStyle(const SoE::Interop::InWorldLabelEventV1* event,
     const auto quantity=GroundStackQuantity(event->nativeUnit);
     const char palette=rule && rule->hasTextColor ?
         HoverStyle::PaletteSelector(rule->textColor):'\0';
-    if (rule && rule->hasTextColor && !palette)
-        InWorldStyleUnsupportedColor.fetch_add(1,std::memory_order_relaxed);
     const auto source=std::string_view(event->source,event->sourceLength);
     const auto name=rule && rule->hasName ?
         std::string_view(rule->name.data(),rule->bytes-1U):std::string_view{};
     if (!GroundQuantity::BuildHover(source,name,rule && rule->hasName,
-            palette,quantity,replacement,capacity)) {
-        if (rule || quantity>1)
-            InWorldStyleGuarded.fetch_add(1,std::memory_order_relaxed);
-        else InWorldStyleNoRule.fetch_add(1,std::memory_order_relaxed);
-        return false;
-    }
+            palette,quantity,replacement,capacity)) return false;
     // V1 observed the unmodified text before this V2 transformer ran.
     // The native styled-text row will instead contain these returned bytes;
     // update only the SAME scoped item's display witness, retaining the
@@ -1392,7 +1204,6 @@ bool __cdecl OnSoEInWorldStyle(const SoE::Interop::InWorldLabelEventV1* event,
         ObserveNativeRowLiveReplacement(event->classId,event->unitId,
             code,source,std::string_view(replacement,
                 static_cast<std::size_t>(end-replacement)));
-    InWorldStyleWrites.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 
@@ -1415,7 +1226,7 @@ std::uintptr_t __fastcall StandaloneInWorldIdentityHook(void* unit) noexcept {
                 std::memcpy(&type, unit, 4);
                 std::memcpy(&classId, static_cast<const char*>(unit) + 4, 4);
                 std::memcpy(&unitId, static_cast<const char*>(unit) + 8, 4);
-                if (type == 4) RecordInWorldSample(4, classId, unitId,
+                if (type == 4) ObserveInWorldItem(4, classId, unitId,
                     OriginalGetItemCode(unit),unit,nullptr, 0);
             }
         }
@@ -1572,42 +1383,6 @@ void DetachInWorldInterop() noexcept {
     InWorldMode.store(InWorldBackend::Blocked, std::memory_order_release);
 }
 
-void ReportInWorldStatus() noexcept {
-    const auto mode = InWorldMode.load(std::memory_order_acquire);
-    const char* name = mode == InWorldBackend::SoEInterop ? "soe-interop-v1" :
-        mode == InWorldBackend::StandaloneIdentity ? "standalone-identity" :
-        mode == InWorldBackend::Blocked ? "blocked" : "pending";
-    InWorldSample last{};
-    { std::lock_guard lock(InWorldSampleMutex); last = LastInWorldSample; }
-    char prefixHex[3 * 16 + 1]{};
-    for (std::size_t i = 0; i < std::min<std::size_t>(last.sourceLength, 16U); ++i)
-        std::snprintf(prefixHex + 3 * i, sizeof(prefixHex) - 3 * i,
-            "%02X ", last.firstBytes[i]);
-    char printableCode[5]{};
-    for (unsigned i = 0; i < 4; ++i) {
-        const auto byte = static_cast<unsigned char>((last.code >> (8U * i)) & 0xFFU);
-        printableCode[i] = byte == 0U ? ' ' : (byte >= 32U && byte <= 126U
-            ? static_cast<char>(byte) : '?');
-    }
-    char message[480]{};
-    std::snprintf(message, sizeof(message),
-        "LOOT_INWORLD_STATUS version=1.0.0 mode=%s itemCalls=%llu divineCalls=%llu itemTextCalls=%llu type=%d classId=%u unitId=%u code='%s' rawCode=0x%08X sourceBytes=%u rawPrefixHex='%s' mutation=optional-soe-v2",
-        name, static_cast<unsigned long long>(InWorldCalls.load()),
-        static_cast<unsigned long long>(InWorldDivineCalls.load()),
-        static_cast<unsigned long long>(InWorldTextCalls.load()),
-        last.type, last.classId, last.unitId,
-        printableCode, last.code, last.sourceLength, prefixHex);
-    Emit(message);
-    std::snprintf(message, sizeof(message),
-        "LOOT_INWORLD_STYLE_STATUS version=1.0.0 attached=%u callbacks=%llu applied=%llu noRule=%llu unsupportedPalette=%llu guarded=%llu background=not-qualified standaloneText=identity-only",
-        InWorldStyleAttached.load() ? 1U : 0U,
-        static_cast<unsigned long long>(InWorldStyleCalls.load()),
-        static_cast<unsigned long long>(InWorldStyleWrites.load()),
-        static_cast<unsigned long long>(InWorldStyleNoRule.load()),
-        static_cast<unsigned long long>(InWorldStyleUnsupportedColor.load()),
-        static_cast<unsigned long long>(InWorldStyleGuarded.load()));
-    Emit(message);
-}
 constexpr D2RL::PluginInfo Info{
     .infoSize = D2RL::PluginInfoSize,
     .apiVersion = D2RL_PLUGIN_API_VERSION,
@@ -1713,21 +1488,16 @@ bool ReadSafe(std::uintptr_t rva, void* output, std::size_t count) noexcept {
     return true;
 }
 
-// 0.2.0: EXPLICIT-OPT-IN read-only native render-element correlation.
-// Unlike the reverted 0x657B90 detour, this observer is on the higher-level
-// D2R+0x8DA7E0 one-pointer native UI row renderer. It is still shared by
-// multiple tooltips: *never* mutate its object or assign it to an item based
-// solely on geometry or hover timing. The hook is absent until the user runs
-// `loot-filter native-row-arm` and fails closed on unexpected bytes.
-// It forwards the ONE RCX argument exactly once; 0x880BC7 sets RCX to
-// [rowArray]+index*0x2E8, then ignores the callee return value. The callee's
-// 93847 prologue and first consumers only take RCX as incoming argument.
+// Qualified native hover-row renderer for build 93847. This function is shared
+// by multiple UI consumers, so ownership is established only through the exact
+// same-thread SoE item/append/row chain. It forwards the single RCX argument
+// exactly once and fails closed on unexpected entry or callsite bytes.
 constexpr std::uintptr_t NativeRowRendererRva=0x8DA7E0;
 constexpr std::uintptr_t NativeRowCallerRva=0x880BC7;
 constexpr std::uintptr_t NativeRowCallerReturnRva=0x880BCC;
 constexpr std::uintptr_t NativeRowColorLeaRva=0x8DA91B;
 // Native styled-text row queue: atlas build 92777 ABI, but EXACT bytes and
-// direct callsite were independently observed in the user's 93847 captures.
+// direct callsite are qualified for build 93847.
 // Shared with other UI consumers. Never chain an unqualified foreign hook.
 constexpr std::uintptr_t NativeRowAppendRva=0x880160;
 constexpr std::uintptr_t NativeRowAppendCallRva=0x843D87;
@@ -1997,8 +1767,7 @@ NativeRowTextWitness InspectNativeRowTextCandidate(
     std::size_t offset,
     std::uintptr_t elementAddress) noexcept {
     NativeRowTextWitness result{};
-    // 0.1.92's assumed MSVC size/capacity locations (+0x10/+0x18)
-    // were disproven by the live 93847 headers. The candidate's layout is:
+    // Qualified build-93847 string layout:
     // +0x00 pointer; +0x08 length; +0x10 capacity with high-bit
     // inline tag; +0x18 16-byte inline storage. For inline text, pointer
     // MUST equal the exact field address +0x18 (fail closed otherwise).
@@ -2223,7 +1992,8 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     }
     const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
         std::memory_order_acquire);
-    if (!rules || (!rules->backgroundRules && !rules->hiddenRules) ||
+    if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
+                    !rules->hiddenRules) ||
         rules->generation!=append.rulesGeneration) {
         NativeRowBgLiveNoRule.fetch_add(1,std::memory_order_relaxed);
         return false;
@@ -2305,10 +2075,9 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
             NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
             return false;
         }
-        HiddenHoverRowsSuppressed.fetch_add(1,std::memory_order_relaxed);
         return true; // ONLY this fully verified hidden-hover row is not drawn
     }
-    if (!rule->hasBackground) return false;
+    if (!rule->hasBackground && !rule->hasTextColor) return false;
     if (NativeRowBgInsideRenderer ||
         NativeRowBgDrawGate.test_and_set(std::memory_order_acquire)) {
         NativeRowBgLiveBusy.fetch_add(1,std::memory_order_relaxed);
@@ -2318,7 +2087,9 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     auto* color=reinterpret_cast<std::uint8_t*>(element)+0x168;
     std::array<std::uint32_t,4> original{},replacement{};
     std::memcpy(original.data(),color,sizeof(original));
-    std::memcpy(replacement.data(),rule->background.data(),sizeof(replacement));
+    const bool changeBackground=rule->hasBackground;
+    if (changeBackground)
+        std::memcpy(replacement.data(),rule->background.data(),sizeof(replacement));
     LARGE_INTEGER finalNow{};
     const bool stillQualified=NativeRowBgLiveEnabled.load(
             std::memory_order_acquire) &&
@@ -2329,7 +2100,8 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
         QueryPerformanceCounter(&finalNow) &&
         NativeRowBgLivePolicy::RecentChain(append.qpc,finalNow.QuadPart,
             frequency.QuadPart) &&
-        original==nativeColor && replacement!=original &&
+        original==nativeColor &&
+        (!changeBackground || replacement!=original) &&
         rules->generation==append.rulesGeneration;
     if (!stillQualified) {
         NativeRowBgInsideRenderer=false;
@@ -2337,10 +2109,13 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
         NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
-    // Exactly one temporary 16-byte native float4 modification, synchronous
-    // native draw, restore on this same stack. No glyph/UI-global detours.
-    std::memcpy(color,replacement.data(),sizeof(replacement));
-    NativeRowBgLiveWrites.fetch_add(1,std::memory_order_relaxed);
+    // Background and font are independent actions on the same fully
+    // qualified hidden-hover row. Background uses a temporary synchronous
+    // float4 write/restore; font uses only the nested glyph call scope.
+    if (changeBackground) {
+        std::memcpy(color,replacement.data(),sizeof(replacement));
+        NativeRowBgLiveWrites.fetch_add(1,std::memory_order_relaxed);
+    }
     BeginNativeRowFontDraw(append.unitId,append.code,
         append.appendSequence,*rule);
     NativeRowBgLiveLastUnitId.store(append.unitId,
@@ -2348,18 +2123,20 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     NativeRowBgLiveLastCode.store(append.code,
         std::memory_order_release);
     OriginalNativeRowRenderer(element); // exactly once on success
-    std::array<std::uint32_t,4> after{};
-    std::memcpy(after.data(),color,sizeof(after));
-    if (after==replacement) {
-        std::memcpy(color,original.data(),sizeof(original));
-        NativeRowBgLiveRestored.fetch_add(1,std::memory_order_relaxed);
-    } else {
-        NativeRowBgLiveRestoreAnomaly.fetch_add(1,
-            std::memory_order_relaxed);
-        ResetNativeRowFontColor();
-        NativeRowBgLiveEnabled.store(false,std::memory_order_release);
-        NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
-        // Native renderer changed color: never overwrite its newer value.
+    if (changeBackground) {
+        std::array<std::uint32_t,4> after{};
+        std::memcpy(after.data(),color,sizeof(after));
+        if (after==replacement) {
+            std::memcpy(color,original.data(),sizeof(original));
+            NativeRowBgLiveRestored.fetch_add(1,std::memory_order_relaxed);
+        } else {
+            NativeRowBgLiveRestoreAnomaly.fetch_add(1,
+                std::memory_order_relaxed);
+            ResetNativeRowFontColor();
+            NativeRowBgLiveEnabled.store(false,std::memory_order_release);
+            NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
+            // Native renderer changed color: never overwrite its newer value.
+        }
     }
     EndNativeRowFontDraw();
     NativeRowBgInsideRenderer=false;
@@ -2474,7 +2251,7 @@ bool PrintableItemCode(std::uint32_t code) noexcept {
 
 
 // Resolve the canonical filter.json path, retaining read-only migration
-// fallbacks for previous production/probe filenames when the canonical file is absent.
+// Fallbacks for previous production/development filenames when the canonical file is absent.
 bool ResolveFilterConfigPath() noexcept {
     HMODULE self{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
@@ -2489,7 +2266,7 @@ bool ResolveFilterConfigPath() noexcept {
     const auto directory=std::filesystem::path(modulePath.data()).parent_path();
     const auto canonical=directory/L"filter.json";
     const auto previousProduction=directory/L"loot-filter.json";
-    const auto legacyProbe=directory/L"loot-filter-probe.json";
+    const auto legacyDevelopmentConfig=directory/L"loot-filter-probe.json";
     std::error_code error;
     if(std::filesystem::exists(canonical,error) && !error) {
         FilterConfigPath=canonical;
@@ -2502,8 +2279,8 @@ bool ResolveFilterConfigPath() noexcept {
         return true;
     }
     error.clear();
-    if(std::filesystem::exists(legacyProbe,error) && !error) {
-        FilterConfigPath=legacyProbe;
+    if(std::filesystem::exists(legacyDevelopmentConfig,error) && !error) {
+        FilterConfigPath=legacyDevelopmentConfig;
         Emit("LOOT_CONFIG_LEGACY_PATH using=loot-filter-probe.json rename-to=filter.json");
         return true;
     }
@@ -2526,7 +2303,7 @@ std::string PathUtf8(const std::filesystem::path& path) {
 
 std::string FilterPathUtf8() { return PathUtf8(FilterConfigPath); }
 
-// Sample only from the background runtime worker. No file metadata or parser
+// Poll only from the background runtime worker. No file metadata or parser
 // work happens in item-code, formatter, painter, hover, sound, or pickup hooks.
 FilterLiveReload::Stamp ReadFilterFileStamp(
     const std::filesystem::path& path) noexcept {
@@ -2923,6 +2700,7 @@ bool ReloadFilterRules() {
                  ((block->contains("conditions") && !(*block)["conditions"].is_object()) ||
                   block->contains("code") || block->contains("show") ||
                   block->contains("hide"))) ||
+               (block->contains("ruleName") && !(*block)["ruleName"].is_string()) ||
                (block->contains("name") && !(*block)["name"].is_string()) ||
                (block->contains("tooltip") && !(*block)["tooltip"].is_object()) ||
                (block->contains("backgroundColor") && !(*block)["backgroundColor"].is_string()) ||
@@ -2938,13 +2716,13 @@ bool ReloadFilterRules() {
                 char message[340]{};
                 std::snprintf(message,sizeof(message),
                     fresh->schema==3 ?
-                    "LOOT_RULES_REFUSED entry=%zu invalid-show-hide-block fields={conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?} last-valid-rules-preserved=1" :
+                    "LOOT_RULES_REFUSED entry=%zu invalid-show-hide-block fields={ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?} last-valid-rules-preserved=1" :
                     "LOOT_RULES_REFUSED entry=%zu requires-code/conditions-and-action(show|name|tooltip|dropSound|minimapIcon) last-valid-rules-preserved=1",line);
                 Emit(message);return false;
             }
 
             // v3 is intentionally strict: colors belong only inside tooltip.
-            // v1/v2 keep the pre-0.2.71 flat aliases for migration.
+            // v1/v2 keep the legacy flat aliases for migration.
             if(fresh->schema==3 &&
                (block->contains("backgroundColor") || block->contains("textColor"))) {
                 char message[280]{};
@@ -2989,7 +2767,7 @@ bool ReloadFilterRules() {
                 }
             } else if(fresh->schema==3) {
                 for(auto key=block->begin();key!=block->end();++key) {
-                    if(key.key()!="conditions" && key.key()!="continue" &&
+                    if(key.key()!="ruleName" && key.key()!="conditions" && key.key()!="continue" &&
                        key.key()!="name" && key.key()!="tooltip" &&
                        key.key()!="dropSound" && key.key()!="minimapIcon") {
                         Emit("LOOT_RULES_REFUSED unexpected-v3-block-field last-valid-rules-preserved=1");
@@ -3211,7 +2989,7 @@ bool ReloadFilterRules() {
         ClearMinimapProjectionIconStyles();
         char message[560]{};
         std::snprintf(message,sizeof(message),
-            "LOOT_RULES_LOADED version=1.0.0 schema=%u generation=%llu rules=%zu backgroundRules=%zu textColorRules=%zu soundRules=%zu minimapIconRules=%zu hiddenRules=%zu syntax=schema3:{show|hide:{conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?}} tooltip{backgroundColor,textColor}+RGBA(r,g,b,a) minimapShapes=circle|diamond|triangle|star minimapSizePx=default12,clamped12..40 maxNameBytes=%zu propertyQuality=%u propertyIlvl=%u propertySockets=%u propertyEthereal=%u propertyIdentified=%u propertyItemType=%u reload=atomic nativeItemWrites=0",
+            "LOOT_RULES_LOADED version=1.0.0 schema=%u generation=%llu rules=%zu backgroundRules=%zu textColorRules=%zu soundRules=%zu minimapIconRules=%zu hiddenRules=%zu syntax=schema3:{show|hide:{ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?}} tooltip{backgroundColor,textColor}+RGBA(r,g,b,a) minimapShapes=circle|diamond|triangle|star minimapSizePx=default12,clamped12..40 maxNameBytes=%zu propertyQuality=%u propertyIlvl=%u propertySockets=%u propertyEthereal=%u propertyIdentified=%u propertyItemType=%u reload=atomic nativeItemWrites=0",
             fresh->schema,static_cast<unsigned long long>(fresh->generation),
             fresh->rules.size(),fresh->backgroundRules,fresh->textColorRules,
             fresh->soundRules,fresh->minimapIconRules,fresh->hiddenRules,MaximumFilterNameBytes,
@@ -3417,14 +3195,12 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !sourceCall || !paired || !result || !unit || !record ||
         !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire)) return;
-    BackgroundQualified.fetch_add(1,std::memory_order_relaxed);
     std::uint32_t header[3]{},recordId{};
     SIZE_T copied{};
     const auto address=reinterpret_cast<std::uintptr_t>(record);
     if (address>UINTPTR_MAX-0x28-80 ||
         !ReadProcessMemory(GetCurrentProcess(),unit,header,sizeof(header),&copied) ||
         copied!=sizeof(header) || header[0]!=4 || header[2]==0) {
-        BackgroundGuardFailures.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     copied=0;
@@ -3432,7 +3208,6 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
         reinterpret_cast<const void*>(address+0x10),&recordId,
         sizeof(recordId),&copied) || copied!=sizeof(recordId) ||
         recordId!=header[2]) {
-        BackgroundGuardFailures.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     const auto code=CanonicalItemCode(OriginalGetItemCode(unit));
@@ -3448,7 +3223,6 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
     // unconditional before any selected-> field access.
     if (!selected || (!selected->hasBackground &&
         !selected->hasTextColor && selected->show)) {
-        BackgroundNoMatch.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     std::array<char,80> name{};
@@ -3457,7 +3231,6 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
         reinterpret_cast<const void*>(address+0x28),name.data(),
         name.size(),&copied) || copied!=name.size() ||
         !std::memchr(name.data(),'\0',name.size())) {
-        BackgroundGuardFailures.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     const auto visibleLength=strnlen_s(name.data(),name.size());
@@ -3467,17 +3240,15 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
             std::string_view(name.data(),visibleLength),
             std::string_view(selected->name.data(),selected->bytes-1U),
             quantity)) {
-        BackgroundGuardFailures.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     if (!GroundIdentityMutex.try_lock()) {
-        GroundIdentitySkips.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     const auto now=GetTickCount64();
     const auto base=static_cast<std::size_t>(recordId)%IdentitySlots;
     std::size_t slot=IdentitySlots;
-    for (std::size_t offset=0;offset<IdentityProbeSlots;offset++) {
+    for (std::size_t offset=0;offset<IdentityLookupWindow;offset++) {
         const auto pos=(base+offset)%IdentitySlots;
         const auto& candidate=GroundIdentities[pos];
         if (candidate.unitId==recordId || candidate.unitId==0 ||
@@ -3490,9 +3261,7 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
             scalars.socketsKnown,scalars.sockets,
             scalars.etherealKnown,scalars.ethereal,
             scalars.identifiedKnown,scalars.identified};
-        GroundIdentityUpdates.fetch_add(1,std::memory_order_relaxed);
-        BackgroundMatched.fetch_add(1,std::memory_order_relaxed);
-    } else GroundIdentitySkips.fetch_add(1,std::memory_order_relaxed);
+    }
     GroundIdentityMutex.unlock();
 }
 
@@ -3502,13 +3271,12 @@ bool GetGroundIdentity(std::uint32_t id, std::string_view visibleName,
                        std::uint32_t* classIdOut,
                        RuleEngine::Item* scalarOut) noexcept {
     if (!id || !GroundIdentityMutex.try_lock()) {
-        GroundIdentitySkips.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
     const auto now=GetTickCount64();
     const auto base=static_cast<std::size_t>(id)%IdentitySlots;
     bool found=false;
-    for (std::size_t offset=0;offset<IdentityProbeSlots;offset++) {
+    for (std::size_t offset=0;offset<IdentityLookupWindow;offset++) {
         const auto& candidate=GroundIdentities[(base+offset)%IdentitySlots];
         if (candidate.unitId!=id || now-candidate.seenMs>IdentityTtlMs) continue;
         const auto length=strnlen_s(candidate.visibleName.data(),candidate.visibleName.size());
@@ -3537,55 +3305,27 @@ bool GetGroundIdentity(std::uint32_t id, std::string_view visibleName,
     return found;
 }
 
-// 0.1.52 paint-time per-rule BACKGROUND and TEXT RGBA argument forwarding.
-// No native label-color or item records are changed by this JSON path. The native pointer is restored
-// automatically when the helper returns (no owned record state to restore).
-// Set only while the original shared label painter is synchronously drawing
-// a *verified* Divine ground label. Never match inventory/tooltips by text.
-// Valid only during the synchronous verified ground-label paint call.
-// The underlying float[4] is a stack-local copy, never a pointer into a
-// published ruleset (and never retained by the renderer).
+// Per-rule ground-label background and text-color forwarding. The hook only
+// operates on the qualified build-93847 ground-label callsite. It does not
+// persist writes into native label, glyph, item, or unit memory.
 thread_local const float* VerifiedRuleGlyphColor=nullptr;
 std::atomic_bool CorrectedGlyphBArmed{};
 
 void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) noexcept {
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const bool ground=caller==Base+0x1517AF6;
-    const bool neighbor=caller==Base+0x1519E46;
-    const bool observe=BackgroundPaintObserveArmed.load(std::memory_order_acquire);
-    const bool tint=BackgroundTintArmed.load(std::memory_order_acquire) &&
-        ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules;
-    const bool hide=HideGroundArmed.load(std::memory_order_acquire) &&
-        ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules;
-    const bool glyphObserve=GroundTextObserveArmed.load(std::memory_order_acquire);
-    const bool cyan=GroundTextCyanArmed.load(std::memory_order_acquire) &&
-        ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules;
-    // Only a verified configured ground-label rule may scope a glyph-B
-    // override. Legacy record-color writer remains disabled.
+    const bool rulesActive=ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules;
+    const bool tint=rulesActive && BackgroundTintArmed.load(std::memory_order_acquire);
+    const bool hide=rulesActive && HideGroundArmed.load(std::memory_order_acquire);
+    const bool textColor=rulesActive && CorrectedGlyphBArmed.load(std::memory_order_acquire);
+
     std::array<float,4> scopedRuleTextColor{};
     bool hasScopedRuleTextColor=false;
-    bool glyphWasCyanOrPatched=false;
-    void* glyphTarget=nullptr;
     void* forwardedColor=colorArg;
-    std::array<float,4> forwardedRgba{}; // kept alive until original returns
-    // Must outlive the qualification block: the native painter and glyph
-    // color selection below read this flag after that block ends.
+    std::array<float,4> forwardedRgba{};
     bool concealGroundVisuals=false;
-    // The native record identity is borrowed and scoped to the qualification
-    // block below. Preserve only value copies for the post-block audit.
-    std::uint32_t concealedRecordId{};
-    std::uint32_t concealedVerifiedCode{};
-    // 0.2.48: values copied from the qualified record while its locals are
-    // in scope. Report BULK_PAINT only after the original renderer returns.
-    bool latencyBulkBackgroundForwarded=false;
-    std::uint32_t latencyBulkCode{};
-    std::uint32_t latencyBulkRecordId{};
-    if ((observe || tint || glyphObserve || cyan || hide) && (ground || neighbor)) {
-        if (observe) {
-            BackgroundPaintCalls.fetch_add(1,std::memory_order_relaxed);
-            if (ground) BackgroundPaintGroundCalls.fetch_add(1,std::memory_order_relaxed);
-            else BackgroundPaintNeighborCalls.fetch_add(1,std::memory_order_relaxed);
-        }
+
+    if (ground && (tint || hide || textColor)) {
         const auto recordAddress=reinterpret_cast<std::uintptr_t>(rect);
         const auto textAddress=reinterpret_cast<std::uintptr_t>(textArg);
         const auto colorAddress=reinterpret_cast<std::uintptr_t>(colorArg);
@@ -3608,276 +3348,70 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
             reinterpret_cast<const void*>(recordAddress+0x28),textBytes.data(),
             textBytes.size(),&copied) && copied==textBytes.size() &&
             std::memchr(textBytes.data(),'\0',textBytes.size());
-        if (observe && (!colorOk || !idOk || !textOk))
-            BackgroundPaintReadFailures.fetch_add(1,std::memory_order_relaxed);
         std::uint32_t verifiedCode{},verifiedQuantity{},verifiedClassId{};
         RuleEngine::Item verifiedProperties{};
         const auto nameLength=textOk?strnlen_s(textBytes.data(),textBytes.size()):0;
         const bool identified=idOk && textOk &&
             GetGroundIdentity(recordId,std::string_view(textBytes.data(),nameLength),
-                verifiedCode,&verifiedQuantity,&verifiedClassId,
-                &verifiedProperties);
-        const bool divine=identified && verifiedCode==DivineCode;
-        const bool map=identified && verifiedCode==PackFilterCode("mp04");
-        // The 0x1517AF6 ground paint route is the game's bulk ground-label
-        // path. It is independent of whether item labels are held or TOGGLED
-        // on. Hidden-hover uses SoE's separately qualified native row path.
-        //
-        // Do NOT skip OriginalSharedLabelPaint: besides visual output its
-        // native work may be required for hit testing / hover selection.
-        // 0.2.10/0.2.11 skipped this call and a hidden ground item could no
-        // longer be inspected with labels hidden. Suppress only its visual
-        // background + glyph alpha, forwarding the native painter once.
-        if (hide && ground && paired && colorOk && identified &&
-            CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
-            const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-                std::memory_order_acquire);
-            const auto ruleItem=CachedGroundRuleItem(verifiedCode,verifiedClassId,
-                verifiedQuantity,rules.get(),&verifiedProperties);
-            GroundRuleDecision resolvedRule{};
-            const auto* rule=ResolveGroundRule(rules.get(),ruleItem,resolvedRule) ?
-                &resolvedRule : nullptr;
-            if (rule) {
-                const bool nameMatches=!rule->hasName ||
-                    GroundQuantity::MatchesRuleName(
-                        std::string_view(textBytes.data(),nameLength),
-                        std::string_view(rule->name.data(),rule->bytes-1U),
-                        verifiedQuantity);
-                concealGroundVisuals=GroundVisibility::ConcealBulkVisuals(
-                    true,ground,paired,colorOk,identified,
-                    !rule->show,nameMatches);
-            }
-            if (concealGroundVisuals) {
-                concealedRecordId=recordId;
-                concealedVerifiedCode=verifiedCode;
-            }
-        }
-        if (ground && paired && colorOk && identified &&
-            ActiveGeometryMode.load(std::memory_order_relaxed)==GeometryMode::Rules &&
-            CorrectedGlyphBArmed.load(std::memory_order_relaxed)) {
+                verifiedCode,&verifiedQuantity,&verifiedClassId,&verifiedProperties);
+
+        if (paired && colorOk && identified) {
             const auto snapshot=std::atomic_load_explicit(&PublishedFilterRules,
                 std::memory_order_acquire);
             const auto ruleItem=CachedGroundRuleItem(verifiedCode,verifiedClassId,
                 verifiedQuantity,snapshot.get(),&verifiedProperties);
             GroundRuleDecision resolvedRule{};
-            const auto* candidate=ResolveGroundRule(snapshot.get(),ruleItem,resolvedRule) ?
+            const auto* rule=ResolveGroundRule(snapshot.get(),ruleItem,resolvedRule) ?
                 &resolvedRule : nullptr;
-            if (candidate && candidate->hasTextColor &&
-                (!candidate->hasName || GroundQuantity::MatchesRuleName(
+            const bool nameMatches=rule && (!rule->hasName ||
+                GroundQuantity::MatchesRuleName(
                     std::string_view(textBytes.data(),nameLength),
-                    std::string_view(candidate->name.data(),candidate->bytes-1U),
-                    verifiedQuantity))) {
-                scopedRuleTextColor=candidate->textColor;
+                    std::string_view(rule->name.data(),rule->bytes-1U),
+                    verifiedQuantity));
+
+            if (hide && rule && CorrectedGlyphBArmed.load(std::memory_order_relaxed))
+                concealGroundVisuals=GroundVisibility::ConcealBulkVisuals(
+                    true,true,paired,colorOk,identified,!rule->show,nameMatches);
+
+            if (textColor && rule && rule->hasTextColor && nameMatches) {
+                scopedRuleTextColor=rule->textColor;
                 hasScopedRuleTextColor=true;
             }
-        }
-        bool customForwarded=false;
-        // The 0.1.32 samples established +0xAC/+0xB0/+0xB4/+0xB8
-        // as four DWORD channel values. Observe before any opt-in edit.
-        // Only inspect the normal 0x144-byte ground record + verified ID.
-        if ((glyphObserve || cyan) && ground) {
-            if (!paired || !idOk || !textOk) {
-                GroundTextReadFailures.fetch_add(1,std::memory_order_relaxed);
-            } else if (!identified) {
-                GroundTextUnverified.fetch_add(1,std::memory_order_relaxed);
-            } else {
-                std::array<std::uint32_t,4> nativeGlyph{};
-                const auto glyphAddress=recordAddress+GroundGlyphColorOffset;
-                SIZE_T glyphCopied{};
-                const bool glyphRead=ReadProcessMemory(GetCurrentProcess(),
-                    reinterpret_cast<const void*>(glyphAddress),nativeGlyph.data(),
-                    sizeof(nativeGlyph),&glyphCopied) && glyphCopied==sizeof(nativeGlyph);
-                if (!glyphRead) GroundTextReadFailures.fetch_add(1,std::memory_order_relaxed);
-                else {
-                    GroundTextSamples.fetch_add(1,std::memory_order_relaxed);
-                    if (divine) GroundTextDivine.fetch_add(1,std::memory_order_relaxed);
-                    if (map) GroundTextMap.fetch_add(1,std::memory_order_relaxed);
-                    if (glyphObserve && (divine || map) &&
-                        GroundGlyphColorSamplesMutex.try_lock()) {
-                        auto& dest=divine?GroundDivineGlyphSample:GroundMapGlyphSample;
-                        dest.rgba=nativeGlyph;
-                        dest.unitId=recordId;
-                        ++dest.hits;
-                        dest.valid=true;
-                        GroundGlyphColorSamplesMutex.unlock();
-                    }
-                    if (divine && (cyan || nativeGlyph==ProbeCyanGlyphColor)) {
-                        // Do not alter native map text or any non-verified ID.
-                        // Only write the exact native Divine color or the qualified
-                        // OWN distinctive cyan; refuse unknown style values.
-                        if (cyan && nativeGlyph==ProbeCyanGlyphColor) {
-                            glyphWasCyanOrPatched=true;
-                            glyphTarget=reinterpret_cast<void*>(glyphAddress);
-                            GroundTextCyanAlreadyPresent.fetch_add(1,std::memory_order_relaxed);
-                        } else if (nativeGlyph==NativeDivineGlyphColor ||
-                                   (!cyan && nativeGlyph==ProbeCyanGlyphColor)) {
-                            if (!GroundTextCyanWriteMutex.try_lock())
-                                GroundTextCyanContended.fetch_add(1,std::memory_order_relaxed);
-                            else {
-                                glyphTarget=reinterpret_cast<void*>(glyphAddress);
-                                if (WritableRange(glyphTarget,sizeof(nativeGlyph))) {
-                                    const auto& desired=cyan?ProbeCyanGlyphColor:NativeDivineGlyphColor;
-                                    std::memcpy(glyphTarget,desired.data(),sizeof(nativeGlyph));
-                                    if (cyan) {
-                                        glyphWasCyanOrPatched=true;
-                                        GroundTextCyanWrites.fetch_add(1,std::memory_order_relaxed);
-                                    } else {
-                                        GroundTextCyanRestores.fetch_add(1,std::memory_order_relaxed);
-                                    }
-                                } else {
-                                    GroundTextCyanWriteGuards.fetch_add(1,std::memory_order_relaxed);
-                                    glyphTarget=nullptr;
-                                }
-                                GroundTextCyanWriteMutex.unlock();
-                            }
-                        } else if (cyan) {
-                            GroundTextCyanColorRejects.fetch_add(1,std::memory_order_relaxed);
-                        }
-                    }
-                }
+
+            if (tint && !concealGroundVisuals && rule && rule->hasBackground &&
+                nameMatches && std::memcmp(rgba.data(),OriginalGroundBackground.data(),
+                    sizeof(rgba))==0) {
+                forwardedRgba=rule->background;
+                forwardedColor=forwardedRgba.data();
             }
-        }
-        if (tint && ground && !concealGroundVisuals) {
-            if (!paired || !colorOk || !idOk || !textOk) {
-                BackgroundGuardFailures.fetch_add(1,std::memory_order_relaxed);
-            } else if (!identified) {
-                BackgroundRuleNoIdentity.fetch_add(1,std::memory_order_relaxed);
-                BackgroundPaintIdRejected.fetch_add(1,std::memory_order_relaxed);
-            } else {
-                BackgroundPaintIdQualified.fetch_add(1,std::memory_order_relaxed);
-                const auto snapshot=std::atomic_load_explicit(&PublishedFilterRules,
-                    std::memory_order_acquire);
-                const auto ruleItem=CachedGroundRuleItem(verifiedCode,verifiedClassId,
-                    verifiedQuantity,snapshot.get(),&verifiedProperties);
-                GroundRuleDecision resolvedRule{};
-                const auto* rule=ResolveGroundRule(snapshot.get(),ruleItem,resolvedRule) ?
-                    &resolvedRule : nullptr;
-                if (!rule || !rule->hasBackground) {
-                    BackgroundRuleNoColor.fetch_add(1,std::memory_order_relaxed);
-                } else if (rule->hasName &&
-                    !GroundQuantity::MatchesRuleName(
-                        std::string_view(textBytes.data(),nameLength),
-                        std::string_view(rule->name.data(),rule->bytes-1U),
-                        verifiedQuantity)) {
-                    BackgroundPaintNameRejected.fetch_add(1,std::memory_order_relaxed);
-                } else if (std::memcmp(rgba.data(),OriginalGroundBackground.data(),
-                    sizeof(rgba))!=0) {
-                    BackgroundPaintColorRejected.fetch_add(1,std::memory_order_relaxed);
-                } else {
-                    forwardedRgba=rule->background;
-                    forwardedColor=forwardedRgba.data();
-                    customForwarded=true;
-                    BackgroundRuleForwarded.fetch_add(1,std::memory_order_relaxed);
-                    // Keep the old counter visible for 0.1.30 comparisons.
-                    BackgroundPaintForwardedPurple.fetch_add(1,std::memory_order_relaxed);
-                }
-            }
-        }
-        if (observe && colorOk) {
-            const bool originalPurple=std::memcmp(rgba.data(),
-                PurpleDivineBackground.data(),sizeof(rgba))==0;
-            const bool originalBlack=std::memcmp(rgba.data(),
-                OriginalGroundBackground.data(),sizeof(rgba))==0;
-            BackgroundPaintSample* dest=&BackgroundPaintLastOther;
-            if (divine) {
-                BackgroundPaintDivineCalls.fetch_add(1,std::memory_order_relaxed);
-                if (originalPurple) BackgroundPaintDivinePurple.fetch_add(1,std::memory_order_relaxed);
-                if (originalBlack) BackgroundPaintDivineBlack.fetch_add(1,std::memory_order_relaxed);
-                dest=&BackgroundPaintLastDivine;
-            } else if (map) {
-                BackgroundPaintMapCalls.fetch_add(1,std::memory_order_relaxed);
-                if (originalPurple) BackgroundPaintMapPurple.fetch_add(1,std::memory_order_relaxed);
-                if (originalBlack) BackgroundPaintMapBlack.fetch_add(1,std::memory_order_relaxed);
-                dest=&BackgroundPaintLastMap;
-            } else BackgroundPaintOtherCalls.fetch_add(1,std::memory_order_relaxed);
-            if (BackgroundPaintSampleMutex.try_lock()) {
-                dest->rect=recordAddress;
-                dest->text=textAddress;
-                dest->color=colorAddress;
-                dest->recordId=idOk?recordId:0;
-                dest->rgba=rgba;
-                dest->forwardedPurple=customForwarded;
-                dest->name.fill(0);
-                if (textOk) std::memcpy(dest->name.data(),textBytes.data(),
-                    dest->name.size()-1);
-                ++dest->hits;
-                dest->valid=true;
-                BackgroundPaintSampleMutex.unlock();
-            } else BackgroundPaintLockContention.fetch_add(1,std::memory_order_relaxed);
-        }
-        if (ground && identified &&
-            (customForwarded || hasScopedRuleTextColor)) {
-            latencyBulkBackgroundForwarded=customForwarded;
-            latencyBulkCode=verifiedCode;
-            latencyBulkRecordId=recordId;
         }
     }
-    // Keep native label record and paint execution intact. Only the color
-    // arguments passed into the synchronous native draw are transparent.
-    // No persistent writes to native objects, geometry or hover state.
+
     std::array<float,4> invisibleRgba{{0.f,0.f,0.f,0.f}};
-    if (concealGroundVisuals) {
-        forwardedColor=invisibleRgba.data();
-        HiddenGroundPaints.fetch_add(1,std::memory_order_relaxed);
-    }
+    if (concealGroundVisuals) forwardedColor=invisibleRgba.data();
+
     const float* const previousGlyphColor=VerifiedRuleGlyphColor;
-    // The qualified glyph-B hook consumes the same scoped color pointer.
-    // Hidden labels take precedence over configured textColor; the renderer
-    // still runs and receives zero alpha for each glyph. No key-state gate.
     VerifiedRuleGlyphColor=concealGroundVisuals ? invisibleRgba.data() :
         (ground && hasScopedRuleTextColor?scopedRuleTextColor.data():nullptr);
-    // 0.2.23 painter-suppression trial (IN-GAME PICKUP TEST FAILED):
-    // not calling this renderer did NOT prevent clicking the hidden ground
-    // label's former location. 0.2.10/0.2.11 only established that skipping
-    // the painter changed the visible hover response; that did not prove
-    // ownership of native hit testing or pickup. 0.2.25 records independent
-    // bulk/hover draw suppression counters before touching any selector.
-    //
-    // Skip ONLY the already fully qualified bulk-ground painter invocation for
-    // a JSON show:false rule. Do not mutate the item, unit flags, ownership,
-    // record geometry, inventory state, or global input handling. Visible items
-    // and non-ground UI continue to forward the original exactly once.
-    if (concealGroundVisuals) {
-        HiddenGroundLastPainterSkipId.store(concealedRecordId,std::memory_order_relaxed);
-        HiddenGroundLastPainterSkipCode.store(concealedVerifiedCode,std::memory_order_relaxed);
-        HiddenGroundLastPainterSkipMs.store(GetTickCount64(),std::memory_order_release);
-        HiddenGroundInteractionPainterSkips.fetch_add(1,std::memory_order_relaxed);
-    } else if (OriginalSharedLabelPaint) {
+
+    // A qualified show:false bulk-ground label is omitted from this visual
+    // painter. Pickup suppression is enforced independently by the native
+    // action guard; no item/unit/geometry state is modified here.
+    if (!concealGroundVisuals && OriginalSharedLabelPaint)
         OriginalSharedLabelPaint(rect,textArg,forwardedColor);
-    }
+
     VerifiedRuleGlyphColor=previousGlyphColor;
-    // Legacy record-write observer only (disabled by default); not part of the
-    // JSON textColor path. It never runs merely because textColor is enabled.
-    if (glyphWasCyanOrPatched && glyphTarget) {
-        std::array<std::uint32_t,4> after{};
-        SIZE_T afterCopied{};
-        if (ReadProcessMemory(GetCurrentProcess(),glyphTarget,after.data(),
-                sizeof(after),&afterCopied) && afterCopied==sizeof(after)) {
-            if (after==ProbeCyanGlyphColor)
-                GroundTextCyanAfterOriginal.fetch_add(1,std::memory_order_relaxed);
-            else if (after==NativeDivineGlyphColor)
-                GroundTextNativeAfterOriginal.fetch_add(1,std::memory_order_relaxed);
-        } else GroundTextCyanAfterReadFailures.fetch_add(1,std::memory_order_relaxed);
-    }
 }
 
 
-// 0.1.42 crash diagnosis: glyph-B is NOT the ABI of SoE ImageWidget submit at 0x858510.
-// Original call D2R+0x90857B prepares RCX=context, XMM1=first scalar,
-// XMM2=second scalar and R9=&stack-local float[4]. At B+0x32 B moves
-// R9 into RDI and at B+0x141 reads [RDI]. The old 0.1.40 hook declared
-// fourth argument float/XMM3; its forwarder corrupted the R9 color pointer.
-// Only B is hooked here; 0x858510 is the SoE-owned ImageWidget submit hook.
+// Build-93847 glyph renderer ABI: D2R+0x90857B passes RCX=context,
+// XMM1/XMM2 scalar coordinates and R9=&float[4] color. The renderer moves R9
+// into RDI at +0x32 before reading the RGBA values. Only this qualified glyph
+// renderer is hooked; SoE's ImageWidget submission path is left untouched.
 using CorrectedGlyphBFn=std::uint64_t (__fastcall*)(
     void*,float,float,const float*) noexcept;
 CorrectedGlyphBFn OriginalCorrectedGlyphB{};
 std::atomic_bool CorrectedGlyphBInstalled{};
-std::atomic<std::uint64_t> CorrectedGlyphBCalls{};
-std::atomic<std::uint64_t> CorrectedGlyphBScoped{};
-std::atomic<std::uint64_t> CorrectedGlyphBRuleColorForwarded{};
-std::atomic<std::uint64_t> CorrectedGlyphBInvalidColors{};
-std::atomic<std::uint64_t> CorrectedGlyphBReadFailures{};
-std::atomic<std::uint64_t> CorrectedGlyphBUnscoped{};
 constexpr std::uintptr_t CorrectedGlyphBRva=0x658510;
 constexpr std::uintptr_t CorrectedGlyphBCallRva=0x90857B;
 
@@ -3887,7 +3421,8 @@ void EnableAutomaticNativeHover() noexcept {
     const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
         std::memory_order_acquire);
     const auto* scope=InWorldRenderScopeApi.load(std::memory_order_acquire);
-    if (!rules || (!rules->backgroundRules && !rules->hiddenRules) ||
+    if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
+                    !rules->hiddenRules) ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         InWorldMode.load(std::memory_order_acquire)!=InWorldBackend::SoEInterop ||
         !scope || !scope->getCurrentItem || !scope->isReady ||
@@ -3904,28 +3439,29 @@ void EnableAutomaticNativeHover() noexcept {
         Emit("LOOT_NATIVE_HOVER_UNAVAILABLE native-append-or-renderer-hook-refused no-fallback=1");
         return;
     }
-    bool pairedTextRule=false;
+    bool textRule=false;
     for (const auto& rule:rules->rules)
-        if (rule.hasBackground && rule.hasTextColor &&
+        if (rule.hasTextColor &&
             NativeRowFontColorPolicy::ValidJsonColor(rule.textColor)) {
-            pairedTextRule=true;
+            textRule=true;
             break;
         }
-    // Both switches become live automatically. A rule with textColor but no
-    // backgroundColor deliberately cannot bypass row ownership qualification.
-    const bool fontReady=pairedTextRule &&
+    // Font color is independently eligible once the same-thread item/append/
+    // row/caller chain has qualified ownership. It does not require a
+    // backgroundColor action on the rule.
+    const bool fontReady=textRule &&
         CorrectedGlyphBInstalled.load(std::memory_order_acquire) &&
         OriginalCorrectedGlyphB;
-    // Font may be omitted (no paired text rule). Report an unavailable
+    // Font may be omitted (no text rule). Report an unavailable
     // glyph hook when text rules were requested; background stays active.
-    if (pairedTextRule && !fontReady)
+    if (textRule && !fontReady)
         Emit("LOOT_NATIVE_HOVER_UNAVAILABLE font-glyph-hook-not-ready background-only=1");
     NativeRowBgLiveEnabled.store(true,std::memory_order_release);
     NativeRowFontColorEnabled.store(fontReady,std::memory_order_release);
     char line[230]{};
     std::snprintf(line,sizeof(line),
         "LOOT_NATIVE_HOVER_READY version=1.0.0 background=%u font=%u hiddenRules=%zu rules=%zu "
-        "hide-hover=qualified-native-row-suppression globalRect=0 captureFile=0 consoleCommands=0",
+        "hide-hover=qualified-native-row-suppression globalRect=0",
         rules->backgroundRules?1U:0U,fontReady?1U:0U,
         rules->hiddenRules,rules->rules.size());
     Emit(line);
@@ -3976,10 +3512,10 @@ bool TryForwardNativeRowFontGlyph(void* context,float x,float y,
             std::memory_order_relaxed);
         return false;
     }
-    // Fail closed on colored native text/shadows/other sub-elements.
-    // Only the plain near-white label observed in the 0.2.2 capture is
-    // eligible; no native palette or alpha is globally replaced.
-    if (!NativeRowFontColorPolicy::VanillaGroundLabel(native)) {
+    // Item/row/caller ownership is already fully qualified above. D2R may
+    // supply exact white or rarity-colored RGB for this legitimate label,
+    // so reject only malformed/non-opaque glyph colors here.
+    if (!NativeRowFontColorPolicy::EligibleGroundLabel(native)) {
         NativeRowFontColorRejectedNative.fetch_add(1,
             std::memory_order_relaxed);
         return false;
@@ -4040,26 +3576,23 @@ std::uint64_t __fastcall HookCorrectedGlyphB(
     return OriginalCorrectedGlyphB(context,x,y,VerifiedRuleGlyphColor);
 }
 
-void ArmCorrectedGlyphB(bool observeOnly=false) noexcept {
+void ArmCorrectedGlyphB() noexcept {
     if (CorrectedGlyphBInstalled.load(std::memory_order_acquire)) {
-        if(!observeOnly) CorrectedGlyphBArmed.store(true,std::memory_order_release);
-        Emit(observeOnly?
-            "LOOT_UI_TEXT_OBSERVER_READY version=1.0.0 already-installed=1 glyphB=0x658510 glyphA=untouched ruleColors=unchanged":
-            "LOOT_GLYPH_B_ARMED version=1.0.0 already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
+        CorrectedGlyphBArmed.store(true,std::memory_order_release);
+        Emit("LOOT_GLYPH_B_ARMED version=1.0.0 already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
         return;
     }
     const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
     if (!Context || !build || std::string_view(build)!="93847" ||
-        (!observeOnly &&
-         (!FormatterHookInstalled.load(std::memory_order_acquire) ||
-          !InnerNameHookInstalled.load(std::memory_order_acquire) ||
-          !BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
-          ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules))) {
+        !FormatterHookInstalled.load(std::memory_order_acquire) ||
+        !InnerNameHookInstalled.load(std::memory_order_acquire) ||
+        !BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
+        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules) {
         Emit("LOOT_GLYPH_B_REFUSED version=1.0.0 reason=build-or-required-filter-hook-missing hooks=0");
         return;
     }
     constexpr std::array<std::uint8_t,5> nativeCall{0xE8,0x90,0xFF,0xD4,0xFF};
-    // First 16 native B entry bytes from the 0.1.42 unhooked dump.
+    // Qualified first 16 entry bytes for build 93847.
     constexpr std::array<std::uint8_t,16> nativeEntry{
         0x48,0x8B,0xC4,0x48,0x89,0x58,0x18,0x48,
         0x89,0x78,0x20,0x55,0x48,0x8D,0x68,0xA8};
@@ -4086,13 +3619,11 @@ void ArmCorrectedGlyphB(bool observeOnly=false) noexcept {
         return;
     }
     CorrectedGlyphBInstalled.store(true,std::memory_order_release);
-    if(!observeOnly) CorrectedGlyphBArmed.store(true,std::memory_order_release);
-    Emit(observeOnly?
-        "LOOT_UI_TEXT_OBSERVER_READY version=1.0.0 target=D2R+0x658510 caller=dynamic ABI=RCX,XMM1,XMM2,R9-pointer glyphA=untouched ruleColors=unchanged itemWrites=0":
-        "LOOT_GLYPH_B_ARMED version=1.0.0 target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 recordWrites=0 itemWrites=0");
+    CorrectedGlyphBArmed.store(true,std::memory_order_release);
+    Emit("LOOT_GLYPH_B_ARMED version=1.0.0 target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 recordWrites=0 itemWrites=0");
 }
 
-void ArmBackgroundPaintObservation() noexcept;
+void EnsureSharedLabelPaintHook() noexcept;
 
 void SyncFilterTextColorState() noexcept {
     const auto snapshot=std::atomic_load_explicit(&PublishedFilterRules,
@@ -4106,7 +3637,7 @@ void SyncFilterTextColorState() noexcept {
     // Even a text-only rule needs the verified shared painter to identify
     // the unit and put the correct per-item RGBA into TLS for native glyph B.
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
-        ArmBackgroundPaintObservation();
+        EnsureSharedLabelPaintHook();
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
         !OriginalSharedLabelPaint) {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
@@ -4123,27 +3654,8 @@ void SyncFilterTextColorState() noexcept {
     }
 }
 
-void ReportCorrectedGlyphB() noexcept {
-    char line[400]{};
-    std::snprintf(line,sizeof(line),
-        "LOOT_GLYPH_B_STATUS version=1.0.0 installed=%u armed=%u calls=%llu scoped=%llu ruleColorForwarded=%llu nativeForwarded=%llu invalidColor=%llu readFailure=%llu onlyB=1 hookA=0 ABI=RCX,XMM1,XMM2,R9-pointer",
-        CorrectedGlyphBInstalled.load()?1U:0U,
-        CorrectedGlyphBArmed.load()?1U:0U,
-        static_cast<unsigned long long>(CorrectedGlyphBCalls.load()),
-        static_cast<unsigned long long>(CorrectedGlyphBScoped.load()),
-        static_cast<unsigned long long>(CorrectedGlyphBRuleColorForwarded.load()),
-        static_cast<unsigned long long>(CorrectedGlyphBUnscoped.load()),
-        static_cast<unsigned long long>(CorrectedGlyphBInvalidColors.load()),
-        static_cast<unsigned long long>(CorrectedGlyphBReadFailures.load()));
-    Emit(line);
-}
-
-void ArmBackgroundPaintObservation() noexcept {
-    if (BackgroundPaintHookInstalled.load(std::memory_order_acquire)) {
-        BackgroundPaintObserveArmed.store(true,std::memory_order_release);
-        Emit("LOOT_BACKGROUND_PAINT_OBSERVER_READY already-installed=1 observe=1");
-        return;
-    }
+void EnsureSharedLabelPaintHook() noexcept {
+    if (BackgroundPaintHookInstalled.load(std::memory_order_acquire)) return;
     const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
     constexpr std::array<std::uint8_t,17> expected{{
         0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,
@@ -4160,67 +3672,17 @@ void ArmBackgroundPaintObservation() noexcept {
         groundBytes!=groundCall ||
         !ReadSafe(0x1519E41,neighborBytes.data(),neighborBytes.size()) ||
         neighborBytes!=neighborCall) {
-        Emit("LOOT_BACKGROUND_PAINT_OBSERVER_REFUSED build-or-callsite-or-entry-fingerprint-mismatch; no-hook=1");
+        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED build-or-callsite-or-entry-fingerprint-mismatch; no-hook=1");
         return;
     }
     if (!Context->InstallInlineHook(0x1FA8E0,expected.data(),
         static_cast<std::uint32_t>(expected.size()),HookSharedLabelPaint,
         &OriginalSharedLabelPaint) || !OriginalSharedLabelPaint) {
-        Emit("LOOT_BACKGROUND_PAINT_OBSERVER_REFUSED loader-install-failed; no-fallback=1");
+        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED loader-install-failed; no-fallback=1");
         return;
     }
     BackgroundPaintHookInstalled.store(true,std::memory_order_release);
-    BackgroundPaintObserveArmed.store(true,std::memory_order_release);
-    Emit("LOOT_BACKGROUND_PAINT_OBSERVER_READY version=1.0.0 hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-read-only opt-in-argument-override original-forwarded-once=1");
-}
-
-void ReportBackgroundPaintStatus() noexcept {
-    char message[800]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_BACKGROUND_PAINT_STATUS version=1.0.0 armed=%u installed=%u total=%llu ground=%llu neighbor=%llu divine=%llu divinePurple=%llu divineBlack=%llu map=%llu mapPurple=%llu mapBlack=%llu other=%llu failures=%llu contended=%llu forwardedColor=%llu idQualified=%llu idRejected=%llu nameRejected=%llu colorRejected=%llu",
-        BackgroundPaintObserveArmed.load()?1U:0U,
-        BackgroundPaintHookInstalled.load()?1U:0U,
-        static_cast<unsigned long long>(BackgroundPaintCalls.load()),
-        static_cast<unsigned long long>(BackgroundPaintGroundCalls.load()),
-        static_cast<unsigned long long>(BackgroundPaintNeighborCalls.load()),
-        static_cast<unsigned long long>(BackgroundPaintDivineCalls.load()),
-        static_cast<unsigned long long>(BackgroundPaintDivinePurple.load()),
-        static_cast<unsigned long long>(BackgroundPaintDivineBlack.load()),
-        static_cast<unsigned long long>(BackgroundPaintMapCalls.load()),
-        static_cast<unsigned long long>(BackgroundPaintMapPurple.load()),
-        static_cast<unsigned long long>(BackgroundPaintMapBlack.load()),
-        static_cast<unsigned long long>(BackgroundPaintOtherCalls.load()),
-        static_cast<unsigned long long>(BackgroundPaintReadFailures.load()),
-        static_cast<unsigned long long>(BackgroundPaintLockContention.load()),
-        static_cast<unsigned long long>(BackgroundPaintForwardedPurple.load()),
-        static_cast<unsigned long long>(BackgroundPaintIdQualified.load()),
-        static_cast<unsigned long long>(BackgroundPaintIdRejected.load()),
-        static_cast<unsigned long long>(BackgroundPaintNameRejected.load()),
-        static_cast<unsigned long long>(BackgroundPaintColorRejected.load()));
-    Emit(message);
-    std::lock_guard lock(BackgroundPaintSampleMutex);
-    const std::array<std::pair<const char*,const BackgroundPaintSample*>,3> samples{{
-        {"divine",&BackgroundPaintLastDivine},
-        {"map",&BackgroundPaintLastMap},
-        {"other",&BackgroundPaintLastOther}
-    }};
-    for (const auto& [kind,sample]:samples) {
-        if (!sample->valid) continue;
-        char name[64]{};
-        for (std::size_t i=0;i<sample->name.size()-1 && sample->name[i];++i) {
-            const auto c=sample->name[i];
-            name[i]=(c=='\n'||c=='\r')?'|':c;
-        }
-        char line[450]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_BACKGROUND_PAINT_SAMPLE type=%s hits=%llu rect=0x%llX colorPtr=0x%llX unitId=%u nativeRGBA=%.3f,%.3f,%.3f,%.3f forwardedColor=%u text='%s'",
-            kind,static_cast<unsigned long long>(sample->hits),
-            static_cast<unsigned long long>(sample->rect),
-            static_cast<unsigned long long>(sample->color),
-            sample->recordId,sample->rgba[0],sample->rgba[1],sample->rgba[2],
-            sample->rgba[3],sample->forwardedPurple?1U:0U,name);
-        Emit(line);
-    }
+    Emit("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=1.0.0 hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1");
 }
 
 // Fingerprint the proven label-color route before allowing any argument
@@ -4263,14 +3725,13 @@ void SyncFilterBackgroundState() noexcept {
         return;
     }
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
-        ArmBackgroundPaintObservation();
+        EnsureSharedLabelPaintHook();
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
         !OriginalSharedLabelPaint || !VerifyBackgroundColorRoute()) {
         BackgroundTintArmed.store(false,std::memory_order_release);
         Emit("LOOT_BACKGROUND_RULES_REFUSED native-paint-hook-or-fingerprint-mismatch names-remain-active=1");
         return;
     }
-    BackgroundTintEverArmed.store(true,std::memory_order_release);
     BackgroundTintArmed.store(true,std::memory_order_release);
     char message[260]{};
     std::snprintf(message,sizeof(message),
@@ -4290,7 +3751,7 @@ void SyncFilterVisibilityState() noexcept {
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !rules || !rules->hiddenRules) return;
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
-        ArmBackgroundPaintObservation();
+        EnsureSharedLabelPaintHook();
     // Hiding requires both visual channels. A color-only mask would leave
     // unstyled native glyphs visible and must fail open instead.
     if (BackgroundPaintHookInstalled.load(std::memory_order_acquire) &&
@@ -4924,7 +4385,8 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     SyncFilterTextColorState();
     SyncFilterVisibilityState();
     if (InWorldMode.load(std::memory_order_acquire)==InWorldBackend::SoEInterop) {
-        if (rules->backgroundRules || rules->hiddenRules)
+        if (rules->backgroundRules || rules->textColorRules ||
+            rules->hiddenRules)
             EnableAutomaticNativeHover();
         else {
             NativeRowBgLiveEnabled.store(false,std::memory_order_release);
@@ -5020,7 +4482,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         "LOOT_RELOAD_OK version=1.0.0 trigger=%s previousGeneration=%llu "
         "generation=%llu schema=%u rules=%zu hiddenRules=%zu "
         "backgroundRules=%zu textColorRules=%zu soundRules=%zu "
-        "pickupCallerPolicy=none captureRequired=0",
+        "pickupCallerPolicy=none",
         trigger,static_cast<unsigned long long>(previous->generation),
         static_cast<unsigned long long>(current?current->generation:0),
         current?current->schema:0U,current?current->rules.size():0U,
@@ -5041,36 +4503,6 @@ void RebaselineSoundAtGameJoin() noexcept {
         SoundArmMs.store(GetTickCount64(),std::memory_order_release);
     }
     Emit("LOOT_SOUND_GAME_BASELINE_RESET auto=1 previously-observed-items-baselined-for-1500ms=1");
-}
-
-void ReportGroundSoundStatus() noexcept {
-    auto rules=std::atomic_load_explicit(&PublishedFilterRules,std::memory_order_acquire);
-    char message[1050]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_STATUS version=1.0.0 armed=%u soundRules=%zu nativeBackend=%u threadService=%u registryEpoch=%llu seen=%llu baseline=%llu newCandidates=%llu queued=%llu nativeReturned=%llu nativeUnknown=%llu cancelled=%llu queueRejected=%llu cacheContended=%llu cacheFull=%llu alreadySeen=%llu altObserved=%llu hiddenObserved=%llu pickupObserver=%u pickupPolls=%llu pickupPollOK=%llu pickupResets=%llu pickupBusy=%llu pickupQueueRejected=%llu mode=first-observed-with-inventory-pickup-rearm not-native-drop-event",
-        SoundArmed.load()?1U:0U,rules?rules->soundRules:0,
-        SoundLoaderBase.load()?1U:0U,SoundThreads?1U:0U,
-        static_cast<unsigned long long>(SoundRegistryEpoch.load()),
-        static_cast<unsigned long long>(SoundSeenTotal.load()),
-        static_cast<unsigned long long>(SoundBaselineTotal.load()),
-        static_cast<unsigned long long>(SoundQualifiedNew.load()),
-        static_cast<unsigned long long>(SoundQueued.load()),
-        static_cast<unsigned long long>(SoundPlayed.load()),
-        static_cast<unsigned long long>(SoundUnknown.load()),
-        static_cast<unsigned long long>(SoundCancelled.load()),
-        static_cast<unsigned long long>(SoundQueueRejected.load()),
-        static_cast<unsigned long long>(SoundCacheContention.load()),
-        static_cast<unsigned long long>(SoundCacheFull.load()),
-        static_cast<unsigned long long>(SoundAlreadySeen.load()),
-        static_cast<unsigned long long>(SoundObservedAlt.load()),
-        static_cast<unsigned long long>(SoundObservedHidden.load()),
-        SoundInventory?1U:0U,
-        static_cast<unsigned long long>(SoundPickupPolls.load()),
-        static_cast<unsigned long long>(SoundPickupPollSuccess.load()),
-        static_cast<unsigned long long>(SoundPickupResets.load()),
-        static_cast<unsigned long long>(SoundPickupBusy.load()),
-        static_cast<unsigned long long>(SoundPickupPollRejected.load()));
-    Emit(message);
 }
 
 // The producer passes six ABI arguments, including two stack arguments.
@@ -5357,8 +4789,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
             continue;
         }
 
-        // The only production diagnostic-style hotkey retained is explicit
-        // manual configuration reload. It does not consume the game input.
+        // Manual configuration reload does not consume the game input.
         const bool reloadChord=(GetAsyncKeyState(VK_CONTROL)&0x8000)!=0 &&
             (GetAsyncKeyState(VK_SHIFT)&0x8000)!=0 &&
             (GetAsyncKeyState(VK_F9)&0x8000)!=0;
@@ -5407,13 +4838,6 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     }
     InWorldMode.store(InWorldBackend::Pending, std::memory_order_release);
     InWorldStyleAttached.store(false, std::memory_order_release);
-    InWorldStyleCalls.store(0); InWorldStyleWrites.store(0);
-    InWorldStyleNoRule.store(0); InWorldStyleUnsupportedColor.store(0);
-    InWorldStyleGuarded.store(0);
-    InWorldCalls.store(0);
-    InWorldDivineCalls.store(0);
-    InWorldTextCalls.store(0);
-    { std::lock_guard lock(InWorldSampleMutex); LastInWorldSample = {}; }
     InWorldLifecycle = nullptr;
     InWorldJoinedListener = D2RL::Lifecycle::InvalidHandle;
     OriginalInWorldFormatter = nullptr;
@@ -5467,74 +4891,13 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     }
 
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_relaxed);
-    BackgroundPaintObserveArmed.store(false,std::memory_order_relaxed);
     BackgroundPaintHookInstalled.store(false,std::memory_order_relaxed);
     OriginalSharedLabelPaint=nullptr;
     GroundIdentities.fill({});
     GroundPropertyLiveReads.store(0,std::memory_order_relaxed);
     GroundPropertyLiveUnknown.store(0,std::memory_order_relaxed);
-    GroundIdentityUpdates.store(0,std::memory_order_relaxed);
-    GroundIdentitySkips.store(0,std::memory_order_relaxed);
-    BackgroundRuleForwarded.store(0,std::memory_order_relaxed);
-    BackgroundRuleNoColor.store(0,std::memory_order_relaxed);
-    BackgroundRuleNoIdentity.store(0,std::memory_order_relaxed);
-    LastDivineTintRecord.store(0,std::memory_order_relaxed);
-    LastMapTintRecord.store(0,std::memory_order_relaxed);
-    LastDivineTintUnitId.store(0,std::memory_order_relaxed);
-    LastMapTintUnitId.store(0,std::memory_order_relaxed);
-    BackgroundPaintForwardedPurple.store(0,std::memory_order_relaxed);
-    BackgroundPaintIdQualified.store(0,std::memory_order_relaxed);
-    BackgroundPaintIdRejected.store(0,std::memory_order_relaxed);
-    BackgroundPaintNameRejected.store(0,std::memory_order_relaxed);
-    BackgroundPaintColorRejected.store(0,std::memory_order_relaxed);
-    BackgroundPaintCalls.store(0,std::memory_order_relaxed);
-    BackgroundPaintGroundCalls.store(0,std::memory_order_relaxed);
-    BackgroundPaintNeighborCalls.store(0,std::memory_order_relaxed);
-    BackgroundPaintDivineCalls.store(0,std::memory_order_relaxed);
-    BackgroundPaintDivinePurple.store(0,std::memory_order_relaxed);
-    BackgroundPaintDivineBlack.store(0,std::memory_order_relaxed);
-    BackgroundPaintMapCalls.store(0,std::memory_order_relaxed);
-    BackgroundPaintMapPurple.store(0,std::memory_order_relaxed);
-    BackgroundPaintMapBlack.store(0,std::memory_order_relaxed);
-    BackgroundPaintOtherCalls.store(0,std::memory_order_relaxed);
-    BackgroundPaintReadFailures.store(0,std::memory_order_relaxed);
-    BackgroundPaintLockContention.store(0,std::memory_order_relaxed);
-    BackgroundPaintLastDivine={};
-    BackgroundPaintLastMap={};
-    BackgroundPaintLastOther={};
-    GroundTextObserveArmed.store(false,std::memory_order_relaxed);
-    GroundTextCyanArmed.store(false,std::memory_order_relaxed);
-    GroundTextSamples.store(0,std::memory_order_relaxed);
-    GroundTextDivine.store(0,std::memory_order_relaxed);
-    GroundTextMap.store(0,std::memory_order_relaxed);
-    GroundTextReadFailures.store(0,std::memory_order_relaxed);
-    GroundTextUnverified.store(0,std::memory_order_relaxed);
-    GroundTextCyanWrites.store(0,std::memory_order_relaxed);
-    GroundTextCyanRestores.store(0,std::memory_order_relaxed);
-    GroundTextCyanAlreadyPresent.store(0,std::memory_order_relaxed);
-    GroundTextCyanAfterOriginal.store(0,std::memory_order_relaxed);
-    GroundTextNativeAfterOriginal.store(0,std::memory_order_relaxed);
-    GroundTextCyanAfterReadFailures.store(0,std::memory_order_relaxed);
-    GroundTextCyanColorRejects.store(0,std::memory_order_relaxed);
-    GroundTextCyanWriteGuards.store(0,std::memory_order_relaxed);
-    GroundTextCyanContended.store(0,std::memory_order_relaxed);
-    GroundDivineGlyphSample={};
-    GroundMapGlyphSample={};
     BackgroundTintArmed.store(false,std::memory_order_relaxed);
     HideGroundArmed.store(false,std::memory_order_relaxed);
-    HiddenGroundPaints.store(0,std::memory_order_relaxed);
-    HiddenGroundInteractionPainterSkips.store(0,std::memory_order_relaxed);
-    HiddenGroundLastPainterSkipId.store(0,std::memory_order_relaxed);
-    HiddenGroundLastPainterSkipCode.store(0,std::memory_order_relaxed);
-    HiddenGroundLastPainterSkipMs.store(0,std::memory_order_relaxed);
-    HiddenHoverRowsSuppressed.store(0,std::memory_order_relaxed);
-    BackgroundTintEverArmed.store(false,std::memory_order_relaxed);
-    BackgroundQualified.store(0,std::memory_order_relaxed);
-    BackgroundMatched.store(0,std::memory_order_relaxed);
-    BackgroundNoMatch.store(0,std::memory_order_relaxed);
-    BackgroundGuardFailures.store(0,std::memory_order_relaxed);
-    BackgroundWrites.store(0,std::memory_order_relaxed);
-    BackgroundRestores.store(0,std::memory_order_relaxed);
     OriginalInnerNameWriter=nullptr;
     InnerNameHookInstalled.store(false,std::memory_order_relaxed);
     GeometryTotalCalls.store(0,std::memory_order_relaxed);
@@ -5562,7 +4925,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     FilterLiveReloadAvailable.store(false,std::memory_order_release);
     if (ResolveFilterConfigPath()) {
         // Parsing happens before any ground-label feature hook is installed.
-        // Missing/invalid JSON leaves the filter unarmed; no sample rules
+        // Missing/invalid JSON leaves the filter unarmed; no fallback rules
         // are silently created next to the user's DLL.
         (void)ReloadFilterRules();
         const auto path=std::string("LOOT_RULES_PATH '")+FilterPathUtf8()+"'";
@@ -5648,9 +5011,6 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     SoundLoaderBase.store(0,std::memory_order_release);
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_release);
     BackgroundTintArmed.store(false,std::memory_order_release);
-    BackgroundPaintObserveArmed.store(false,std::memory_order_release);
-    GroundTextObserveArmed.store(false,std::memory_order_release);
-    GroundTextCyanArmed.store(false,std::memory_order_release);
 
     std::atomic_store_explicit(&PublishedFilterRules,
         std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);

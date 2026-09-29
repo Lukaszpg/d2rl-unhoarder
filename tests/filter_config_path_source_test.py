@@ -6,7 +6,7 @@ readme = (root / "README.md").read_text()
 
 canonical = 'const auto canonical=directory/L"filter.json";'
 previous = 'const auto previousProduction=directory/L"loot-filter.json";'
-probe = 'const auto legacyProbe=directory/L"loot-filter-probe.json";'
+probe = 'const auto legacyDevelopmentConfig=directory/L"loot-filter-probe.json";'
 assert canonical in s
 assert previous in s
 assert probe in s

@@ -13,7 +13,7 @@ namespace SoE::LootFilter::SoundIdentity {
 class Registry final {
 public:
     static constexpr std::size_t SlotCount = 4096;
-    static constexpr std::size_t ProbeCount = 32;
+    static constexpr std::size_t CollisionScanLimit = 32;
 
     enum class Observation : std::uint8_t {
         New, AlreadySeen, Full, Invalid
@@ -25,7 +25,7 @@ public:
         if (unitId == 0 || code == 0) return Observation::Invalid;
         const auto first = static_cast<std::size_t>(unitId) % entries_.size();
         std::size_t firstTombstone = SlotCount;
-        for (std::size_t i = 0; i < ProbeCount; ++i) {
+        for (std::size_t i = 0; i < CollisionScanLimit; ++i) {
             const auto index = (first + i) % entries_.size();
             auto& entry = entries_[index];
             if (entry.unitId == unitId) {
@@ -57,7 +57,7 @@ public:
     bool Forget(std::uint32_t unitId) noexcept {
         if (unitId == 0) return false;
         const auto first = static_cast<std::size_t>(unitId) % entries_.size();
-        for (std::size_t i = 0; i < ProbeCount; ++i) {
+        for (std::size_t i = 0; i < CollisionScanLimit; ++i) {
             auto& entry = entries_[(first + i) % entries_.size()];
             if (entry.unitId == unitId) {
                 entry = {0, TombstoneCode, 0};
@@ -73,7 +73,7 @@ public:
     bool IsCurrent(std::uint32_t unitId, std::uint64_t ticket) const noexcept {
         if (unitId == 0 || ticket == 0) return false;
         const auto first = static_cast<std::size_t>(unitId) % entries_.size();
-        for (std::size_t i = 0; i < ProbeCount; ++i) {
+        for (std::size_t i = 0; i < CollisionScanLimit; ++i) {
             const auto& entry = entries_[(first + i) % entries_.size()];
             if (entry.unitId == unitId) return entry.ticket == ticket;
             if (entry.unitId == 0 && !IsTombstone(entry)) return false;

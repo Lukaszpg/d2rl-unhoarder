@@ -3,7 +3,7 @@ root=Path(__file__).resolve().parents[1]
 s=(root/'src/plugin.cpp').read_text(); cm=(root/'CMakeLists.txt').read_text(); rc=(root/'src/plugin.rc').read_text(); readme=(root/'README.md').read_text()
 assert '.id = "loot-filter"' in s and '.name = "UnHoarder"' in s
 assert '.author = "MindH1ve"' in s
-assert 'OUTPUT_NAME "loot-filter"' in cm and 'add_library(loot_filter SHARED' in cm
+assert 'OUTPUT_NAME "loot-filter"' in cm and 'add_library(unhoarder SHARED' in cm
 assert 'OriginalFilename", "loot-filter.dll"' in rc and 'CompanyName", "MindH1ve"' in rc
 assert 'L"filter.json"' in s
 assert 'L"loot-filter.json"' in s  # v1.0.0 migration fallback only

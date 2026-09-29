@@ -1,5 +1,5 @@
 #pragma once
-// Ground-item quantity prefix: "12x Exalted Orb" when quantity > 1.
+// Ground-item quantity prefix: "12x Item Name" when quantity > 1.
 // Shared by Alt-visible native writer and SoE V2 hidden-hover item relay.
 #include "hover_label_style.hpp"
 #include <charconv>

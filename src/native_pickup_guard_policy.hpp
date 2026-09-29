@@ -7,7 +7,7 @@ inline constexpr std::uint32_t PickupAction=22;
 inline constexpr std::uint32_t ItemUnitType=4;
 inline constexpr std::uint32_t OnGroundMode=3;
 // One terminal reason for every action-22/type-4 dispatch, including when
-// the original is forwarded. The guard does not depend on capture phases.
+// the original is forwarded. The guard is independent of diagnostic state.
 enum class Decision : std::uint8_t {
     Blocked, GuardInactive, InvalidTargetId,
     VisibilityNotArmed, RulesModeInactive, CodeReaderUnavailable,

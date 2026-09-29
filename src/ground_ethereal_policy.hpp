@@ -1,5 +1,5 @@
 #pragma once
-// Native item-data flag identified by D2R 93847 controlled samples:
+// Qualified D2R build-93847 item-data flag contract:
 // ethereal uar: 0x00C02010; nonethereal uar: 0x00800010. Two bits
 // differed (0x00400000, 0x00002000); this mask is the established D2
 // ethereal bit and is now tested via a guarded runtime read. Do NOT

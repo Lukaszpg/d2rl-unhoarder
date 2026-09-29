@@ -19,5 +19,5 @@ assert 'HookPresent' in r and 'HookExecuteCommandLists' in r and 'HookResizeBuff
 assert 'ImDrawData* const drawData = ImGui::GetDrawData();' in r
 assert 'ImGui_ImplDX12_RenderDrawData(drawData, CommandList.Get());' in r
 assert 'locbones authorized use, modification, and redistribution on 2026-08-16' in h
-assert 'loot_filter_imgui' in cm and 'OUTPUT_NAME "loot-filter"' in cm
+assert 'unhoarder_imgui' in cm and 'OUTPUT_NAME "loot-filter"' in cm
 print('1.0.0 standalone JSON minimap marker/build contract ok')

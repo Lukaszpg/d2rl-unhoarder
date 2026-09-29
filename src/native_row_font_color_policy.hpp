@@ -8,12 +8,16 @@ inline bool ValidJsonColor(const std::array<float,4>& rgba) noexcept {
             return false;
     return true;
 }
-// Measured in D2R 93847 / SoE 0.18.194, item Divine Orb, 0.2.2.
-// Conservative first write-capable PoC, not an assumption for all locales.
-inline bool VanillaGroundLabel(const std::array<float,4>& rgba) noexcept {
+// The caller/row/item identity is qualified before this predicate runs.
+// Do not require one historically observed vanilla RGB here: D2R may feed
+// exact white or rarity-colored RGB for the same legitimate ground-label
+// glyph. The remaining guard is strictly structural: finite normalized RGB
+// and an opaque/near-opaque label glyph. Preserve the native alpha when
+// forwarding the configured JSON RGB.
+inline bool EligibleGroundLabel(const std::array<float,4>& rgba) noexcept {
     for (unsigned i=0;i<3;++i)
-        if (!std::isfinite(rgba[i]) || std::fabs(rgba[i]-0.941f)>0.03f)
+        if (!std::isfinite(rgba[i]) || rgba[i]<0.f || rgba[i]>1.001f)
             return false;
-    return std::isfinite(rgba[3]) && rgba[3]>=0.99f && rgba[3]<=1.001f;
+    return std::isfinite(rgba[3]) && rgba[3]>=0.90f && rgba[3]<=1.001f;
 }
 }

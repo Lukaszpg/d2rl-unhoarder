@@ -108,7 +108,7 @@ const Rule* FirstMatch(const std::vector<Rule>& rules,const Item& item) noexcept
 }
 // Inspect first-match order using only the cheap, already-known properties.
 // A later rarity/ilvl rule must not force a native memory read for an item
-// already decided by an earlier code-only rule (e.g. Divine Orb). Conversely,
+// already decided by an earlier code-only rule. Conversely,
 // an applicable property rule with unknown data must stop evaluation before
 // a later generic show:false fallback: unknown always stays visible.
 inline bool ContainsCode(const std::vector<std::uint32_t>& values,

@@ -27,12 +27,12 @@ int main() {
     // Deletion must preserve collisions, and tombstones must be reusable.
     registry.Clear();
     constexpr std::uint32_t stride=static_cast<std::uint32_t>(Registry::SlotCount);
-    for (std::uint32_t n=0;n<Registry::ProbeCount;n++)
+    for (std::uint32_t n=0;n<Registry::CollisionScanLimit;n++)
         assert(registry.Observe(1+n*stride,0x6f766964)==O::New);
-    assert(registry.Observe(1+Registry::ProbeCount*stride,0x6f766964)==O::Full);
+    assert(registry.Observe(1+Registry::CollisionScanLimit*stride,0x6f766964)==O::Full);
     assert(registry.Forget(1));
     assert(registry.Observe(1+stride,0x6f766964)==O::AlreadySeen);
-    assert(registry.Observe(1+Registry::ProbeCount*stride,0x6f766964)==O::New);
+    assert(registry.Observe(1+Registry::CollisionScanLimit*stride,0x6f766964)==O::New);
     assert(!registry.Forget(2));
     assert(registry.Observe(1,0x6f766964)==O::Full);
 }
