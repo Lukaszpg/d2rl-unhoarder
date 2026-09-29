@@ -38,7 +38,7 @@ The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start 
 
 The canonical runtime configuration is `filter.json`. If it is absent, the plugin can still read `loot-filter.json` (v0.2.76) or the older `loot-filter-probe.json` beside the DLL as migration fallbacks. New configurations should use `filter.json`.
 
-## Building
+## Building from source
 
 Requirements:
 
