@@ -99,7 +99,13 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "build\bin\unhoarder.dll" "dist\unhoarder.dll"
           git archive --format=zip --prefix="unhoarder-$version/" -o "dist\unhoarder-$version-source.zip" HEAD
-          $names=@("unhoarder.dll","unhoarder-$version-source.zip")
+
+          if (-not (Test-Path "data" -PathType Container)) {
+            throw "Required release data folder is missing: data"
+          }
+          Compress-Archive -Path "data" -DestinationPath "dist\unhoarder-$version-data.zip" -CompressionLevel Optimal
+
+          $names=@("unhoarder.dll","unhoarder-$version-source.zip","unhoarder-$version-data.zip")
           $lines=foreach($name in $names){$h=(Get-FileHash (Join-Path dist $name) -Algorithm SHA256).Hash.ToLowerInvariant(); "$h  $name"}
           [IO.File]::WriteAllLines((Join-Path $PWD "dist\SHA256SUMS.txt"),$lines,[Text.UTF8Encoding]::new($false))
 
@@ -110,7 +116,7 @@ jobs:
         run: |
           $version='${{ steps.version.outputs.version }}'
           $tag='${{ steps.version.outputs.tag }}'
-          gh release create $tag "dist\unhoarder.dll" "dist\unhoarder-$version-source.zip" "dist\SHA256SUMS.txt" --verify-tag --title "UnHoarder $tag" --generate-notes
+          gh release create $tag "dist\unhoarder.dll" "dist\unhoarder-$version-source.zip" "dist\unhoarder-$version-data.zip" "dist\SHA256SUMS.txt" --verify-tag --title "UnHoarder $tag" --generate-notes
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
