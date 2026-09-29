@@ -2,7 +2,7 @@ from pathlib import Path
 p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 h=(p/'src/filter_rule_engine.hpp').read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'config["version"].get<int>() != 2' in s
 assert 'ParseV2Conditions((*block)["conditions"],rule.conditions,' in s
 assert 'std::atomic_store_explicit(&PublishedFilterRules,published,' in s

@@ -2,7 +2,7 @@ from pathlib import Path
 p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 h=(p/'src/ground_property_live_policy.hpp').read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert '#include "ground_property_live_policy.hpp"' in s
 assert 'RuleEngine::NeedsNativeQualityLevel(table->rules,item)' in s
 assert 'RuleEngine::ResolveMatchingRulesFailOpen(table->rules,item,' in s

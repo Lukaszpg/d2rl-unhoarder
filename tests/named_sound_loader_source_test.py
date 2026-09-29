@@ -3,7 +3,7 @@ p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 h=(p/'src/named_sound_loader_identity.hpp').read_text()
 checks={
- 'plugin 1.0.0':'.version = "1.0.0"' in s,
+ 'plugin 1.0.0':'.version = UNHOARDER_VERSION_STRING' in s,
  'old and new paired PE IDs':'0x6AAFC972U && imageSize==0x5602000U' in h and '0x6AB3782CU && imageSize==0x5643000U' in h,
  'old sound chain preserved':'0x1FCFE3U,{0xE8,0x18,0x3C,0xFA,0xFF}' in s and '0x1A0C43U,{0xE8,0x38,0xFB,0xFF,0xFF}' in s,
  'verify exact chain':'actual!=static_cast<std::int64_t>(edge.target)' in s,

@@ -4,7 +4,7 @@ root=Path(__file__).resolve().parents[1]
 s=(root/'src/plugin.cpp').read_text()
 h=(root/'src/filter_rule_engine.hpp').read_text()
 
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'config["version"].get<int>() != 3' in s
 assert 'schema3-requires-exactly-one-wrapper={show:object}|{hide:object}' in s
 assert 'const bool hasShow=entry.contains("show");' in s

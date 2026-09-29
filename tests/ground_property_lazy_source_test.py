@@ -2,7 +2,7 @@ from pathlib import Path
 base=Path(__file__).resolve().parents[1]
 s=(base/'src/plugin.cpp').read_text()
 h=(base/'src/filter_rule_engine.hpp').read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'RuleEngine::NeedsNativeQualityLevel(table->rules,item)' in s
 assert 'ResolveMatchingRulesFailOpen' in h
 assert 'ReadNativeGroundQualityLevel(' in s

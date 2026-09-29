@@ -6,7 +6,7 @@ h=(root/'src/minimap_overlay_renderer.hpp').read_text()
 policy=(root/'src/minimap_icon_policy.hpp').read_text()
 e=(root/'loot-filter.v3.example.json').read_text()
 
-assert '.version = "1.0.0"' in p
+assert '.version = UNHOARDER_VERSION_STRING' in p
 assert 'bool hasMinimapIcon{};' in p
 assert 'std::size_t minimapIconRules{};' in p
 assert 'block->contains("minimapIcon") && !(*block)["minimapIcon"].is_object()' in p
