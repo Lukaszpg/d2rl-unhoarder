@@ -91,12 +91,12 @@ Schema 3 mirrors Path of Exile's ordered Show/Hide block model. Every element of
     {
       "show": {
         "ruleName": "High-value currency",
-        "conditions": { "code": "divo" },
+        "conditions": { "code": "r33" },
         "tooltip": {
           "backgroundColor": "RGBA(110, 35, 160, 0.82)",
           "textColor": "RGBA(180, 140, 255, 1)"
         },
-        "dropSound": "Drop_Zing",
+        "dropSound": "Filter06",
         "minimapIcon": {
           "shape": "diamond",
           "borderColor": "RGBA(225, 205, 255, 1)",
