@@ -58,10 +58,6 @@ cmake -S . -B build `
   -DUNHOARDER_PLUGINSDK_SOURCE_DIR="D:/path/to/PluginSDK"
 ```
 
-## GitHub Actions
-
-`VERSION` is the canonical product version. `.github/workflows/ci.yml` validates pushes and pull requests with Python tests, portable C++ tests, and a Release DLL build. `.github/workflows/release.yml` is manually dispatched with a major/minor/patch bump; it updates `VERSION`, repeats the validation gates, commits and tags the release, and publishes `unhoarder.dll`, a source ZIP, and SHA-256 checksums to GitHub Releases.
-
 ## Canonical JSON structure
 
 Schema 3 mirrors Path of Exile's ordered Show/Hide block model. Every element of `rules` contains exactly one `show` or `hide` wrapper. Matching normally stops at that block; `"continue": true` applies the block and continues to later rules, allowing actions to compose and later values to override earlier ones.
