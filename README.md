@@ -4,6 +4,28 @@
 
 Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847 / Sanctuary of Exile.
 
+## Installation
+
+1. Head to releases and download the newest release - `unhoarder.dll` and `unhoarder-<version>-data.zip` are required.
+2. Place `unhoarder.dll` in `<D2R_installation_directory>\mods\<your_mod_name>\d2rloader\plugins`
+3. Unzip the downloaded ZIP, but do not copy it yet to your D2R directory.
+4. If you are:
+   
+  a) NOT Using a mod that modifies `sounds.txt` file - you can copy the unzipped contents to `<D2R_installation_directory>\mods\<your_mod_name>\<your_mod_name>.mpq\`
+
+  b) If you are using a mod that modifies `sounds.txt` file, you have to manually add the filter alert sounds to that file, using for example [TXTEditor](https://github.com/yinyin333333/TXTeditor):
+  - Open the downloaded `sounds.txt` file
+  - Open the `sounds.txt` file of the mod you're using
+  - Copy `Filter01` to `Filter16` rows and add them to your mods `sounds.txt` at the end of the file
+  - Make sure to change the IDS in `Index` column
+  - Save the file
+
+## Building and installing a filter
+
+In order to build a filter, head to [UnHoarder Builder](https://lukaszpg.github.io/unhoarder-builder/) site. Upload the required text files of the mod you're using (or vanilla if you're not using any huge overhaul mods) to enable autocomplete.
+
+The `filter.json` file has to be placed in the same `plugins` folder as `unhoarder.dll`.
+
 ## Identity
 
 - product: **UnHoarder**
