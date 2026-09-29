@@ -4,7 +4,7 @@ p=(root/'src/plugin.cpp').read_text()
 r=(root/'src/minimap_overlay_renderer.cpp').read_text()
 h=(root/'src/minimap_overlay_renderer.hpp').read_text()
 
-assert '.version = "1.0.0"' in p
+assert '.version = UNHOARDER_VERSION_STRING' in p
 assert 'NativeUiStateTableRva=0x2A2ADA0' in p
 assert 'NativeUiAutomapStateIndex=10' in p
 assert 'NativeUiOpenStateWitnessRva=0x0CD7FB' in p
@@ -13,7 +13,7 @@ assert 'NativeUiToggleStateWitnessRva=0x0CDE3C' in p
 assert 'ExpectedNativeUiOpenStateWitness' in p
 assert 'ExpectedNativeUiCloseStateWitness' in p
 assert 'ExpectedNativeUiToggleStateWitness' in p
-assert 'LOOT_MINIMAP_AUTOMAP_GATE_READY version=1.0.0' in p
+assert 'LOOT_MINIMAP_AUTOMAP_GATE_READY version=" UNHOARDER_VERSION_STRING "' in p
 assert 'Base+NativeUiStateTableRva' in p
 assert 'SetAutomapVisibilityTable' in h
 assert 'NativeAutomapUiStateIndex = 10U' in r
