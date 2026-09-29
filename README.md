@@ -23,7 +23,7 @@ UnHoarder no longer needs to live under `RuffnecKk-D2RLoader-Suite/plugins/` and
 Requirements:
 
 - Windows x64
-- CMake 3.28+
+- CMake 3.29+
 - Visual Studio 2022 / MSVC with C++20 support
 - Git available to CMake for pinned `FetchContent` dependencies
 
@@ -50,14 +50,14 @@ Place `filter.json` beside the DLL.
 
 ### PluginSDK source
 
-By default CMake fetches the exact PluginSDK-v4 snapshot pinned for UnHoarder 1.0.0. It uses only the `third_party/PluginSDK-v4` subproject from the pinned RuffnecKk Suite commit; the Suite itself is not configured or required as the source/build root.
+By default CMake fetches the public D2RLoader PluginSDK directly from `D2RLoader/PluginSDK`, pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (SDK 0.3.0 / plugin ABI 4) for reproducible UnHoarder 1.0.0 builds. No RuffnecKk Suite source checkout is used by the build.
 
 For an offline/local SDK checkout, configure with:
 
 ```powershell
 cmake -S . -B build `
   -G "Visual Studio 17 2022" -A x64 `
-  -DUNHOARDER_PLUGINSDK_V4_SOURCE_DIR="D:/path/to/PluginSDK-v4"
+  -DUNHOARDER_PLUGINSDK_SOURCE_DIR="D:/path/to/PluginSDK"
 ```
 
 ## GitHub Actions

@@ -2,7 +2,7 @@
 
 UnHoarder 1.0.0 fetches the following build dependencies at CMake configure time:
 
-- D2RLoader PluginSDK v4, pinned through `Lukaszpg/RuffnecKk-D2RLoader-Suite` commit `697ed7fd2b767198e46c570cd9fd61e58a862bfc`, using only `third_party/PluginSDK-v4`.
+- D2RLoader PluginSDK 0.3.0 / ABI 4, fetched directly from `D2RLoader/PluginSDK` and pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (MIT).
 - MinHook, commit `c3fcafdc10146beb5919319d0683e44e3c30d537`.
 - Dear ImGui, commit `f401021d5a5d56fe2304056c391e78f81c8d4b8f`.
 - nlohmann/json `v3.11.3`.

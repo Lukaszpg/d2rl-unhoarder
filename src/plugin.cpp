@@ -29,7 +29,7 @@
 #include "native_row_bg_policy.hpp"
 #include "native_row_bg_live_policy.hpp"
 #include "native_row_font_color_policy.hpp"
-// Suite-vendored PluginSDK-v4 declares ThreadServiceV1 and requires explicit service ID/version.
+// D2RLoader PluginSDK declares ThreadServiceV1 and requires explicit service ID/version.
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
 #include <intrin.h>

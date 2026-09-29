@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.29)
 
 project(
     UnHoarder
@@ -16,39 +16,43 @@ option(
 )
 
 set(
-    UNHOARDER_PLUGINSDK_V4_SOURCE_DIR "" CACHE PATH
-    "Optional local D2RLoader PluginSDK-v4 source directory; when empty, fetch the pinned SDK snapshot"
+    UNHOARDER_PLUGINSDK_SOURCE_DIR "" CACHE PATH
+    "Optional local D2RLoader PluginSDK source directory; when empty, fetch the pinned official SDK snapshot"
 )
 
 # ---------------------------------------------------------------------------
-# D2RLoader PluginSDK v4
+# D2RLoader PluginSDK
 # ---------------------------------------------------------------------------
-# The runtime dependency is D2RLoader itself, but UnHoarder no longer needs to
-# live inside or configure the RuffnecKk Suite.  For reproducible standalone
-# builds we pin the exact PluginSDK-v4 snapshot used for UnHoarder 1.0.0.
-if(UNHOARDER_PLUGINSDK_V4_SOURCE_DIR)
-    if(NOT EXISTS "${UNHOARDER_PLUGINSDK_V4_SOURCE_DIR}/CMakeLists.txt")
+# UnHoarder consumes the public standalone SDK directly from D2RLoader/PluginSDK.
+# Pinning the commit keeps CI and local builds reproducible while avoiding any
+# build-time dependency on the RuffnecKk Suite repository.
+set(BUILD_TESTING OFF CACHE BOOL "Disable dependency CTest targets in UnHoarder builds" FORCE)
+set(D2RLPLUGIN_BUILD_EXAMPLES OFF CACHE BOOL "Do not build PluginSDK examples for UnHoarder" FORCE)
+set(D2RLPLUGIN_BUILD_EXAMPLES_BY_DEFAULT OFF CACHE BOOL "Do not build PluginSDK examples by default" FORCE)
+
+if(UNHOARDER_PLUGINSDK_SOURCE_DIR)
+    if(NOT EXISTS "${UNHOARDER_PLUGINSDK_SOURCE_DIR}/CMakeLists.txt")
         message(FATAL_ERROR
-            "UNHOARDER_PLUGINSDK_V4_SOURCE_DIR does not contain CMakeLists.txt: "
-            "${UNHOARDER_PLUGINSDK_V4_SOURCE_DIR}"
+            "UNHOARDER_PLUGINSDK_SOURCE_DIR does not contain CMakeLists.txt: "
+            "${UNHOARDER_PLUGINSDK_SOURCE_DIR}"
         )
     endif()
     add_subdirectory(
-        "${UNHOARDER_PLUGINSDK_V4_SOURCE_DIR}"
+        "${UNHOARDER_PLUGINSDK_SOURCE_DIR}"
         "${CMAKE_BINARY_DIR}/_deps/d2r_plugin_sdk-build"
+        EXCLUDE_FROM_ALL
     )
 else()
     FetchContent_Declare(
         d2r_plugin_sdk
-        GIT_REPOSITORY https://github.com/Lukaszpg/RuffnecKk-D2RLoader-Suite.git
-        GIT_TAG 697ed7fd2b767198e46c570cd9fd61e58a862bfc
-        SOURCE_SUBDIR third_party/PluginSDK-v4
+        GIT_REPOSITORY https://github.com/D2RLoader/PluginSDK.git
+        GIT_TAG 717f727a0ec52912d1558764345f8fa3453a2bd6
     )
     FetchContent_MakeAvailable(d2r_plugin_sdk)
 endif()
 
-if(NOT TARGET D2RLPluginV4::D2RLPluginV4)
-    message(FATAL_ERROR "D2RLoader PluginSDK-v4 target D2RLPluginV4::D2RLPluginV4 is unavailable")
+if(NOT TARGET D2RLPlugin::D2RLPlugin)
+    message(FATAL_ERROR "D2RLoader PluginSDK target D2RLPlugin::D2RLPlugin is unavailable")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -122,7 +126,7 @@ target_compile_definitions(unhoarder PRIVATE
 )
 
 target_link_libraries(unhoarder PRIVATE
-    D2RLPluginV4::D2RLPluginV4
+    D2RLPlugin::D2RLPlugin
     nlohmann_json::nlohmann_json
     unhoarder_imgui
     minhook
