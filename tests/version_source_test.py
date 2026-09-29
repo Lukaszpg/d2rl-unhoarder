@@ -9,7 +9,8 @@ renderer = (root / "src/minimap_overlay_renderer.cpp").read_text(encoding="utf-8
 rc = (root / "src/plugin.rc").read_text(encoding="utf-8")
 
 assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
-assert 'file(STRIP "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" UNHOARDER_VERSION)' in cm
+assert 'file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" UNHOARDER_VERSION_RAW)' in cm
+assert 'string(STRIP "${UNHOARDER_VERSION_RAW}" UNHOARDER_VERSION)' in cm
 assert 'VERSION "${UNHOARDER_VERSION}"' in cm
 assert 'UNHOARDER_VERSION_STRING="${PROJECT_VERSION}"' in cm
 assert '.version = UNHOARDER_VERSION_STRING' in plugin
