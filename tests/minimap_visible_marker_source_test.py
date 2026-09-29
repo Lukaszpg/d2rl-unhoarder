@@ -3,7 +3,7 @@ root=Path(__file__).resolve().parents[1]
 p=(root/'src/plugin.cpp').read_text(); r=(root/'src/minimap_overlay_renderer.cpp').read_text(); h=(root/'src/minimap_overlay_renderer.hpp').read_text(); cm=(root/'CMakeLists.txt').read_text(); rc=(root/'src/plugin.rc').read_text()
 assert '.version = "1.0.0"' in p
 assert 'FILEVERSION 1,0,0,0' in rc
-assert 'sourceMarker=loot-filter-prod-v1' in p
+assert 'sourceMarker=unhoarder-prod-v1' in p
 assert 'MinimapOverlayRenderer::MarkerFrame markerFrame{};' in p
 assert 'MinimapOverlayRenderer::Publish(markerFrame);' in p
 assert 'ForgetMinimapProjectionItem(item->runtimeId);' in p
@@ -19,5 +19,5 @@ assert 'HookPresent' in r and 'HookExecuteCommandLists' in r and 'HookResizeBuff
 assert 'ImDrawData* const drawData = ImGui::GetDrawData();' in r
 assert 'ImGui_ImplDX12_RenderDrawData(drawData, CommandList.Get());' in r
 assert 'locbones authorized use, modification, and redistribution on 2026-08-16' in h
-assert 'unhoarder_imgui' in cm and 'OUTPUT_NAME "loot-filter"' in cm
+assert 'unhoarder_imgui' in cm and 'OUTPUT_NAME "unhoarder"' in cm
 print('1.0.0 standalone JSON minimap marker/build contract ok')

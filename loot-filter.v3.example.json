@@ -3,6 +3,7 @@
   "rules": [
     {
       "show": {
+        "ruleName": "Divine Orb",
         "conditions": {
           "code": [
             "divo"

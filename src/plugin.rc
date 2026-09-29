@@ -14,8 +14,8 @@ BEGIN
       VALUE "CompanyName", "MindH1ve"
       VALUE "FileDescription", "JSON loot filter with ground styling, sounds, visibility and automap icons"
       VALUE "FileVersion", "1.0.0"
-      VALUE "InternalName", "loot-filter"
-      VALUE "OriginalFilename", "loot-filter.dll"
+      VALUE "InternalName", "unhoarder"
+      VALUE "OriginalFilename", "unhoarder.dll"
       VALUE "ProductName", "UnHoarder"
       VALUE "ProductVersion", "1.0.0"
     END

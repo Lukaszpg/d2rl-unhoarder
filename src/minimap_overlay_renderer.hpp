@@ -1,6 +1,6 @@
 #pragma once
 
-// Standalone D3D12/ImGui renderer used only for loot-filter automap markers.
+// Standalone D3D12/ImGui renderer used only for UnHoarder automap markers.
 // The autonomous DX12 interception path is a reduced derivative of the
 // Floating Damage renderer in RuffnecKk-D2RLoader-Suite, which in turn is
 // derived from locbones/D2RHUD-2.4 at b9373f8508282948ceb3e2b56f892d9eba475744.
@@ -74,7 +74,7 @@ void SetLogCallback(LogCallback callback) noexcept;
 // The renderer reads only that byte during Present and retains no UI pointer.
 void SetAutomapVisibilityTable(const volatile std::uint8_t* table) noexcept;
 
-// Installs the loot-filter-owned standalone renderer. MapSense ownership is
+// Installs the UnHoarder-owned standalone renderer. MapSense ownership is
 // checked by the native projection layer before this is called. No external
 // renderer host is required by this module.
 [[nodiscard]] bool Initialize() noexcept;

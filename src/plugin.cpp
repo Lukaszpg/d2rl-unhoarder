@@ -1105,7 +1105,7 @@ bool ResolveGroundRule(const FilterRuleTable* table,
 enum class InWorldBackend : int {
     Pending = 0, SoEInterop = 1, StandaloneIdentity = 2, Blocked = 3
 };
-constexpr char LootFilterInteropOwner[] = "loot-filter";
+constexpr char UnHoarderInteropOwner[] = "loot-filter";
 constexpr std::uintptr_t InWorldFormatterRva = 0xC0420;
 constexpr std::array<std::uint8_t, 16> ExpectedInWorldFormatter{{
     0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,
@@ -1251,7 +1251,7 @@ void TryAttachInWorldBackend() noexcept {
             && api->abiVersion == SoE::Interop::InWorldLabelAbiV1
             && api->isReady && api->registerObserver && api->unregisterObserver
             && api->isReady()
-            && api->registerObserver(LootFilterInteropOwner,
+            && api->registerObserver(UnHoarderInteropOwner,
                 &OnSoEInWorldLabel, nullptr)) {
             InWorldMode.store(InWorldBackend::SoEInterop, std::memory_order_release);
             QualifyGroundQuantityReader();
@@ -1263,7 +1263,7 @@ void TryAttachInWorldBackend() noexcept {
                 style->abiVersion == SoE::Interop::InWorldLabelStyleAbiV2 &&
                 style->isReady && style->registerTransformer &&
                 style->unregisterTransformer && style->isReady() &&
-                style->registerTransformer(LootFilterInteropOwner,
+                style->registerTransformer(UnHoarderInteropOwner,
                     &OnSoEInWorldStyle, nullptr);
             InWorldStyleAttached.store(styleReady, std::memory_order_release);
             const auto getScope = reinterpret_cast<GetSoERenderScopeFn>(
@@ -1368,7 +1368,7 @@ void DetachInWorldInterop() noexcept {
             if (style && style->structSize >= sizeof(SoE::Interop::InWorldLabelStyleApiV2)
                 && style->abiVersion == SoE::Interop::InWorldLabelStyleAbiV2
                 && style->unregisterTransformer)
-                (void)style->unregisterTransformer(LootFilterInteropOwner,
+                (void)style->unregisterTransformer(UnHoarderInteropOwner,
                     &OnSoEInWorldStyle, nullptr);
         }
         const auto getApi = reinterpret_cast<GetSoEInteropFn>(
@@ -1377,7 +1377,7 @@ void DetachInWorldInterop() noexcept {
         if (api && api->structSize >= sizeof(SoE::Interop::InWorldLabelApiV1)
             && api->abiVersion == SoE::Interop::InWorldLabelAbiV1
             && api->unregisterObserver)
-            (void)api->unregisterObserver(LootFilterInteropOwner,
+            (void)api->unregisterObserver(UnHoarderInteropOwner,
                 &OnSoEInWorldLabel, nullptr);
     }
     InWorldMode.store(InWorldBackend::Blocked, std::memory_order_release);
@@ -4830,6 +4830,12 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     if (!D2RL::HasContext(context) || context->apiVersion != D2RL_PLUGIN_API_VERSION)
         return false;
     Context = context;
+    if(GetModuleHandleW(L"loot-filter.dll")!=nullptr ||
+       GetModuleHandleW(L"d2rl-loot-filter.dll")!=nullptr) {
+        context->LogError("LOOT_FILTER_REFUSED legacy loot-filter.dll is also loaded; remove the old production DLL before enabling UnHoarder");
+        Context=nullptr;
+        return false;
+    }
     if(GetModuleHandleW(L"loot-filter-probe.dll")!=nullptr ||
        GetModuleHandleW(L"d2rl-loot-filter-probe.dll")!=nullptr) {
         context->LogError("LOOT_FILTER_REFUSED legacy loot-filter-probe DLL is also loaded; remove the old plugin before enabling UnHoarder");
@@ -4880,7 +4886,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         char line[310]{};
         std::snprintf(line,sizeof(line),
             "LOOT_COMPAT_START version=1.0.0 targetBuild=93847 "
-            "sourceMarker=loot-filter-prod-v1 loaderImage=%u peOk=%u stamp=0x%X imageSize=0x%X "
+            "sourceMarker=unhoarder-prod-v1 loaderImage=%u peOk=%u stamp=0x%X imageSize=0x%X "
             "threadService=%u quantityPolicy=fail-closed soundPolicy=fail-closed",
             module?1U:0U,peOk?1U:0U,
             peOk?unsigned(nt.FileHeader.TimeDateStamp):0U,

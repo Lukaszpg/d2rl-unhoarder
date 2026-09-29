@@ -1,86 +1,72 @@
-# UnHoarder - D2RL Loot Filter
+# UnHoarder 1.0.0
 
-**UnHoarder** is a native, JSON-configurable loot filter for **Diablo II: Resurrected**.
+**Author:** MindH1ve
 
-It provides ordered `Show` / `Hide` rules, ground-label styling, custom names, sounds, stack-aware conditions, pickup suppression for hidden items, and configurable automap markers — all driven by a live-reloadable `filter.json`.
+Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847 / Sanctuary of Exile.
 
-> **Version:** 1.0.0  
-> **Author:** MindH1ve  
-> **Plugin ID:** `loot-filter`  
-> **DLL:** `loot-filter.dll`  
-> **Configuration:** `filter.json`
+## Identity
 
-## Acknowledgements
+- product: **UnHoarder**
+- CMake target: `unhoarder`
+- DLL: `unhoarder.dll`
+- D2RLoader plugin id: `loot-filter` *(kept for runtime/interoperability compatibility)*
+- config: `filter.json`
 
-I would like to say huge THANK YOU to RuffnecKk for allowing me to use his code and research from MapSense in this plugin. He's an amazing guy, go check out his work [here](https://github.com/RuffDood/RuffnecKk-D2RLoader-Suite/tree/main)!
+The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start if that old production DLL (or the older probe DLL) is already loaded, preventing two versions from competing for the same native hooks.
 
-## Features
+The canonical runtime configuration is `filter.json`. If it is absent, the plugin can still read `loot-filter.json` (v0.2.76) or the older `loot-filter-probe.json` beside the DLL as migration fallbacks. New configurations should use `filter.json`.
 
-- PoE-style ordered **Show / Hide** rule blocks.
-- `Continue` support for composing multiple matching rules.
-- Match items by:
-  - item code;
-  - weapon/armor base name;
-  - item type;
-  - quantity;
-  - rarity;
-  - item level;
-  - socket count;
-  - ethereal state;
-  - identified state.
-- Replace the displayed ground-item name.
-- Change ground-tooltip text color.
-- Change ground-tooltip background color.
-- Play a named D2R `sounds.txt` sound for matching ground items.
-- Draw configurable automap icons with:
-  - circle, diamond, triangle, or star shapes;
-  - independent border and fill colors;
-  - configurable size.
-- Hide unwanted ground-item labels.
-- Suppress the qualified ground-item pickup path for hidden items.
-- Display stack quantities using the game's ground-label path.
-- Automatic live reload when `filter.json` changes.
-- Manual reload with **Ctrl+Shift+F9**.
-- Atomic configuration reload: an invalid edit does not replace the last valid ruleset.
-- Fail-open handling for unavailable native item properties so an unresolved condition does not accidentally hide an item.
+## Standalone build
 
-The filter intentionally does **not** expose hidden affixes or hidden unique identity. It is designed not to reveal information that the player could not legitimately infer from the item on the ground.
+UnHoarder no longer needs to live under `RuffnecKk-D2RLoader-Suite/plugins/` and does not configure the Suite root.
 
----
+Requirements:
 
-## Requirements
+- Windows x64
+- CMake 3.28+
+- Visual Studio 2022 / MSVC with C++20 support
+- Git available to CMake for pinned `FetchContent` dependencies
 
-UnHoarder 1.0.0 currently targets:
+Configure and build:
 
-- **Diablo II: Resurrected build 93847**
-- **D2RLoader 1.3.x / PluginSDK v4**
-- a **mod-scoped** D2RLoader installation
-
----
-
-## Installation
-
-Place the plugin and configuration in the mod-scoped D2RLoader `plugins` directory:
-
-```text
-<Diablo II Resurrected>/
-└── mods/
-    └── <your-mod>/
-        └── d2rloader/
-            └── plugins/
-                ├── loot-filter.dll
-                └── filter.json
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release --target unhoarder --parallel
 ```
 
-`filter.json` must be beside `loot-filter.dll`.
+The resulting plugin is:
 
-New installations should always use `filter.json`.
+```text
+build/bin/unhoarder.dll
+```
 
----
+Copy it to your mod's D2RLoader plugin directory, for example:
 
-## Quick start
+```text
+<Diablo II Resurrected>/mods/<mod>/d2rloader/plugins/unhoarder.dll
+```
 
-Create `filter.json` beside the DLL:
+Place `filter.json` beside the DLL.
+
+### PluginSDK source
+
+By default CMake fetches the exact PluginSDK-v4 snapshot pinned for UnHoarder 1.0.0. It uses only the `third_party/PluginSDK-v4` subproject from the pinned RuffnecKk Suite commit; the Suite itself is not configured or required as the source/build root.
+
+For an offline/local SDK checkout, configure with:
+
+```powershell
+cmake -S . -B build `
+  -G "Visual Studio 17 2022" -A x64 `
+  -DUNHOARDER_PLUGINSDK_V4_SOURCE_DIR="D:/path/to/PluginSDK-v4"
+```
+
+## GitHub Actions
+
+`.github/workflows/build.yml` builds UnHoarder directly from this repository on `windows-latest`, runs the source-contract tests, and publishes `unhoarder.dll` as a workflow artifact. No RuffnecKk Suite checkout/registration step is required.
+
+## Canonical JSON structure
+
+Schema 3 mirrors Path of Exile's ordered Show/Hide block model. Every element of `rules` contains exactly one `show` or `hide` wrapper. Matching normally stops at that block; `"continue": true` applies the block and continues to later rules, allowing actions to compose and later values to override earlier ones.
 
 ```json
 {
@@ -88,445 +74,11 @@ Create `filter.json` beside the DLL:
   "rules": [
     {
       "show": {
-        "conditions": {
-          "code": "divo"
-        },
+        "ruleName": "High-value currency",
+        "conditions": { "code": "divo" },
         "tooltip": {
           "backgroundColor": "RGBA(110, 35, 160, 0.82)",
           "textColor": "RGBA(180, 140, 255, 1)"
-        },
-        "dropSound": "Drop_Zing",
-        "minimapIcon": {
-          "shape": "diamond",
-          "borderColor": "RGBA(225, 205, 255, 1)",
-          "fillColor": "RGBA(180, 140, 255, 0.82)",
-          "size": 24
-        }
-      }
-    },
-    {
-      "hide": {
-        "conditions": {
-          "rarity": "normal"
-        }
-      }
-    }
-  ]
-}
-```
-
-Save the file while the game is running. UnHoarder watches the configuration and reloads it automatically after the file has remained stable briefly.
-
-You can also force a reload with:
-
-```text
-Ctrl + Shift + F9
-```
-
----
-
-## Rule structure
-
-Schema 3 uses an ordered block model inspired by Path of Exile item filters.
-
-Every element of `rules` must contain **exactly one** `show` or `hide` object:
-
-```json
-{
-  "version": 3,
-  "rules": [
-    {
-      "show": {
-        "conditions": {
-          "rarity": "unique"
-        }
-      }
-    },
-    {
-      "hide": {
-        "conditions": {
-          "rarity": "normal"
-        }
-      }
-    }
-  ]
-}
-```
-
-Rules are evaluated from top to bottom.
-
-A matching block normally applies its visibility/actions and stops evaluation. Add:
-
-```json
-"continue": true
-```
-
-to apply that block and continue evaluating later rules.
-
-### Catch-all rules
-
-`conditions` may be omitted in schema 3. This makes the block match everything that reaches it.
-
-For example, a strict whitelist can end with:
-
-```json
-{
-  "hide": {}
-}
-```
-
----
-
-## Conditions
-
-Conditions inside one block are combined with **AND**.
-
-Arrays inside a condition are combined with **OR**.
-
-For example:
-
-```json
-{
-  "show": {
-    "conditions": {
-      "itemType": ["swor", "axe"],
-      "rarity": ["rare", "unique"],
-      "itemLevel": {
-        "gte": 85
-      }
-    }
-  }
-}
-```
-
-means:
-
-```text
-(sword OR axe)
-AND
-(rare OR unique)
-AND
-(item level >= 85)
-```
-
-### `code`
-
-Matches the item's internal item code.
-
-```json
-"code": "divo"
-```
-
-or:
-
-```json
-"code": ["divo", "exo", "bst"]
-```
-
-Item codes are 1-4 printable ASCII characters.
-
-### `baseName`
-
-Matches an exact weapon or armor base name from the active mod data.
-
-```json
-"baseName": "Sacred Armor"
-```
-
-or:
-
-```json
-"baseName": ["Sacred Armor", "Archon Plate"]
-```
-
-`baseName` is resolved from `weapons.txt` and `armor.txt` when the filter is loaded.
-
-### `itemType`
-
-Matches an `ItemTypes.Code` or literal `ItemTypes.ItemType` name from the active mod data.
-
-```json
-"itemType": "swor"
-```
-
-or:
-
-```json
-"itemType": ["swor", "axe"]
-```
-
-Item-type equivalences are expanded from the active `itemtypes.txt` hierarchy when the rules are loaded.
-
-### `rarity`
-
-Supported rarity names are:
-
-```text
-inferior
-normal
-superior
-magic
-set
-rare
-unique
-crafted
-tempered
-```
-
-Example:
-
-```json
-"rarity": ["rare", "unique"]
-```
-
-The filter deliberately matches **rarity**, not hidden unique-item identity.
-
-### `quantity`
-
-Matches stack quantity.
-
-```json
-"quantity": {
-  "gte": 10
-}
-```
-
-Valid range: `0..65535`.
-
-### `itemLevel`
-
-Matches item level.
-
-```json
-"itemLevel": {
-  "gte": 85
-}
-```
-
-Valid range: `1..99`.
-
-### `sockets`
-
-Matches the number of sockets on the item.
-
-```json
-"sockets": {
-  "gte": 4
-}
-```
-
-Valid range: `0..15`.
-
-### `ethereal`
-
-Matches ethereal state.
-
-```json
-"ethereal": true
-```
-
-or:
-
-```json
-"ethereal": false
-```
-
-### `identified`
-
-Matches identified state.
-
-```json
-"identified": true
-```
-
-or:
-
-```json
-"identified": false
-```
-
----
-
-## Numeric comparisons
-
-`quantity`, `itemLevel`, and `sockets` use comparison objects.
-
-Supported operators are:
-
-| Operator | Meaning |
-|---|---|
-| `eq` | equal to |
-| `gt` | greater than |
-| `gte` | greater than or equal to |
-| `lt` | less than |
-| `lte` | less than or equal to |
-
-Example range:
-
-```json
-"itemLevel": {
-  "gte": 85,
-  "lte": 90
-}
-```
-
-Only one lower bound (`gt` or `gte`) and one upper bound (`lt` or `lte`) may be used in the same comparison object.
-
----
-
-## Actions
-
-A `show` or `hide` block may contain actions in addition to visibility.
-
-Supported schema-3 fields are:
-
-```text
-conditions
-continue
-name
-tooltip
-dropSound
-minimapIcon
-```
-
-### Custom ground-item name
-
-Use `name` to replace the displayed ground label:
-
-```json
-{
-  "show": {
-    "conditions": {
-      "code": "divo"
-    },
-    "name": "DIVINE ORB"
-  }
-}
-```
-
-Names support printable ASCII text with these limits:
-
-- maximum 79 bytes;
-- maximum 3 non-empty lines;
-- maximum 55 characters per line.
-
-A multiline name may use JSON newline escapes:
-
-```json
-"name": "IMPORTANT\nDIVINE ORB"
-```
-
-### Tooltip colors
-
-Schema 3 keeps tooltip colors inside the `tooltip` object:
-
-```json
-"tooltip": {
-  "backgroundColor": "RGBA(110, 35, 160, 0.82)",
-  "textColor": "RGBA(180, 140, 255, 1)"
-}
-```
-
-Either color can be supplied independently.
-
-Color format:
-
-```text
-RGBA(red, green, blue, alpha)
-```
-
-where:
-
-- red: `0..255`
-- green: `0..255`
-- blue: `0..255`
-- alpha: `0..1`
-
-Example:
-
-```json
-"textColor": "RGBA(130, 197, 255, 1)"
-```
-
-Flat `backgroundColor` / `textColor` fields from older schema versions are not valid in schema 3.
-
-### Drop sound
-
-Use `dropSound` with a D2R `sounds.txt` **row name**:
-
-```json
-"dropSound": "Drop_Zing"
-```
-
-The value is a sound row name, not a numeric sound index or an FMOD filename.
-
-Valid names are 1-63 ASCII characters containing letters, numbers, `_`, or `-`.
-
-In 1.0.0 the sound is triggered by the plugin's qualified first-observed ground-item path rather than a native item-drop event.
-
-### Automap icon
-
-Example:
-
-```json
-"minimapIcon": {
-  "shape": "diamond",
-  "borderColor": "RGBA(225, 205, 255, 1)",
-  "fillColor": "RGBA(180, 140, 255, 0.82)",
-  "size": 24
-}
-```
-
-Supported shapes:
-
-```text
-circle
-diamond
-triangle
-star
-```
-
-`borderColor`, `fillColor`, and `shape` are required.
-
-`size` is optional:
-
-- default: `12`
-- minimum: `12`
-- maximum: `40`
-- values outside the range are clamped to `12..40`
-
-Markers use D2R's native automap projection and are shown only while the automap is active.
-
----
-
-## `Continue`
-
-`continue` allows several rules to contribute to the final result.
-
-Example:
-
-```json
-{
-  "version": 3,
-  "rules": [
-    {
-      "show": {
-        "conditions": {
-          "itemType": "Currency"
-        },
-        "tooltip": {
-          "textColor": "RGBA(220, 220, 220, 1)"
-        },
-        "continue": true
-      }
-    },
-    {
-      "show": {
-        "conditions": {
-          "code": "divo"
-        },
-        "tooltip": {
-          "backgroundColor": "RGBA(110, 35, 160, 0.82)"
         },
         "dropSound": "Drop_Zing",
         "minimapIcon": {
@@ -538,326 +90,32 @@ Example:
       }
     },
     {
-      "hide": {}
+      "hide": {
+        "conditions": { "rarity": "normal" }
+      }
     }
   ]
 }
 ```
 
-If a Divine Orb matches both blocks, it inherits the text color from the first block and the background, sound, and minimap icon from the second block.
+`ruleName` is optional user-facing metadata for tools such as **UnHoarder - Builder**. UnHoarder accepts it as schema metadata but deliberately ignores it during runtime rule matching and action evaluation; the plugin does not rewrite the filter file.
 
-When several continued rules set the same property, the later matching rule wins for that property. Actions not replaced by a later rule remain active.
+`minimapIcon.size` is clamped to **12..40 px**, with **12 px** as the default. Supported shapes are `circle`, `diamond`, `triangle`, and `star`.
 
-> **1.0.0 limitation:** there is currently no explicit `null` / reset action for removing an action inherited from an earlier continued block.
+## Supported conditions
 
----
+`code`, `baseName`, `itemType`, `quantity`, `rarity`, `itemLevel`, `sockets`, `ethereal`, and `identified` are currently supported. Numeric conditions accept `eq`, `gt`, `gte`, `lt`, and `lte`.
 
-## More examples
+The filter intentionally does not expose hidden unidentified affixes or unique identity. It should not reveal information the player cannot legitimately infer from the dropped item.
 
-### Show high-item-level rare bows
+## Runtime behavior
 
-```json
-{
-  "show": {
-    "conditions": {
-      "code": "lbw",
-      "rarity": "rare",
-      "itemLevel": {
-        "gte": 85
-      }
-    },
-    "tooltip": {
-      "textColor": "RGBA(180, 140, 255, 1)"
-    }
-  }
-}
-```
+A valid JSON file activates the filter automatically. Saving the JSON triggers an atomic live reload after the file is stable; **Ctrl+Shift+F9** remains as the manual reload shortcut. Invalid JSON keeps the previous valid ruleset active.
 
-### Highlight ethereal 4+ socket body armor
+Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection.
 
-```json
-{
-  "show": {
-    "conditions": {
-      "itemType": "tors",
-      "ethereal": true,
-      "sockets": {
-        "gte": 4
-      }
-    },
-    "tooltip": {
-      "backgroundColor": "RGBA(130, 197, 255, 0.82)"
-    }
-  }
-}
-```
+Legacy reverse-engineering capture hotkeys and startup probe dumps are not part of the production runtime anymore. Operational logs are limited to configuration, compatibility/readiness, reloads, and actionable failures.
 
-### Hide low-rarity versions of one base
+## Examples
 
-```json
-{
-  "hide": {
-    "conditions": {
-      "baseName": "Sacred Armor",
-      "rarity": ["inferior", "normal", "superior"]
-    }
-  }
-}
-```
-
-### Show unidentified shields
-
-```json
-{
-  "show": {
-    "conditions": {
-      "itemType": "shld",
-      "identified": false
-    },
-    "tooltip": {
-      "textColor": "RGBA(130, 197, 255, 1)"
-    }
-  }
-}
-```
-
-### Whitelist with a final Hide rule
-
-```json
-{
-  "version": 3,
-  "rules": [
-    {
-      "show": {
-        "conditions": {
-          "rarity": ["unique", "set"]
-        }
-      }
-    },
-    {
-      "show": {
-        "conditions": {
-          "code": ["divo", "exo"]
-        }
-      }
-    },
-    {
-      "hide": {}
-    }
-  ]
-}
-```
-
----
-
-## Live reload and error handling
-
-UnHoarder watches `filter.json` while the game is running.
-
-When the file changes:
-
-1. the plugin waits for the file to become stable;
-2. it parses and validates the complete configuration;
-3. it builds a new immutable ruleset;
-4. only a fully valid ruleset replaces the active one.
-
-If an edit is invalid, the previous valid configuration remains active.
-
-The same atomic reload behavior applies to the active Excel tables used by `baseName` and `itemType` resolution.
-
-Current limits:
-
-```text
-Maximum filter file size: 64 KiB
-Maximum rules:            256
-```
-
----
-
-## Fail-open behavior
-
-Conditions such as rarity, item level, socket count, ethereal state, and identified state depend on qualified native item properties.
-
-If a rule could match but a required native value is unavailable, UnHoarder does **not** treat the missing value as `0` or `false`. Evaluation stops at that unresolved point and the item remains visible rather than allowing a later broad `hide` rule to conceal it accidentally.
-
-This behavior is intentional.
-
----
-
-## What `Hide` does
-
-`hide` removes the item's ground label and participates in the plugin's qualified hidden-item pickup suppression.
-
-It does **not** currently remove the item's 3D world model.
-
-Pickup suppression is tied to the qualified ground-item interaction path and should not be interpreted as a universal engine-level deletion of the item.
-
----
-
-## Known incompatibilities
-
-UnHoarder 1.0.0 expects exclusive or qualified access to several Diablo II: Resurrected native functions on build 93847. Plugins that detour, patch, or replace these functions may disable some or all UnHoarder functionality:
-
-| D2R RVA | Native code / role | UnHoarder dependency |
-|---|---|---|
-| `0x36EF50` | Item-code helper | **CRITICAL** |
-| `0x1FA9F0` | Ground-label formatter | **CRITICAL** |
-| `0xCBEB0` | Ground-name writer | **CRITICAL** |
-| `0x1FA8E0` | Ground-label painter | Background / Hide / text identity |
-| `0x658510` | Native glyph renderer | Text color / Hide |
-| `0xFABE0` | Native action dispatcher | Hidden-item pickup suppression |
-| `0x9A5D0` | Unit lookup | Pickup-guard dependency |
-| `0xD76E0` | Automap unit renderer | Minimap markers |
-| `0xD4910` | Client-to-automap projection | Minimap dependency |
-| `0x8B2D0` | Local data-context lookup | Minimap dependency |
-| `0x9A480` | Local-player lookup | Minimap dependency |
-| `0xC0420` | In-world item formatter | Standalone in-world backend |
-| `0x880160` | Native styled-text append | Hidden-hover styling |
-| `0x8DA7E0` | Native UI row renderer | Hidden-hover styling |
-| `0x2F5020` | Native stat reader | Quantity / sockets |
-
-UnHoarder generally fails open rather than blindly chaining an unknown native hook. Depending on the overlap, this can result in the entire filter remaining inactive or only a specific feature—such as minimap icons, colors, hover styling, or pickup suppression—being disabled.
-
-One additional incompatibility surface is outside D2R native code: the standalone minimap renderer hooks D3D12/DXGI methods for ExecuteCommandLists, Present, and ResizeBuffers (vtable slots 54, 140 and 145). Another overlay that hooks those methods could conflict with UnHoarder's minimap renderer even if it never touches D2R's automap code.
-
-UnHoarder 1.0.0 contains its own standalone D3D12/ImGui automap-marker renderer.
-
-MapSense currently uses the same native automap projection rendezvous. To avoid blindly chaining conflicting hooks, UnHoarder fails closed for its minimap projection when MapSense is already loaded.
-
-The rest of the loot filter continues to operate; only Loot Filter's automap-marker functionality is unavailable in that configuration.
-
----
-
-## Design principles
-
-UnHoarder follows a few deliberate rules:
-
-- filtering should be based on information legitimately available from the dropped item;
-- unidentified items should not reveal hidden affixes;
-- multi-unique bases should not reveal which unique rolled before identification;
-- unknown native data must never become an accidental hide condition;
-- invalid live edits must never destroy the last working filter;
-- rule ordering should remain predictable and readable.
-
----
-
-## Configuration reference
-
-A complete schema-3 block can look like this:
-
-```json
-{
-  "show": {
-    "conditions": {
-      "code": ["divo", "exo"],
-      "baseName": ["Sacred Armor"],
-      "itemType": ["tors"],
-      "quantity": {
-        "gte": 1
-      },
-      "rarity": ["rare", "unique"],
-      "itemLevel": {
-        "gte": 85,
-        "lte": 99
-      },
-      "sockets": {
-        "gte": 4
-      },
-      "ethereal": true,
-      "identified": false
-    },
-    "continue": true,
-    "name": "IMPORTANT ITEM",
-    "tooltip": {
-      "backgroundColor": "RGBA(110, 35, 160, 0.82)",
-      "textColor": "RGBA(180, 140, 255, 1)"
-    },
-    "dropSound": "Drop_Zing",
-    "minimapIcon": {
-      "shape": "diamond",
-      "borderColor": "RGBA(225, 205, 255, 1)",
-      "fillColor": "RGBA(180, 140, 255, 0.82)",
-      "size": 24
-    }
-  }
-}
-```
-
-This example demonstrates syntax only; because conditions are ANDed, a real rule should include only the conditions relevant to the intended item set.
-
----
-
-## Legacy schemas
-
-The runtime still accepts schema versions `1` and `2` as migration formats.
-
-New filters should use:
-
-```json
-"version": 3
-```
-
-Schema 3 is the canonical format and is the only format documented here.
-
----
-
-## Building from source
-
-When source is available, the plugin is built as part of the RuffnecKk D2RLoader Suite tree.
-
-Expected source location:
-
-```text
-<suite>/plugins/loot-filter/
-```
-
-The CMake target is:
-
-```text
-loot_filter
-```
-
-The resulting binary is:
-
-```text
-loot-filter.dll
-```
-
-The project currently uses C++20 and links against D2RLoader PluginSDK v4, MinHook, Dear ImGui, DXGI, and nlohmann/json through the Suite build.
-
----
-
-## Troubleshooting
-
-**The filter does not load**  
-Make sure `filter.json` is beside `loot-filter.dll` and contains a valid top-level object with `"version": 3` and a `rules` array.
-
-**My changes do not appear**  
-Wait briefly for automatic reload or press **Ctrl+Shift+F9**.
-
-**An invalid edit broke my filter**  
-It should not. UnHoarder keeps the previous valid ruleset active when a reload fails. Check the D2RLoader log for a `LOOT_RULES_REFUSED` message.
-
-**A `baseName` rule is rejected**  
-The name must match an exact entry from the active `weapons.txt` or `armor.txt` data.
-
-**An `itemType` rule is rejected**  
-Use a valid `ItemTypes.Code` or `ItemTypes.ItemType` from the active `itemtypes.txt` data.
-
-**My drop sound does not play**  
-`dropSound` expects a `sounds.txt` row name, not a numeric sound ID or audio filename.
-
-**Minimap icons do not appear while MapSense is loaded**  
-This is expected in 1.0.0. The minimap projection hook deliberately refuses to install when MapSense owns the same native rendezvous.
-
----
-
-## License
-
-See the repository's `LICENSE` file for the terms applying to UnHoarder and `THIRD_PARTY_NOTICES` for licenses and attribution relating to third-party components.
-
----
-
-## Disclaimer
-
-Loot Filter is an unofficial third-party modification for Diablo II: Resurrected. It is not affiliated with or endorsed by Blizzard Entertainment.
+Use `loot-filter.v3.example.json` as the canonical starting point. Additional schema-3 examples cover Continue, base names, item types, sockets, ethereal and identified conditions.
