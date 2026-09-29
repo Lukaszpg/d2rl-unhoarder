@@ -319,7 +319,7 @@ void QualifyGroundQuantityReader() noexcept {
                 unsigned(windowOk?window[i]:entry[i]));
         char line[310]{};
         std::snprintf(line,sizeof(line),
-            "LOOT_COMPAT_QUANTITY version=1.0.0 build=93847 readerRva=0x%llX "
+            "LOOT_COMPAT_QUANTITY version=" UNHOARDER_VERSION_STRING " build=93847 readerRva=0x%llX "
             "readOk=%u entryBytes=[%s] expected=known-loader-bridge "
             "newBridge=unqualified statCalls=disabled no-native-writes=1",
             static_cast<unsigned long long>(GroundQuantityReaderRva),
@@ -347,7 +347,7 @@ void QualifyGroundQuantityReader() noexcept {
     if (actualSlot!=requiredSlot) return;
     const bool loader131Bridge=entry==GroundQuantityBridgeLoader131;
     if(loader131Bridge)
-        Context->LogInfo("LOOT_COMPAT_QUANTITY_BRIDGE_ACCEPTED version=1.0.0 slotRva=0x3E2A218 fingerprint=exact targetAdmission=pending ownerRestriction=D2RCore-or-SoE");
+        Context->LogInfo("LOOT_COMPAT_QUANTITY_BRIDGE_ACCEPTED version=" UNHOARDER_VERSION_STRING " slotRva=0x3E2A218 fingerprint=exact targetAdmission=pending ownerRestriction=D2RCore-or-SoE");
     std::uintptr_t target{};
     copied=0;
     if (!ReadProcessMemory(GetCurrentProcess(),
@@ -364,7 +364,7 @@ void QualifyGroundQuantityReader() noexcept {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(target),&owner)) {
-        if(loader131Bridge) Context->LogWarn("LOOT_COMPAT_QUANTITY_OWNER version=1.0.0 result=unresolved quantity=disabled");
+        if(loader131Bridge) Context->LogWarn("LOOT_COMPAT_QUANTITY_OWNER version=" UNHOARDER_VERSION_STRING " result=unresolved quantity=disabled");
         return;
     }
     if(loader131Bridge) {
@@ -372,7 +372,7 @@ void QualifyGroundQuantityReader() noexcept {
         const char* const ownerKind=owner==GetModuleHandleW(L"D2RCore.dll")?"D2RCore":
             owner==GetModuleHandleW(L"d2rl-soe.dll")?"d2rl-soe":"other";
         std::snprintf(ownerLine,sizeof(ownerLine),
-            "LOOT_COMPAT_QUANTITY_OWNER version=1.0.0 owner=%s executePage=1 quantity=%s",
+            "LOOT_COMPAT_QUANTITY_OWNER version=" UNHOARDER_VERSION_STRING " owner=%s executePage=1 quantity=%s",
             ownerKind,std::string_view(ownerKind)=="other"?"disabled":"admitted");
         Context->LogInfo(ownerLine);
     }
@@ -384,7 +384,7 @@ void QualifyGroundQuantityReader() noexcept {
     GroundQuantityReader.store(
         reinterpret_cast<GroundQuantityReaderFn>(base+GroundQuantityReaderRva),
         std::memory_order_release);
-    Context->LogInfo("LOOT_QUANTITY_READY version=1.0.0 stat=quantity/70 source=qualified-loader-bridge mode=auto ground-only unitWrites=0");
+    Context->LogInfo("LOOT_QUANTITY_READY version=" UNHOARDER_VERSION_STRING " stat=quantity/70 source=qualified-loader-bridge mode=auto ground-only unitWrites=0");
 }
 
 std::uint32_t GroundStackQuantity(const void* borrowedNativeUnit) noexcept {
@@ -682,11 +682,11 @@ bool InstallStandaloneAutomapProjection() noexcept {
     GetLocalDataContext=nullptr;
     GetLocalPlayer=nullptr;
     if(!Context || !Base || !ImageSize) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=no-image-or-context hooks=0 mapSenseDependency=0");
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context hooks=0 mapSenseDependency=0");
         return false;
     }
     if(GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")!=nullptr) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
         return false;
     }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
@@ -697,7 +697,7 @@ bool InstallStandaloneAutomapProjection() noexcept {
        !check(GetLocalDataContextRva,ExpectedGetLocalDataContext) ||
        !check(GetLocalPlayerRva,ExpectedGetLocalPlayer) ||
        !check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=native-contract-fingerprint hooks=0");
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=native-contract-fingerprint hooks=0");
         return false;
     }
     ProjectClientToAutomap=reinterpret_cast<ProjectClientToAutomapFn>(Base+ProjectClientToAutomapRva);
@@ -707,11 +707,11 @@ bool InstallStandaloneAutomapProjection() noexcept {
             static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()),
             HookAutomapRenderUnit,&OriginalAutomapRenderUnit) || !OriginalAutomapRenderUnit) {
         ProjectClientToAutomap=nullptr;GetLocalDataContext=nullptr;GetLocalPlayer=nullptr;
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=1.0.0 reason=loader-hook-registration hooks=0");
+        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-registration hooks=0");
         return false;
     }
     AutomapProjectionHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_MINIMAP_PROJECTION_READY version=1.0.0 hook=D2R+0xD76E0 project=D2R+0xD4910 worldPosition=qualified-static-path renderer=standalone mapSenseDependency=0");
+    Emit("LOOT_MINIMAP_PROJECTION_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0xD76E0 project=D2R+0xD4910 worldPosition=qualified-static-path renderer=standalone mapSenseDependency=0");
     return true;
 }
 
@@ -720,7 +720,7 @@ void __cdecl LogMinimapRendererDiagnostic(const char* message) noexcept { Emit(m
 bool ConfigureNativeAutomapVisibilityGate() noexcept {
     MinimapOverlayRenderer::SetAutomapVisibilityTable(nullptr);
     if(!Context || !Base) {
-        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=1.0.0 reason=no-image-or-context drawing=0");
+        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context drawing=0");
         return false;
     }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
@@ -730,12 +730,12 @@ bool ConfigureNativeAutomapVisibilityGate() noexcept {
     if(!check(NativeUiOpenStateWitnessRva,ExpectedNativeUiOpenStateWitness) ||
        !check(NativeUiCloseStateWitnessRva,ExpectedNativeUiCloseStateWitness) ||
        !check(NativeUiToggleStateWitnessRva,ExpectedNativeUiToggleStateWitness)) {
-        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=1.0.0 reason=ui-state-fingerprint drawing=0");
+        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=" UNHOARDER_VERSION_STRING " reason=ui-state-fingerprint drawing=0");
         return false;
     }
     MinimapOverlayRenderer::SetAutomapVisibilityTable(
         reinterpret_cast<const volatile std::uint8_t*>(Base+NativeUiStateTableRva));
-    Emit("LOOT_MINIMAP_AUTOMAP_GATE_READY version=1.0.0 table=D2R+0x2A2ADA0 automapState=10 readOnly=1");
+    Emit("LOOT_MINIMAP_AUTOMAP_GATE_READY version=" UNHOARDER_VERSION_STRING " table=D2R+0x2A2ADA0 automapState=10 readOnly=1");
     return true;
 }
 
@@ -744,7 +744,7 @@ bool InitializeMinimapMarkerRenderer() noexcept {
     if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&InitializeMinimapMarkerRenderer),&self) || !self) {
-        Emit("LOOT_MINIMAP_RENDERER_REFUSED version=1.0.0 backend=none reason=self-module-unresolved");
+        Emit("LOOT_MINIMAP_RENDERER_REFUSED version=" UNHOARDER_VERSION_STRING " backend=none reason=self-module-unresolved");
         return false;
     }
     if(!ConfigureNativeAutomapVisibilityGate()) return false;
@@ -1277,9 +1277,9 @@ void TryAttachInWorldBackend() noexcept {
                 std::memory_order_release);
 
             Emit(styleReady ?
-                "LOOT_INWORLD_STYLE_READY version=1.0.0 mode=soe-interop-v2 labelText=name+native-palette only backgroundRGBA=unqualified nativeHooksAdded=0" :
-                "LOOT_INWORLD_STYLE_UNAVAILABLE version=1.0.0 old-SoE-or-registration-refused hidden-hover-pass-through=1");
-            Emit("LOOT_INWORLD_BACKEND version=1.0.0 mode=soe-interop-v1 owner=soe hook=0xC0420 extraHooksAdded=0 textObserve=1 style=optional-v2");
+                "LOOT_INWORLD_STYLE_READY version=" UNHOARDER_VERSION_STRING " mode=soe-interop-v2 labelText=name+native-palette only backgroundRGBA=unqualified nativeHooksAdded=0" :
+                "LOOT_INWORLD_STYLE_UNAVAILABLE version=" UNHOARDER_VERSION_STRING " old-SoE-or-registration-refused hidden-hover-pass-through=1");
+            Emit("LOOT_INWORLD_BACKEND version=" UNHOARDER_VERSION_STRING " mode=soe-interop-v1 owner=soe hook=0xC0420 extraHooksAdded=0 textObserve=1 style=optional-v2");
             return;
         }
         // A loaded SoE may own the hook even if its API is absent/not ready.
@@ -1302,7 +1302,7 @@ void TryAttachInWorldBackend() noexcept {
     }
     InWorldMode.store(InWorldBackend::StandaloneIdentity,
         std::memory_order_release);
-    Emit("LOOT_INWORLD_BACKEND version=1.0.0 mode=standalone-identity-only owner=loot-filter hook=0xC0420 textObserve=0 writes=0");
+    Emit("LOOT_INWORLD_BACKEND version=" UNHOARDER_VERSION_STRING " mode=standalone-identity-only owner=loot-filter hook=0xC0420 textObserve=0 writes=0");
 }
 
 // Startup already activates a valid JSON, but allow a configuration copied
@@ -1386,7 +1386,7 @@ constexpr D2RL::PluginInfo Info{
     .abiVersion = D2RL_PLUGIN_ABI_VERSION,
     .id = "loot-filter",
     .name = "UnHoarder",
-    .version = "1.0.0",
+    .version = UNHOARDER_VERSION_STRING,
     .author = "MindH1ve",
     .description = "Live-reloadable JSON loot filter with Show/Hide rules, tooltip styling, sounds and automap icons (D2R 93847).",
     .flags = D2RL::PluginFlags::Client |
@@ -1845,7 +1845,7 @@ void ArmNativeRowRuntime() noexcept {
     }
     const char* build=Context?D2RL::GetBuildName(Context):nullptr;
     if (!Context || !Base || !build || std::string_view(build)!="93847") {
-        Emit("LOOT_NATIVE_ROW_REFUSED version=1.0.0 reason=build-or-base no-hook=1 no-fallback=1");
+        Emit("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-base no-hook=1 no-fallback=1");
         return;
     }
     constexpr std::array<std::uint8_t,16> entry{{
@@ -1868,7 +1868,7 @@ void ArmNativeRowRuntime() noexcept {
         liveLea!=colorLea ||
         !Context->CheckExpectedBytes(NativeRowRendererRva,entry.data(),
             static_cast<std::uint32_t>(entry.size()))) {
-        Emit("LOOT_NATIVE_ROW_REFUSED version=1.0.0 reason=entry-caller-or-argument-fingerprint-mismatch potential-foreign-hook=1 no-fallback=1");
+        Emit("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-caller-or-argument-fingerprint-mismatch potential-foreign-hook=1 no-fallback=1");
         return;
     }
     // The atlas's 92777 ABI is NOT enough alone: guard the entire 93847
@@ -1894,14 +1894,14 @@ void ArmNativeRowRuntime() noexcept {
         actualVector!=appendVector ||
         !Context->CheckExpectedBytes(NativeRowAppendRva,appendEntry.data(),
             static_cast<std::uint32_t>(appendEntry.size()))) {
-        Emit("LOOT_NATIVE_ROW_APPEND_REFUSED version=1.0.0 reason=entry-caller-vector-fingerprint-or-foreign-owner nativeRowPhase=refused no-fallback=1 backgroundWrites=0");
+        Emit("LOOT_NATIVE_ROW_APPEND_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-caller-vector-fingerprint-or-foreign-owner nativeRowPhase=refused no-fallback=1 backgroundWrites=0");
         return;
     }
     if (!Context->InstallInlineHook(NativeRowAppendRva,appendEntry.data(),
         static_cast<std::uint32_t>(appendEntry.size()),
         HookNativeRowAppend,&OriginalNativeRowAppend) ||
         !OriginalNativeRowAppend) {
-        Emit("LOOT_NATIVE_ROW_APPEND_REFUSED version=1.0.0 reason=loader-hook-install-failed no-fallback=1 backgroundWrites=0");
+        Emit("LOOT_NATIVE_ROW_APPEND_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed no-fallback=1 backgroundWrites=0");
         return;
     }
     NativeRowAppendHookInstalled.store(true,std::memory_order_release);
@@ -1910,7 +1910,7 @@ void ArmNativeRowRuntime() noexcept {
         static_cast<std::uint32_t>(entry.size()),
         HookNativeRowRenderer,&OriginalNativeRowRenderer) ||
         !OriginalNativeRowRenderer) {
-        Emit("LOOT_NATIVE_ROW_REFUSED version=1.0.0 reason=loader-hook-install-failed no-fallback=1");
+        Emit("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed no-fallback=1");
         return;
     }
     NativeRowRendererHookInstalled.store(true,std::memory_order_release);
@@ -2987,7 +2987,7 @@ bool ReloadFilterRules() {
         ClearMinimapProjectionIconStyles();
         char message[560]{};
         std::snprintf(message,sizeof(message),
-            "LOOT_RULES_LOADED version=1.0.0 schema=%u generation=%llu rules=%zu backgroundRules=%zu textColorRules=%zu soundRules=%zu minimapIconRules=%zu hiddenRules=%zu syntax=schema3:{show|hide:{ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?}} tooltip{backgroundColor,textColor}+RGBA(r,g,b,a) minimapShapes=circle|diamond|triangle|star minimapSizePx=default12,clamped12..40 maxNameBytes=%zu propertyQuality=%u propertyIlvl=%u propertySockets=%u propertyEthereal=%u propertyIdentified=%u propertyItemType=%u reload=atomic nativeItemWrites=0",
+            "LOOT_RULES_LOADED version=" UNHOARDER_VERSION_STRING " schema=%u generation=%llu rules=%zu backgroundRules=%zu textColorRules=%zu soundRules=%zu minimapIconRules=%zu hiddenRules=%zu syntax=schema3:{show|hide:{ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?}} tooltip{backgroundColor,textColor}+RGBA(r,g,b,a) minimapShapes=circle|diamond|triangle|star minimapSizePx=default12,clamped12..40 maxNameBytes=%zu propertyQuality=%u propertyIlvl=%u propertySockets=%u propertyEthereal=%u propertyIdentified=%u propertyItemType=%u reload=atomic nativeItemWrites=0",
             fresh->schema,static_cast<unsigned long long>(fresh->generation),
             fresh->rules.size(),fresh->backgroundRules,fresh->textColorRules,
             fresh->soundRules,fresh->minimapIconRules,fresh->hiddenRules,MaximumFilterNameBytes,
@@ -3182,7 +3182,7 @@ void ArmInnerNameWriter() noexcept {
         return;
     }
     InnerNameHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_GEOMETRY_HOOK_READY version=1.0.0 hook=D2R+0xCBEB0 onlyCallerReturnRva=0x1FAA1D innerSize=0x80 textOffset=+0x04 geometryRecalculatedByNativeFormatter=1 mode=off");
+    Emit("LOOT_GEOMETRY_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0xCBEB0 onlyCallerReturnRva=0x1FAA1D innerSize=0x80 textOffset=+0x04 geometryRecalculatedByNativeFormatter=1 mode=off");
 }
 
 // Record identity at the only point with a verified native item pointer.
@@ -3458,7 +3458,7 @@ void EnableAutomaticNativeHover() noexcept {
     NativeRowFontColorEnabled.store(fontReady,std::memory_order_release);
     char line[230]{};
     std::snprintf(line,sizeof(line),
-        "LOOT_NATIVE_HOVER_READY version=1.0.0 background=%u font=%u hiddenRules=%zu rules=%zu "
+        "LOOT_NATIVE_HOVER_READY version=" UNHOARDER_VERSION_STRING " background=%u font=%u hiddenRules=%zu rules=%zu "
         "hide-hover=qualified-native-row-suppression globalRect=0",
         rules->backgroundRules?1U:0U,fontReady?1U:0U,
         rules->hiddenRules,rules->rules.size());
@@ -3577,7 +3577,7 @@ std::uint64_t __fastcall HookCorrectedGlyphB(
 void ArmCorrectedGlyphB() noexcept {
     if (CorrectedGlyphBInstalled.load(std::memory_order_acquire)) {
         CorrectedGlyphBArmed.store(true,std::memory_order_release);
-        Emit("LOOT_GLYPH_B_ARMED version=1.0.0 already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
+        Emit("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
         return;
     }
     const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
@@ -3586,7 +3586,7 @@ void ArmCorrectedGlyphB() noexcept {
         !InnerNameHookInstalled.load(std::memory_order_acquire) ||
         !BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules) {
-        Emit("LOOT_GLYPH_B_REFUSED version=1.0.0 reason=build-or-required-filter-hook-missing hooks=0");
+        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-required-filter-hook-missing hooks=0");
         return;
     }
     constexpr std::array<std::uint8_t,5> nativeCall{0xE8,0x90,0xFF,0xD4,0xFF};
@@ -3607,18 +3607,18 @@ void ArmCorrectedGlyphB() noexcept {
         !ReadSafe(0x908525,prep.data(),prep.size()) || prep!=colorPointerPrep ||
         !Context->CheckExpectedBytes(CorrectedGlyphBRva,nativeEntry.data(),
             static_cast<std::uint32_t>(nativeEntry.size()))) {
-        Emit("LOOT_GLYPH_B_REFUSED version=1.0.0 reason=callsite-or-R9-or-entry-fingerprint-mismatch hooks=0");
+        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=callsite-or-R9-or-entry-fingerprint-mismatch hooks=0");
         return;
     }
     if (!Context->InstallInlineHook(CorrectedGlyphBRva,nativeEntry.data(),
         static_cast<std::uint32_t>(nativeEntry.size()),HookCorrectedGlyphB,
         &OriginalCorrectedGlyphB) || !OriginalCorrectedGlyphB) {
-        Emit("LOOT_GLYPH_B_REFUSED version=1.0.0 reason=loader-hook-install-failed hooks=0");
+        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed hooks=0");
         return;
     }
     CorrectedGlyphBInstalled.store(true,std::memory_order_release);
     CorrectedGlyphBArmed.store(true,std::memory_order_release);
-    Emit("LOOT_GLYPH_B_ARMED version=1.0.0 target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 recordWrites=0 itemWrites=0");
+    Emit("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 recordWrites=0 itemWrites=0");
 }
 
 void EnsureSharedLabelPaintHook() noexcept;
@@ -3646,7 +3646,7 @@ void SyncFilterTextColorState() noexcept {
     if (CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
         char message[260]{};
         std::snprintf(message,sizeof(message),
-            "LOOT_TEXT_COLOR_RULES_ARMED version=1.0.0 generation=%llu textColorRules=%zu source=runtime-json glyphB=only ABI=RCX,XMM1,XMM2,R9-pointer itemWrites=0",
+            "LOOT_TEXT_COLOR_RULES_ARMED version=" UNHOARDER_VERSION_STRING " generation=%llu textColorRules=%zu source=runtime-json glyphB=only ABI=RCX,XMM1,XMM2,R9-pointer itemWrites=0",
             static_cast<unsigned long long>(snapshot->generation),snapshot->textColorRules);
         Emit(message);
     }
@@ -3680,7 +3680,7 @@ void EnsureSharedLabelPaintHook() noexcept {
         return;
     }
     BackgroundPaintHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=1.0.0 hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1");
+    Emit("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1");
 }
 
 // Fingerprint the proven label-color route before allowing any argument
@@ -3733,7 +3733,7 @@ void SyncFilterBackgroundState() noexcept {
     BackgroundTintArmed.store(true,std::memory_order_release);
     char message[260]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_BACKGROUND_RULES_ARMED version=1.0.0 generation=%llu coloredRules=%zu source=runtime-json paint=argument-forward-only recordWrites=0 itemWrites=0",
+        "LOOT_BACKGROUND_RULES_ARMED version=" UNHOARDER_VERSION_STRING " generation=%llu coloredRules=%zu source=runtime-json paint=argument-forward-only recordWrites=0 itemWrites=0",
         static_cast<unsigned long long>(snapshot->generation),snapshot->backgroundRules);
     Emit(message);
 }
@@ -3767,7 +3767,7 @@ void SyncFilterVisibilityState() noexcept {
     HideGroundArmed.store(true,std::memory_order_release);
     char message[250]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_VISIBILITY_READY version=1.0.0 hiddenRules=%zu source=JSON-show:false bulk-ground-native-painter-skip native-painter-forwarded=0-for-qualified-hidden-only key-state-independent=1 hover-native-path=qualified-hidden-row-skip pickup-state-writes=0",
+        "LOOT_VISIBILITY_READY version=" UNHOARDER_VERSION_STRING " hiddenRules=%zu source=JSON-show:false bulk-ground-native-painter-skip native-painter-forwarded=0-for-qualified-hidden-only key-state-independent=1 hover-native-path=qualified-hidden-row-skip pickup-state-writes=0",
         rules->hiddenRules);
     Emit(message);
 }
@@ -3845,7 +3845,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
     if(verbose) {
         char line[390]{};
         std::snprintf(line,sizeof(line),
-            "LOOT_COMPAT_SOUND_LOADER version=1.0.0 peRead=%u "
+            "LOOT_COMPAT_SOUND_LOADER version=" UNHOARDER_VERSION_STRING " peRead=%u "
             "stamp=0x%X imageSize=0x%X layout=%s "
             "oldPair=0x6AAFC972/0x5602000 "
             "loader131Pair=0x6AB3782C/0x5643000 "
@@ -3883,7 +3883,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
         if(verbose) {
             char line[260]{};
             std::snprintf(line,sizeof(line),
-                "LOOT_COMPAT_SOUND_WITNESS version=1.0.0 rva=0x%X "
+                "LOOT_COMPAT_SOUND_WITNESS version=" UNHOARDER_VERSION_STRING " rva=0x%X "
                 "readOk=%u exact=%u layout=%s",
                 witness.offset,readOk?1U:0U,exact?1U:0U,
                 SoundLoaderIdentity::Name(layout));
@@ -3964,7 +3964,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
     if(verbose) {
         char msg[320]{};
         std::snprintf(msg,sizeof(msg),
-            "LOOT_SOUND_QUALIFY matched=1 version=1.0.0 "
+            "LOOT_SOUND_QUALIFY matched=1 version=" UNHOARDER_VERSION_STRING " "
             "layout=%s nativeNamePlayer=D2RLoader+0x1A0C00 "
             "witnesses=%zu callChain=3 registration=exact executePage=1 "
             "nameBased=1 gameThreadRequired=1 rowIndexNotUsed=1",
@@ -4017,7 +4017,7 @@ void __cdecl PlayNamedSoundOnGameThread(
     CodeText(request->code,codeText);
     char message[320]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_PLAY version=1.0.0 trigger=%s code='%s' unitId=%u name='%s' engineReturned=%u gameThread=%lu note=return-not-audibility-proof",
+        "LOOT_SOUND_PLAY version=" UNHOARDER_VERSION_STRING " trigger=%s code='%s' unitId=%u name='%s' engineReturned=%u gameThread=%lu note=return-not-audibility-proof",
         request->automatic?(request->hiddenHover?"first-hidden-hover":"first-alt-ground-label"):"manual-test",codeText,request->unitId,
         request->name.data(),result?1U:0U,static_cast<unsigned long>(GetCurrentThreadId()));
     if(logger) {
@@ -4221,7 +4221,7 @@ void __cdecl PollSoundInventoryOnUiThread(
     if (results.cleared) {
         char line[210]{};
         std::snprintf(line,sizeof(line),
-            "LOOT_SOUND_PICKUP_REARM version=1.0.0 cleared=%u lastUnitId=%u "
+            "LOOT_SOUND_PICKUP_REARM version=" UNHOARDER_VERSION_STRING " cleared=%u lastUnitId=%u "
             "source=public-inventory-and-cursor-snapshot no-native-hooks=1",
             results.cleared,results.lastUnitId);
         Emit(line);
@@ -4280,7 +4280,7 @@ void StartSoundInventoryObserver() noexcept {
     }
     char line[270]{};
     std::snprintf(line,sizeof(line),
-        "LOOT_SOUND_PICKUP_OBSERVER_READY version=1.0.0 source=SDK-InventoryService "
+        "LOOT_SOUND_PICKUP_OBSERVER_READY version=" UNHOARDER_VERSION_STRING " source=SDK-InventoryService "
         "intervalMs=150 includesCursor=%u nativeHooksAdded=0 inventoryWrites=0 "
         "audio=first-observed-after-pickup minimapPickupLifecycle=shared-read-only",
         SoundInventoryItems ? 1U:0U);
@@ -4293,7 +4293,7 @@ void ArmNewGroundSound() noexcept {
     {
         char guard[340]{};
         std::snprintf(guard,sizeof(guard),
-            "LOOT_COMPAT_SOUND_GUARD version=1.0.0 threadService=%u "
+            "LOOT_COMPAT_SOUND_GUARD version=" UNHOARDER_VERSION_STRING " threadService=%u "
             "runOnGameThread=%u formatter=%u rulesMode=%u soundRules=%zu "
             "nextStep=qualify-native-soundplay-only-when-prerequisites-pass",
             SoundThreads?1U:0U,
@@ -4319,7 +4319,7 @@ void ArmNewGroundSound() noexcept {
     SoundArmed.store(true,std::memory_order_release);
     char message[340]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_ARMED version=1.0.0 mode=session-unit-id-first-observed sources=alt-ground-label+hidden-hover soundRules=%zu baselineMs=%llu no-visibility-replay=1 same-id-redrop=rearm-on-inventory-observation no-item-writes=1 note=not-native-drop-event",
+        "LOOT_SOUND_ARMED version=" UNHOARDER_VERSION_STRING " mode=session-unit-id-first-observed sources=alt-ground-label+hidden-hover soundRules=%zu baselineMs=%llu no-visibility-replay=1 same-id-redrop=rearm-on-inventory-observation no-item-writes=1 note=not-native-drop-event",
         rules->soundRules,static_cast<unsigned long long>(SoundBaselineMs));
     Emit(message);
 }
@@ -4405,7 +4405,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         [](const FilterNameRule& rule) noexcept { return rule.hasName; }));
     char message[390]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_FILTER_AUTO_ACTIVE version=1.0.0 trigger=%s generation=%llu rules=%zu nameRules=%zu hiddenRules=%zu backgrounds=%u textColors=%u sound=%u soeInterop=independent hiddenHoverStyle=optional-soe-v2",
+        "LOOT_FILTER_AUTO_ACTIVE version=" UNHOARDER_VERSION_STRING " trigger=%s generation=%llu rules=%zu nameRules=%zu hiddenRules=%zu backgrounds=%u textColors=%u sound=%u soeInterop=independent hiddenHoverStyle=optional-soe-v2",
         automatic?"valid-json-startup":"valid-json-reload",
         static_cast<unsigned long long>(rules->generation),rules->rules.size(),nameRules,
         rules->hiddenRules,BackgroundTintArmed.load(std::memory_order_acquire)?1U:0U,
@@ -4475,7 +4475,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
     FilterReloadSucceeded.fetch_add(1,std::memory_order_relaxed);
     char message[340]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_RELOAD_OK version=1.0.0 trigger=%s previousGeneration=%llu "
+        "LOOT_RELOAD_OK version=" UNHOARDER_VERSION_STRING " trigger=%s previousGeneration=%llu "
         "generation=%llu schema=%u rules=%zu hiddenRules=%zu "
         "backgroundRules=%zu textColorRules=%zu soundRules=%zu "
         "pickupCallerPolicy=none",
@@ -4557,7 +4557,7 @@ void ArmLabelFormatter() noexcept {
         return;
     }
     FormatterHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_FORMATTER_OBSERVER_READY version=1.0.0 hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=none nativeCodeWrites=loader-managed-hook-only");
+    Emit("LOOT_FORMATTER_OBSERVER_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=none nativeCodeWrites=loader-managed-hook-only");
 }
 
 // Build-93847 native pickup guard. The only intercepted action is native
@@ -4657,7 +4657,7 @@ void InstallNativePickupGuard() noexcept {
     if(!Context || !Base || !ImageSize ||
        !D2RL::GetBuildName(Context) ||
        std::string_view(D2RL::GetBuildName(Context))!="93847"){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=wrong-build-or-image forward-only=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=wrong-build-or-image forward-only=1");
         return;
     }
 
@@ -4669,7 +4669,7 @@ void InstallNativePickupGuard() noexcept {
        nt.Signature!=IMAGE_NT_SIGNATURE ||
        nt.FileHeader.TimeDateStamp!=0x6AB3782C ||
        nt.OptionalHeader.SizeOfImage!=ImageSize){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=PE-timestamp-or-image-size-mismatch forward-only=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=PE-timestamp-or-image-size-mismatch forward-only=1");
         return;
     }
 
@@ -4682,7 +4682,7 @@ void InstallNativePickupGuard() noexcept {
     }};
     for(const auto callRva:dispatchWitnesses){
         if(!NativeCallMatches(callRva,NativeActionDispatchRva)){
-            Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=dispatch-callsite-witness-mismatch forward-only=1");
+            Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-callsite-witness-mismatch forward-only=1");
             return;
         }
     }
@@ -4690,7 +4690,7 @@ void InstallNativePickupGuard() noexcept {
     if(!NativeCallMatches(0xFACB9,NativeItemLookupRva) ||
        !Context->CheckExpectedBytes(NativeItemLookupRva,
             lookupEntry.data(),static_cast<std::uint32_t>(lookupEntry.size()))){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=item-lookup-witness-mismatch forward-only=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=item-lookup-witness-mismatch forward-only=1");
         return;
     }
 
@@ -4707,7 +4707,7 @@ void InstallNativePickupGuard() noexcept {
        !Context->CheckExpectedBytes(NativeActionDispatchRva,
             dispatchEntry.data(),
             static_cast<std::uint32_t>(dispatchEntry.size()))){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=dispatch-entry-unqualified forward-only=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-entry-unqualified forward-only=1");
         return;
     }
 
@@ -4715,13 +4715,13 @@ void InstallNativePickupGuard() noexcept {
             dispatchEntry.data(),static_cast<std::uint32_t>(dispatchEntry.size()),
             HookNativeActionDispatch,&OriginalNativeActionDispatch) ||
        !OriginalNativeActionDispatch){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=1.0.0 reason=dispatch-hook-registration-failed forward-only=1");
+        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-hook-registration-failed forward-only=1");
         return;
     }
 
     NativeActionDispatchInstalled.store(true,std::memory_order_release);
     NativePickupGuardQualified.store(true,std::memory_order_release);
-    Emit("LOOT_PICKUP_GUARD_READY version=1.0.0 action=22 type=4 mode=3 "
+    Emit("LOOT_PICKUP_GUARD_READY version=" UNHOARDER_VERSION_STRING " action=22 type=4 mode=3 "
          "freshLookup=D2R+0x9A5D0 rule=show:false failOpen=1 stateWrites=0");
 }
 
@@ -4744,7 +4744,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
         if(!FilterConfigPath.empty() && now-lastRuleFileCheck>=200) {
             lastRuleFileCheck=now;
             if(ruleFileWatcher.Observe(ReadFilterFileStamp(FilterConfigPath),now,650)) {
-                Emit("LOOT_RELOAD_REQUEST version=1.0.0 trigger=stable-file-change settleMs=650");
+                Emit("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=stable-file-change settleMs=650");
                 (void)TryLiveFilterReload("stable-file-change");
             }
 
@@ -4772,7 +4772,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
                 const bool typesChanged=watchItemTypes && itemTypesTableWatcher.Observe(
                     ReadFilterFileStamp(excel/L"itemtypes.txt"),now,650);
                 if(weaponsChanged || armorChanged || miscChanged || typesChanged) {
-                    Emit("LOOT_RELOAD_REQUEST version=1.0.0 trigger=stable-excel-change settleMs=650");
+                    Emit("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=stable-excel-change settleMs=650");
                     (void)TryLiveFilterReload("stable-excel-change");
                 }
             }
@@ -4790,7 +4790,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
             (GetAsyncKeyState(VK_SHIFT)&0x8000)!=0 &&
             (GetAsyncKeyState(VK_F9)&0x8000)!=0;
         if(reloadChord && !lastReloadChord) {
-            Emit("LOOT_RELOAD_REQUEST version=1.0.0 trigger=Ctrl+Shift+F9");
+            Emit("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=Ctrl+Shift+F9");
             (void)TryLiveFilterReload("Ctrl+Shift+F9");
             ruleFileWatcher.Resync(ReadFilterFileStamp(FilterConfigPath));
         }
@@ -4880,7 +4880,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
             nt.OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC;
         char line[310]{};
         std::snprintf(line,sizeof(line),
-            "LOOT_COMPAT_START version=1.0.0 targetBuild=93847 "
+            "LOOT_COMPAT_START version=" UNHOARDER_VERSION_STRING " targetBuild=93847 "
             "sourceMarker=unhoarder-prod-v1 loaderImage=%u peOk=%u stamp=0x%X imageSize=0x%X "
             "threadService=%u quantityPolicy=fail-closed soundPolicy=fail-closed",
             module?1U:0U,peOk?1U:0U,
@@ -4939,7 +4939,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     const char* build = D2RL::GetBuildName(context);
     char msg[310]{};
     std::snprintf(msg, sizeof(msg),
-        "LOOT_FILTER_READY version=1.0.0 build=%s expectedBuild=93847 config=automatic",
+        "LOOT_FILTER_READY version=" UNHOARDER_VERSION_STRING " build=%s expectedBuild=93847 config=automatic",
         build ? build : "unknown");
     Emit(msg);
     if (!build || std::string_view(build) != "93847") {

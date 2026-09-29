@@ -1,4 +1,4 @@
-# UnHoarder 1.0.0
+# UnHoarder
 
 **Author:** MindH1ve
 
@@ -24,13 +24,13 @@ Requirements:
 
 - Windows x64
 - CMake 3.29+
-- Visual Studio 2022 / MSVC with C++20 support
+- MSVC with C++20 support
 - Git available to CMake for pinned `FetchContent` dependencies
 
 Configure and build:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build
 cmake --build build --config Release --target unhoarder --parallel
 ```
 
@@ -50,7 +50,7 @@ Place `filter.json` beside the DLL.
 
 ### PluginSDK source
 
-By default CMake fetches the public D2RLoader PluginSDK directly from `D2RLoader/PluginSDK`, pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (SDK 0.3.0 / plugin ABI 4) for reproducible UnHoarder 1.0.0 builds. No RuffnecKk Suite source checkout is used by the build.
+By default CMake fetches the public D2RLoader PluginSDK directly from `D2RLoader/PluginSDK`, pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (SDK 0.3.0 / plugin ABI 4) for reproducible builds. No RuffnecKk Suite source checkout is used by the build.
 
 For an offline/local SDK checkout, configure with:
 
@@ -62,7 +62,7 @@ cmake -S . -B build `
 
 ## GitHub Actions
 
-`.github/workflows/build.yml` builds UnHoarder directly from this repository on `windows-latest`, runs the source-contract tests, and publishes `unhoarder.dll` as a workflow artifact. No RuffnecKk Suite checkout/registration step is required.
+`VERSION` is the canonical product version. `.github/workflows/ci.yml` validates pushes and pull requests with Python tests, portable C++ tests, and a Release DLL build. `.github/workflows/release.yml` is manually dispatched with a major/minor/patch bump; it updates `VERSION`, repeats the validation gates, commits and tags the release, and publishes `unhoarder.dll`, a source ZIP, and SHA-256 checksums to GitHub Releases.
 
 ## Canonical JSON structure
 

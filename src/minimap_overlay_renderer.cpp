@@ -289,7 +289,7 @@ void DrawMarkerFrameImGui(ImDrawList* drawList) noexcept {
 void ResetRendererState() noexcept {
     if (!WaitForGpuIdleLocked()) {
         LogOnce(FenceWaitFailedMessage,
-            "LOOT_MINIMAP_RENDERER_WARN version=1.0.0 backend=standalone-d3d12 reason=gpu-idle-timeout");
+            "LOOT_MINIMAP_RENDERER_WARN version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 reason=gpu-idle-timeout");
     }
     if (AutonomousImGuiContext != nullptr) {
         auto* const destroyedContext = AutonomousImGuiContext;
@@ -340,7 +340,7 @@ void ResetRenderer() noexcept {
             std::memory_order_acq_rel) & RendererInitFailedMessage) == 0U) {
         char line[320]{};
         std::snprintf(line, sizeof(line),
-            "LOOT_MINIMAP_RENDERER_INIT_FAILED version=1.0.0 backend=standalone-d3d12 stage=%u reason=%s",
+            "LOOT_MINIMAP_RENDERER_INIT_FAILED version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 stage=%u reason=%s",
             stage, reason ? reason : "unknown");
         Log(line);
     }
@@ -442,7 +442,7 @@ void ResetRenderer() noexcept {
     }
     RendererInitialized = true;
     LogOnce(RendererInitializedMessage,
-        "LOOT_MINIMAP_RENDERER_DEVICE_READY version=1.0.0 backend=standalone-d3d12 imgui=1 dx12=1 markerRules=json-shape-border-fill-size");
+        "LOOT_MINIMAP_RENDERER_DEVICE_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 imgui=1 dx12=1 markerRules=json-shape-border-fill-size");
     return true;
 }
 
@@ -456,7 +456,7 @@ void RenderAutonomousFrameLocked(IDXGISwapChain3* swapChain) noexcept {
     auto& frame = Frames[frameIndex];
     if (!WaitForFenceValueLocked(frame.fenceValue)) {
         LogOnce(FenceWaitFailedMessage,
-            "LOOT_MINIMAP_RENDERER_WARN version=1.0.0 backend=standalone-d3d12 reason=allocator-still-in-use");
+            "LOOT_MINIMAP_RENDERER_WARN version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 reason=allocator-still-in-use");
         return;
     }
 
@@ -496,7 +496,7 @@ void RenderAutonomousFrameLocked(IDXGISwapChain3* swapChain) noexcept {
     if (FAILED(CommandQueue->Signal(Fence.Get(), fenceValue))) {
         frame.fenceValue = (std::numeric_limits<std::uint64_t>::max)();
         LogOnce(FenceSignalFailedMessage,
-            "LOOT_MINIMAP_RENDERER_WARN version=1.0.0 backend=standalone-d3d12 reason=fence-signal");
+            "LOOT_MINIMAP_RENDERER_WARN version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 reason=fence-signal");
     } else {
         frame.fenceValue = fenceValue;
     }
@@ -504,7 +504,7 @@ void RenderAutonomousFrameLocked(IDXGISwapChain3* swapChain) noexcept {
         1U, std::memory_order_relaxed) + 1U;
     if (rendered == 1U) {
         LogOnce(FirstFrameRenderedMessage,
-            "LOOT_MINIMAP_RENDERER_FIRST_DRAW version=1.0.0 backend=standalone-d3d12 markerRules=json-shape-border-fill-size");
+            "LOOT_MINIMAP_RENDERER_FIRST_DRAW version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 markerRules=json-shape-border-fill-size");
     }
 }
 
@@ -515,7 +515,7 @@ HRESULT STDMETHODCALLTYPE HookPresent(
     [[maybe_unused]] const HookCallGuard guard;
     PresentCalls.fetch_add(1U, std::memory_order_relaxed);
     LogOnce(PresentInterceptedMessage,
-        "LOOT_MINIMAP_RENDERER_PRESENT_READY version=1.0.0 backend=standalone-d3d12");
+        "LOOT_MINIMAP_RENDERER_PRESENT_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12");
     const auto original = OriginalPresent;
     if (original == nullptr) return DXGI_ERROR_INVALID_CALL;
     {
@@ -540,7 +540,7 @@ void STDMETHODCALLTYPE HookExecuteCommandLists(
             CapturedQueue.store(queue, std::memory_order_release);
             DirectQueueCaptures.fetch_add(1U, std::memory_order_relaxed);
             LogOnce(DirectQueueCapturedMessage,
-                "LOOT_MINIMAP_RENDERER_QUEUE_READY version=1.0.0 backend=standalone-d3d12 source=first-direct-command-queue minimapIconRules=1");
+                "LOOT_MINIMAP_RENDERER_QUEUE_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 source=first-direct-command-queue minimapIconRules=1");
         }
     }
     if (original != nullptr) original(queue, count, lists);
@@ -703,7 +703,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
     }
     HooksInstalled = true;
     ActiveBackend.store(Backend::StandaloneD3D12, std::memory_order_release);
-    Log("LOOT_MINIMAP_RENDERER_READY version=1.0.0 backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0 poc=0");
+    Log("LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0 poc=0");
     return true;
 }
 
@@ -754,7 +754,7 @@ bool Initialize() noexcept {
         return true;
     }
     if (InstallStandaloneHooks()) return true;
-    Log("LOOT_MINIMAP_RENDERER_REFUSED version=1.0.0 backend=none reason=standalone-hook-install-failed projectionContinues=1 drawing=0 mapSenseDependency=0 floatingDamageDependency=0");
+    Log("LOOT_MINIMAP_RENDERER_REFUSED version=" UNHOARDER_VERSION_STRING " backend=none reason=standalone-hook-install-failed projectionContinues=1 drawing=0 mapSenseDependency=0 floatingDamageDependency=0");
     return false;
 }
 

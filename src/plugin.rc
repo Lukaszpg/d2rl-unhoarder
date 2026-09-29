@@ -3,9 +3,13 @@
 
 D2RL_PLUGIN_MANIFEST_RESOURCE_ID RCDATA { D2RL_PLUGIN_RESOURCE_DWORD(D2RL_PLUGIN_ABI_VERSION) }
 
+#ifndef UNHOARDER_VERSION_STRING
+#error UNHOARDER_VERSION_STRING must be provided by CMake
+#endif
+
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION UNHOARDER_VERSION_MAJOR,UNHOARDER_VERSION_MINOR,UNHOARDER_VERSION_PATCH,0
+PRODUCTVERSION UNHOARDER_VERSION_MAJOR,UNHOARDER_VERSION_MINOR,UNHOARDER_VERSION_PATCH,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -13,11 +17,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "MindH1ve"
       VALUE "FileDescription", "JSON loot filter with ground styling, sounds, visibility and automap icons"
-      VALUE "FileVersion", "1.0.0"
+      VALUE "FileVersion", UNHOARDER_VERSION_STRING
       VALUE "InternalName", "unhoarder"
       VALUE "OriginalFilename", "unhoarder.dll"
       VALUE "ProductName", "UnHoarder"
-      VALUE "ProductVersion", "1.0.0"
+      VALUE "ProductVersion", UNHOARDER_VERSION_STRING
     END
   END
   BLOCK "VarFileInfo"

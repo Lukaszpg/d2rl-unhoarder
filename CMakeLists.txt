@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.29)
 
+file(STRIP "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" UNHOARDER_VERSION)
+if(NOT UNHOARDER_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION must contain MAJOR.MINOR.PATCH, got: '${UNHOARDER_VERSION}'")
+endif()
+
 project(
     UnHoarder
-    VERSION 1.0.0
+    VERSION "${UNHOARDER_VERSION}"
     DESCRIPTION "Item filter for Diablo II: Resurrected"
     LANGUAGES CXX RC
 )
@@ -12,6 +17,11 @@ include(FetchContent)
 option(
     UNHOARDER_WARNINGS_AS_ERRORS
     "Treat UnHoarder compiler warnings as errors"
+    OFF
+)
+option(
+    UNHOARDER_BUILD_TESTS
+    "Build and register UnHoarder's portable C++ tests"
     OFF
 )
 
@@ -123,6 +133,10 @@ target_compile_features(unhoarder PRIVATE cxx_std_20)
 target_compile_definitions(unhoarder PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
+    UNHOARDER_VERSION_STRING="${PROJECT_VERSION}"
+    UNHOARDER_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    UNHOARDER_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    UNHOARDER_VERSION_PATCH=${PROJECT_VERSION_PATCH}
 )
 
 target_link_libraries(unhoarder PRIVATE
@@ -157,4 +171,28 @@ if(MSVC)
         target_compile_options(unhoarder PRIVATE /WX-)
     endif()
     target_link_options(unhoarder PRIVATE /INCREMENTAL:NO)
+endif()
+
+
+# ---------------------------------------------------------------------------
+# Portable tests
+# ---------------------------------------------------------------------------
+if(UNHOARDER_BUILD_TESTS)
+    enable_testing()
+    file(GLOB UNHOARDER_PORTABLE_TEST_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp"
+    )
+    foreach(test_source IN LISTS UNHOARDER_PORTABLE_TEST_SOURCES)
+        get_filename_component(test_name "${test_source}" NAME_WE)
+        add_executable("${test_name}" "${test_source}")
+        target_compile_features("${test_name}" PRIVATE cxx_std_20)
+        target_include_directories("${test_name}" PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        )
+        if(MSVC)
+            target_compile_options("${test_name}" PRIVATE /W4 /permissive- /utf-8 /EHsc /WX-)
+        endif()
+        add_test(NAME "${test_name}" COMMAND "${test_name}")
+    endforeach()
 endif()

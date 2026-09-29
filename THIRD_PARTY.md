@@ -1,6 +1,6 @@
 # Third-party build dependencies
 
-UnHoarder 1.0.0 fetches the following build dependencies at CMake configure time:
+UnHoarder fetches the following build dependencies at CMake configure time:
 
 - D2RLoader PluginSDK 0.3.0 / ABI 4, fetched directly from `D2RLoader/PluginSDK` and pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (MIT).
 - MinHook, commit `c3fcafdc10146beb5919319d0683e44e3c30d537`.
