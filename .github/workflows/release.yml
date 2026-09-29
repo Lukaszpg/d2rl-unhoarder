@@ -46,8 +46,8 @@ jobs:
           }
           $next="$major.$minor.$patch"; $tag="v$next"
           git fetch --tags origin
-          git rev-parse --verify --quiet "refs/tags/$tag"
-          if ($LASTEXITCODE -eq 0) { throw "Tag $tag already exists" }
+          $existingTag = git tag --list $tag
+          if ($existingTag -eq $tag) { throw "Tag $tag already exists" }
           [IO.File]::WriteAllText((Join-Path $PWD "VERSION"), "$next`n", [Text.UTF8Encoding]::new($false))
           "version=$next" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "tag=$tag" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
