@@ -1,7 +1,7 @@
 from pathlib import Path
 
 s = Path("src/plugin.cpp").read_text(encoding="utf-8")
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'std::uint64_t appendSeq,const GroundRuleDecision& rule) noexcept {' in s
 assert 'std::uint64_t appendSeq,const FilterNameRule& rule) noexcept {' not in s
 assert 'BeginNativeRowFontDraw(append.unitId,append.code,' in s

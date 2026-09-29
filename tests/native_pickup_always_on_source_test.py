@@ -1,6 +1,6 @@
 from pathlib import Path
 s=Path(__file__).resolve().parents[1].joinpath("src/plugin.cpp").read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 hook=s[s.index("void __fastcall HookNativeActionDispatch("):s.index("bool NativeCallMatches(",s.index("void __fastcall HookNativeActionDispatch("))]
 assert "action==PickupGuard::PickupAction && type==PickupGuard::ItemUnitType" in hook
 assert "QualifyGroundPickup(action,player,type,id)==PickupGuard::Decision::Blocked" in hook

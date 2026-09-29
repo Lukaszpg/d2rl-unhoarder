@@ -1,6 +1,6 @@
 from pathlib import Path
 s=(Path(__file__).resolve().parents[1]/"src/plugin.cpp").read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'sourceMarker=unhoarder-prod-v1' in s
 for term in ('AutomapRenderUnitRva=0xD76E0','ProjectClientToAutomapRva=0xD4910','GetLocalDataContextRva=0x8B2D0','GetLocalPlayerRva=0x9A480','ExpectedAutomapRenderUnit','ExpectedProjectClientToAutomap','ExpectedGetLocalDataContext','ExpectedGetLocalPlayer'):
     assert term in s,term
@@ -12,7 +12,7 @@ assert 'ProjectClientToAutomap(automapContext,&projected' in s
 assert 'AutomapProjection::WorldSubtileToClient' in s
 assert 'AutomapProjection::PackClientCoordinates' in s
 assert 'AutomapProjection::Contains(clip,screen)' in s
-assert 'LOOT_MINIMAP_PROJECTION_READY version=1.0.0' in s
+assert 'LOOT_MINIMAP_PROJECTION_READY version=" UNHOARDER_VERSION_STRING "' in s
 assert 'mapSenseDependency=0' in s
 assert 'AutomapProjectionProbe' not in s
 assert 'InstallAutomapPayloadObserver' not in s

@@ -9,5 +9,5 @@ assert 'if (!concealGroundVisuals && OriginalSharedLabelPaint)' in body
 assert 'OriginalSharedLabelPaint(rect,textArg,forwardedColor);' in body
 assert 'HiddenGroundLastPainterSkipId' not in body
 assert 'HiddenGroundLastPainterSkipCode' not in body
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 print('1.0.0 hidden painter production scope regression: ok')
