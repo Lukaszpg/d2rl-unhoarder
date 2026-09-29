@@ -16,9 +16,7 @@ The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start 
 
 The canonical runtime configuration is `filter.json`. If it is absent, the plugin can still read `loot-filter.json` (v0.2.76) or the older `loot-filter-probe.json` beside the DLL as migration fallbacks. New configurations should use `filter.json`.
 
-## Standalone build
-
-UnHoarder no longer needs to live under `RuffnecKk-D2RLoader-Suite/plugins/` and does not configure the Suite root.
+## Building
 
 Requirements:
 
@@ -50,7 +48,7 @@ Place `filter.json` beside the DLL.
 
 ### PluginSDK source
 
-By default CMake fetches the public D2RLoader PluginSDK directly from `D2RLoader/PluginSDK`, pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (SDK 0.3.0 / plugin ABI 4) for reproducible builds. No RuffnecKk Suite source checkout is used by the build.
+By default CMake fetches the public D2RLoader PluginSDK directly from `D2RLoader/PluginSDK`, pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (SDK 0.3.0 / plugin ABI 4) for reproducible builds.
 
 For an offline/local SDK checkout, configure with:
 
