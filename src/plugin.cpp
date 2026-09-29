@@ -29,7 +29,7 @@
 #include "native_row_bg_policy.hpp"
 #include "native_row_bg_live_policy.hpp"
 #include "native_row_font_color_policy.hpp"
-// D2RLoader PluginSDK declares ThreadServiceV1 and requires explicit service ID/version.
+// D2RLoader PluginSDK ThreadService is queried through its typed service contract.
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
 #include <intrin.h>
@@ -1114,7 +1114,7 @@ constexpr std::array<std::uint8_t, 16> ExpectedInWorldFormatter{{
 using InWorldFormatterFn = std::uintptr_t(__fastcall*)(void*) noexcept;
 InWorldFormatterFn OriginalInWorldFormatter{};
 std::atomic<InWorldBackend> InWorldMode{InWorldBackend::Pending};
-const D2RL::LifecycleServiceV1* InWorldLifecycle{};
+const D2RL::LifecycleService* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 using GetSoEInteropFn = const SoE::Interop::InWorldLabelApiV1*(__cdecl*)() noexcept;
 
@@ -1333,12 +1333,10 @@ void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
 
 void RegisterInWorldLifecycle() noexcept {
     if (!Context) return;
-    const D2RL::LifecycleServiceV1* service{};
-    if (Context->QueryService(D2RL::ServiceId::Lifecycle,
-            D2RL::LifecycleServiceV1Version,
-            &service) != D2RL::ServiceQueryResult::Success
-        || !D2RL::HasLifecycleServiceV1Field(service,
-            D2RL::LifecycleServiceV1RequiredSize)
+    const D2RL::LifecycleService* service{};
+    if (Context->QueryService(&service) != D2RL::ServiceQueryResult::Success
+        || !D2RL::HasLifecycleServiceField(service,
+            D2RL::LifecycleServiceRequiredSize)
         || !service->registerGameplayEventListener) {
         Emit("LOOT_INWORLD_LIFECYCLE_UNAVAILABLE automatic-hidden-hover-requires-lifecycle");
         return;
@@ -1385,7 +1383,7 @@ void DetachInWorldInterop() noexcept {
 
 constexpr D2RL::PluginInfo Info{
     .infoSize = D2RL::PluginInfoSize,
-    .apiVersion = D2RL_PLUGIN_API_VERSION,
+    .abiVersion = D2RL_PLUGIN_ABI_VERSION,
     .id = "loot-filter",
     .name = "UnHoarder",
     .version = "1.0.0",
@@ -3783,9 +3781,9 @@ void SyncFilterVisibilityState() noexcept {
 // does not hook monster/TC drops or infer pickup from missing labels.
 // Sound resolution still uses the qualified D2RLoader sounds.txt row-NAME
 // backend on the game thread, not the sounds.txt numeric Index or FMOD.
-const D2RL::ThreadServiceV1* SoundThreads{};
-const D2RL::InventoryServiceV1* SoundInventory{};
-const D2RL::ItemServiceV1* SoundInventoryItems{};
+const D2RL::ThreadService* SoundThreads{};
+const D2RL::InventoryService* SoundInventory{};
+const D2RL::ItemService* SoundInventoryItems{};
 std::jthread SoundPickupPollWorker{};
 std::atomic_bool SoundPickupPollPending{};
 std::atomic<std::uint64_t> SoundPickupPolls{};
@@ -4254,23 +4252,21 @@ void PollSoundInventoryLoop(std::stop_token stop) noexcept {
 void StartSoundInventoryObserver() noexcept {
     if (!Context || !SoundThreads || !SoundThreads->runOnUiThread ||
         SoundPickupPollWorker.joinable()) return;
-    const D2RL::InventoryServiceV1* inventory{};
-    if (Context->QueryService(D2RL::ServiceId::Inventory,
-            D2RL::InventoryServiceV1Version,&inventory) !=
+    const D2RL::InventoryService* inventory{};
+    if (Context->QueryService(&inventory) !=
             D2RL::ServiceQueryResult::Success ||
-        !D2RL::HasInventoryServiceV1Field(inventory,
-            D2RL::InventoryServiceV1RequiredSize) ||
+        !D2RL::HasInventoryServiceField(inventory,
+            D2RL::InventoryServiceRequiredSize) ||
         !inventory->getLocalPlayer || !inventory->forEachInventoryItem) {
         Emit("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=public-inventory-service-missing "
              "sounds-continue=1 same-id-redrop=not-rearmed");
         return;
     }
     SoundInventory=inventory;
-    const D2RL::ItemServiceV1* items{};
-    if (Context->QueryService(D2RL::ServiceId::Item,
-            D2RL::ItemServiceV1Version,&items) ==
+    const D2RL::ItemService* items{};
+    if (Context->QueryService(&items) ==
             D2RL::ServiceQueryResult::Success &&
-        D2RL::HasItemServiceV1Field(items,D2RL::ItemServiceV1RequiredSize) &&
+        D2RL::HasItemServiceField(items,D2RL::ItemServiceRequiredSize) &&
         items->getItemInfo && inventory->getCursorItem)
         SoundInventoryItems=items;
     try {
@@ -4827,7 +4823,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderGetPluginInfo() noexcept -> const D2RL::PluginI
 }
 
 D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) noexcept -> bool {
-    if (!D2RL::HasContext(context) || context->apiVersion != D2RL_PLUGIN_API_VERSION)
+    if (!D2RL::HasContext(context) || context->abiVersion != D2RL_PLUGIN_ABI_VERSION)
         return false;
     Context = context;
     if(GetModuleHandleW(L"loot-filter.dll")!=nullptr ||
@@ -4866,10 +4862,9 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     SoundInventory=nullptr;
     SoundInventoryItems=nullptr;
     SoundThreads=nullptr;
-    const D2RL::ThreadServiceV1* soundThreads{};
-    if(context->QueryService(D2RL::ServiceId::Thread,
-           D2RL::ThreadServiceV1Version,&soundThreads)==D2RL::ServiceQueryResult::Success &&
-       D2RL::HasThreadServiceV1Field(soundThreads,D2RL::ThreadServiceV1RequiredSize) &&
+    const D2RL::ThreadService* soundThreads{};
+    if(context->QueryService(&soundThreads)==D2RL::ServiceQueryResult::Success &&
+       D2RL::HasThreadServiceField(soundThreads,D2RL::ThreadServiceRequiredSize) &&
        soundThreads->runOnGameThread)SoundThreads=soundThreads;
     {
         auto* module=GetModuleHandleW(L"D2RLoader.exe");
