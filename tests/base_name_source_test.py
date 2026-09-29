@@ -3,7 +3,7 @@ p = Path(__file__).resolve().parents[1]
 s = (p / 'src/plugin.cpp').read_text()
 r = (p / 'src/filter_rule_engine.hpp').read_text()
 h = (p / 'src/base_name_table.hpp').read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'if(key=="code" || key=="baseName")' in s
 assert 'key=="classId"' not in s[s.index('bool ParseV2Conditions('):s.index('// RGBA is a JSON STRING:')]
 assert 'dest.baseCodes=std::move(parsed);' in s

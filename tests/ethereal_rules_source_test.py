@@ -3,7 +3,7 @@ p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 r=(p/'src/filter_rule_engine.hpp').read_text()
 mask=(p/'src/ground_ethereal_policy.hpp').read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'key=="ethereal"' in s
 assert 'ethereal-requires-boolean-true-or-false' in s
 assert 'it.value().is_boolean()' in s

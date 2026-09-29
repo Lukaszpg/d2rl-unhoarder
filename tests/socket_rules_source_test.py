@@ -2,7 +2,7 @@ from pathlib import Path
 p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 h=(p/'src/filter_rule_engine.hpp').read_text()
-assert '.version = "1.0.0"' in s
+assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'key=="itemLevel" || key=="quantity" || key=="sockets"' in s
 assert 'socket?dest.sockets:dest.quantity' in s
 assert 'sockets-requires-integer-0..15' in s

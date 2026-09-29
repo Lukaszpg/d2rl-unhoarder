@@ -3,7 +3,7 @@ import json
 root=Path(__file__).resolve().parents[1]
 p=(root/'src/plugin.cpp').read_text()
 
-assert '.version = "1.0.0"' in p
+assert '.version = UNHOARDER_VERSION_STRING' in p
 assert 'block->contains("tooltip") && !(*block)["tooltip"].is_object()' in p
 assert 'tooltip-cannot-be-mixed-with-flat-backgroundColor-or-textColor' in p
 assert 'invalid-tooltip expected={backgroundColor?:RGBA(...),textColor?:RGBA(...)}' in p
