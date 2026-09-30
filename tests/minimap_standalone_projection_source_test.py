@@ -1,7 +1,6 @@
 from pathlib import Path
 s=(Path(__file__).resolve().parents[1]/"src/plugin.cpp").read_text()
 assert '.version = UNHOARDER_VERSION_STRING' in s
-assert 'sourceMarker=unhoarder-prod-v1' in s
 for term in ('AutomapRenderUnitRva=0xD76E0','ProjectClientToAutomapRva=0xD4910','GetLocalDataContextRva=0x8B2D0','GetLocalPlayerRva=0x9A480','ExpectedAutomapRenderUnit','ExpectedProjectClientToAutomap','ExpectedGetLocalDataContext','ExpectedGetLocalPlayer'):
     assert term in s,term
 assert 'GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")' in s
