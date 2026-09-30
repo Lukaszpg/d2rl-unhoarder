@@ -29,6 +29,7 @@
 #include "native_row_bg_policy.hpp"
 #include "native_row_bg_live_policy.hpp"
 #include "native_row_font_color_policy.hpp"
+#include "../interop/unhoarder_tooltip_compat_v1.hpp"
 // D2RLoader PluginSDK ThreadService is queried through its typed service contract.
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
@@ -236,6 +237,50 @@ std::atomic_bool HideGroundArmed{};
 using SharedLabelPaintFn = void(__fastcall*)(void*,void*,void*) noexcept;
 SharedLabelPaintFn OriginalSharedLabelPaint{};
 std::atomic_bool BackgroundPaintHookInstalled{};
+
+namespace TooltipCompat = ::UnHoarder::TooltipCompatV1;
+enum class TooltipCompatRoute : std::uint8_t { None, NativeOwner, ForeignHost };
+std::atomic<TooltipCompatRoute> SharedLabelPaintCompatRoute{TooltipCompatRoute::None};
+std::atomic<TooltipCompatRoute> GlyphRendererCompatRoute{TooltipCompatRoute::None};
+
+struct TooltipPaintSubscriber final {
+    TooltipCompat::RegistrationHandle handle{};
+    TooltipCompat::SharedLabelPaintMiddlewareFn callback{};
+    void* userData{};
+    std::array<char,64> owner{};
+};
+struct TooltipGlyphSubscriber final {
+    TooltipCompat::RegistrationHandle handle{};
+    TooltipCompat::GlyphRendererMiddlewareFn callback{};
+    void* userData{};
+    std::array<char,64> owner{};
+};
+
+std::shared_ptr<const std::vector<TooltipPaintSubscriber>> TooltipPaintSubscribers{};
+std::shared_ptr<const std::vector<TooltipGlyphSubscriber>> TooltipGlyphSubscribers{};
+std::mutex TooltipCompatMutex;
+std::uint64_t TooltipCompatNextHandle{1};
+const D2RL::PluginCommunicationService* TooltipCompatCommunication{};
+D2RL::PluginCommunication::ServiceLease<TooltipCompat::Service>
+    ForeignPaintCompatLease{};
+D2RL::PluginCommunication::ServiceLease<TooltipCompat::Service>
+    ForeignGlyphCompatLease{};
+TooltipCompat::RegistrationHandle ForeignPaintCompatHandle{};
+TooltipCompat::RegistrationHandle ForeignGlyphCompatHandle{};
+
+void __cdecl UnHoarderSharedLabelPaintMiddleware(
+    void* userData,std::uintptr_t callerReturnAddress,
+    void* rect,void* textArg,void* colorArg,
+    TooltipCompat::SharedLabelPaintNextFn next,void* nextContext) noexcept;
+std::uint64_t __cdecl UnHoarderGlyphRendererMiddleware(
+    void* userData,std::uintptr_t callerReturnAddress,
+    void* glyphContext,float x,float y,const float* rgba,
+    TooltipCompat::GlyphRendererNextFn next,void* nextContext) noexcept;
+void RunOwnedSharedLabelPaintChain(
+    std::uintptr_t callerReturnAddress,void* rect,void* textArg,void* colorArg) noexcept;
+std::uint64_t RunOwnedGlyphRendererChain(
+    std::uintptr_t callerReturnAddress,void* glyphContext,
+    float x,float y,const float* rgba) noexcept;
 
 // Bounded ephemeral identity bridge between the formatter and painter. The
 // formatter has the native item pointer while the painter has only the unit ID.
@@ -1416,7 +1461,8 @@ void Emit(const char* message) noexcept {
         std::strstr(message,"LOOT_NATIVE_ACTION_UNAVAILABLE") ||
         std::strstr(message,"LOOT_SOUND_REFUSED") ||
         std::strstr(message,"LOOT_SOUND_QUALIFY refused=") ||
-        std::strstr(message,"LOOT_MINIMAP_RENDERER_REFUSED");
+        std::strstr(message,"LOOT_MINIMAP_RENDERER_REFUSED") ||
+        std::strstr(message,"LOOT_TOOLTIP_COMPAT_REFUSED");
     if (warning) {
         Context->LogWarn(message);
         return;
@@ -1435,7 +1481,9 @@ void Emit(const char* message) noexcept {
         std::strstr(message,"LOOT_SOUND_ARMED") ||
         std::strstr(message,"LOOT_MINIMAP_PROJECTION_READY") ||
         std::strstr(message,"LOOT_MINIMAP_AUTOMAP_GATE_READY") ||
-        std::strstr(message,"LOOT_MINIMAP_RENDERER_READY");
+        std::strstr(message,"LOOT_MINIMAP_RENDERER_READY") ||
+        std::strstr(message,"LOOT_TOOLTIP_COMPAT_READY") ||
+        std::strstr(message,"LOOT_TOOLTIP_COMPAT_CHAINED");
     if (operational) Context->LogInfo(message);
 }
 
@@ -3309,8 +3357,10 @@ bool GetGroundIdentity(std::uint32_t id, std::string_view visibleName,
 thread_local const float* VerifiedRuleGlyphColor=nullptr;
 std::atomic_bool CorrectedGlyphBArmed{};
 
-void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) noexcept {
-    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+void __cdecl UnHoarderSharedLabelPaintMiddleware(
+    void*,std::uintptr_t caller,
+    void* rect,void* textArg,void* colorArg,
+    TooltipCompat::SharedLabelPaintNextFn next,void* nextContext) noexcept {
     const bool ground=caller==Base+0x1517AF6;
     const bool rulesActive=ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules;
     const bool tint=rulesActive && BackgroundTintArmed.load(std::memory_order_acquire);
@@ -3392,13 +3442,17 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
     VerifiedRuleGlyphColor=concealGroundVisuals ? invisibleRgba.data() :
         (ground && hasScopedRuleTextColor?scopedRuleTextColor.data():nullptr);
 
-    // A qualified show:false bulk-ground label is omitted from this visual
-    // painter. Pickup suppression is enforced independently by the native
-    // action guard; no item/unit/geometry state is modified here.
-    if (!concealGroundVisuals && OriginalSharedLabelPaint)
-        OriginalSharedLabelPaint(rect,textArg,forwardedColor);
+    // A qualified show:false bulk-ground label omits the remainder of the
+    // middleware chain. Pickup suppression is enforced independently.
+    if (!concealGroundVisuals && next)
+        next(nextContext,rect,textArg,forwardedColor);
 
     VerifiedRuleGlyphColor=previousGlyphColor;
+}
+
+void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) noexcept {
+    RunOwnedSharedLabelPaintChain(
+        reinterpret_cast<std::uintptr_t>(_ReturnAddress()),rect,textArg,colorArg);
 }
 
 
@@ -3412,6 +3466,485 @@ CorrectedGlyphBFn OriginalCorrectedGlyphB{};
 std::atomic_bool CorrectedGlyphBInstalled{};
 constexpr std::uintptr_t CorrectedGlyphBRva=0x658510;
 constexpr std::uintptr_t CorrectedGlyphBCallRva=0x90857B;
+
+using TooltipCompatServiceLease =
+    D2RL::PluginCommunication::ServiceLease<TooltipCompat::Service>;
+
+bool TooltipCompatOwnerMatches(
+    const std::array<char,64>& owner,const D2RL::PluginContext* consumer) noexcept {
+    if (!consumer || !consumer->pluginId || !consumer->pluginId[0]) return false;
+    return std::strncmp(owner.data(),consumer->pluginId,owner.size())==0;
+}
+
+void TooltipCompatCopyOwner(
+    std::array<char,64>& out,const D2RL::PluginContext* consumer) noexcept {
+    out.fill(0);
+    if (!consumer || !consumer->pluginId) return;
+    std::snprintf(out.data(),out.size(),"%s",consumer->pluginId);
+}
+
+TooltipCompat::Result __cdecl RegisterCompatSharedLabelPaint(
+    const D2RL::PluginContext* consumer,
+    const TooltipCompat::SharedLabelPaintRegistration* registration,
+    TooltipCompat::RegistrationHandle* handle) noexcept {
+    if (handle) *handle=TooltipCompat::InvalidRegistrationHandle;
+    if (!consumer || !consumer->pluginId || !registration || !handle ||
+        registration->structSize<TooltipCompat::SharedLabelPaintRegistrationSize ||
+        registration->flags!=0 || !registration->callback)
+        return TooltipCompat::Result::InvalidArgument;
+    if (SharedLabelPaintCompatRoute.load(std::memory_order_acquire)
+            !=TooltipCompatRoute::NativeOwner)
+        return TooltipCompat::Result::NotHost;
+
+    try {
+        std::scoped_lock lock(TooltipCompatMutex);
+        const auto current=std::atomic_load_explicit(
+            &TooltipPaintSubscribers,std::memory_order_acquire);
+        auto next=std::make_shared<std::vector<TooltipPaintSubscriber>>(
+            current?*current:std::vector<TooltipPaintSubscriber>{});
+        for (const auto& entry:*next)
+            if (entry.callback==registration->callback &&
+                entry.userData==registration->userData &&
+                TooltipCompatOwnerMatches(entry.owner,consumer))
+                return TooltipCompat::Result::AlreadyRegistered;
+        if (next->size()>=TooltipCompat::MaxSubscribers)
+            return TooltipCompat::Result::LimitExceeded;
+        TooltipPaintSubscriber entry{};
+        entry.handle=TooltipCompatNextHandle++;
+        if (!entry.handle) entry.handle=TooltipCompatNextHandle++;
+        entry.callback=registration->callback;
+        entry.userData=registration->userData;
+        TooltipCompatCopyOwner(entry.owner,consumer);
+        next->push_back(entry);
+        *handle=entry.handle;
+        std::atomic_store_explicit(
+            &TooltipPaintSubscribers,
+            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),
+            std::memory_order_release);
+        return TooltipCompat::Result::Success;
+    } catch (...) {
+        return TooltipCompat::Result::LimitExceeded;
+    }
+}
+
+TooltipCompat::Result __cdecl UnregisterCompatSharedLabelPaint(
+    const D2RL::PluginContext* consumer,
+    TooltipCompat::RegistrationHandle handle) noexcept {
+    if (!consumer || !consumer->pluginId ||
+        handle==TooltipCompat::InvalidRegistrationHandle)
+        return TooltipCompat::Result::InvalidArgument;
+    try {
+        std::scoped_lock lock(TooltipCompatMutex);
+        const auto current=std::atomic_load_explicit(
+            &TooltipPaintSubscribers,std::memory_order_acquire);
+        if (!current) return TooltipCompat::Result::NotFound;
+        auto found=std::find_if(current->begin(),current->end(),
+            [handle](const auto& entry){return entry.handle==handle;});
+        if (found==current->end()) return TooltipCompat::Result::NotFound;
+        if (!TooltipCompatOwnerMatches(found->owner,consumer))
+            return TooltipCompat::Result::OwnerMismatch;
+        auto next=std::make_shared<std::vector<TooltipPaintSubscriber>>(*current);
+        next->erase(next->begin()+std::distance(current->begin(),found));
+        std::atomic_store_explicit(
+            &TooltipPaintSubscribers,
+            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),
+            std::memory_order_release);
+        return TooltipCompat::Result::Success;
+    } catch (...) {
+        return TooltipCompat::Result::LimitExceeded;
+    }
+}
+
+TooltipCompat::Result __cdecl RegisterCompatGlyphRenderer(
+    const D2RL::PluginContext* consumer,
+    const TooltipCompat::GlyphRendererRegistration* registration,
+    TooltipCompat::RegistrationHandle* handle) noexcept {
+    if (handle) *handle=TooltipCompat::InvalidRegistrationHandle;
+    if (!consumer || !consumer->pluginId || !registration || !handle ||
+        registration->structSize<TooltipCompat::GlyphRendererRegistrationSize ||
+        registration->flags!=0 || !registration->callback)
+        return TooltipCompat::Result::InvalidArgument;
+    if (GlyphRendererCompatRoute.load(std::memory_order_acquire)
+            !=TooltipCompatRoute::NativeOwner)
+        return TooltipCompat::Result::NotHost;
+
+    try {
+        std::scoped_lock lock(TooltipCompatMutex);
+        const auto current=std::atomic_load_explicit(
+            &TooltipGlyphSubscribers,std::memory_order_acquire);
+        auto next=std::make_shared<std::vector<TooltipGlyphSubscriber>>(
+            current?*current:std::vector<TooltipGlyphSubscriber>{});
+        for (const auto& entry:*next)
+            if (entry.callback==registration->callback &&
+                entry.userData==registration->userData &&
+                TooltipCompatOwnerMatches(entry.owner,consumer))
+                return TooltipCompat::Result::AlreadyRegistered;
+        if (next->size()>=TooltipCompat::MaxSubscribers)
+            return TooltipCompat::Result::LimitExceeded;
+        TooltipGlyphSubscriber entry{};
+        entry.handle=TooltipCompatNextHandle++;
+        if (!entry.handle) entry.handle=TooltipCompatNextHandle++;
+        entry.callback=registration->callback;
+        entry.userData=registration->userData;
+        TooltipCompatCopyOwner(entry.owner,consumer);
+        next->push_back(entry);
+        *handle=entry.handle;
+        std::atomic_store_explicit(
+            &TooltipGlyphSubscribers,
+            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),
+            std::memory_order_release);
+        return TooltipCompat::Result::Success;
+    } catch (...) {
+        return TooltipCompat::Result::LimitExceeded;
+    }
+}
+
+TooltipCompat::Result __cdecl UnregisterCompatGlyphRenderer(
+    const D2RL::PluginContext* consumer,
+    TooltipCompat::RegistrationHandle handle) noexcept {
+    if (!consumer || !consumer->pluginId ||
+        handle==TooltipCompat::InvalidRegistrationHandle)
+        return TooltipCompat::Result::InvalidArgument;
+    try {
+        std::scoped_lock lock(TooltipCompatMutex);
+        const auto current=std::atomic_load_explicit(
+            &TooltipGlyphSubscribers,std::memory_order_acquire);
+        if (!current) return TooltipCompat::Result::NotFound;
+        auto found=std::find_if(current->begin(),current->end(),
+            [handle](const auto& entry){return entry.handle==handle;});
+        if (found==current->end()) return TooltipCompat::Result::NotFound;
+        if (!TooltipCompatOwnerMatches(found->owner,consumer))
+            return TooltipCompat::Result::OwnerMismatch;
+        auto next=std::make_shared<std::vector<TooltipGlyphSubscriber>>(*current);
+        next->erase(next->begin()+std::distance(current->begin(),found));
+        std::atomic_store_explicit(
+            &TooltipGlyphSubscribers,
+            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),
+            std::memory_order_release);
+        return TooltipCompat::Result::Success;
+    } catch (...) {
+        return TooltipCompat::Result::LimitExceeded;
+    }
+}
+
+const TooltipCompat::Service PublishedTooltipCompatService{
+    .serviceSize=TooltipCompat::ServiceSize,
+    .serviceVersion=TooltipCompat::ServiceVersion,
+    .registerSharedLabelPaint=&RegisterCompatSharedLabelPaint,
+    .unregisterSharedLabelPaint=&UnregisterCompatSharedLabelPaint,
+    .registerGlyphRenderer=&RegisterCompatGlyphRenderer,
+    .unregisterGlyphRenderer=&UnregisterCompatGlyphRenderer,
+};
+
+const D2RL::PluginCommunicationService* ResolveTooltipCommunication() noexcept {
+    if (TooltipCompatCommunication) return TooltipCompatCommunication;
+    const D2RL::PluginCommunicationService* service{};
+    if (!Context ||
+        Context->QueryService(&service)!=D2RL::ServiceQueryResult::Success ||
+        !D2RL::HasPluginCommunicationServiceField(
+            service,D2RL::PluginCommunicationServiceRequiredSize))
+        return nullptr;
+    TooltipCompatCommunication=service;
+    return service;
+}
+
+void PublishTooltipCompatService() noexcept {
+    const auto* communication=ResolveTooltipCommunication();
+    if (!communication || !communication->publishService) {
+        Emit("LOOT_TOOLTIP_COMPAT_REFUSED reason=plugin-communication-unavailable");
+        return;
+    }
+    const D2RL::PluginCommunication::PublishServiceRequest request{
+        .structSize=D2RL::PluginCommunication::PublishServiceRequestSize,
+        .flags=0,
+        .name=TooltipCompat::ServiceName,
+        .serviceVersion=TooltipCompat::ServiceVersion,
+        .tableSize=TooltipCompat::ServiceSize,
+        .table=&PublishedTooltipCompatService,
+    };
+    const auto result=communication->publishService(Context,&request);
+    if (result==D2RL::PluginCommunication::Result::Success)
+        Emit("LOOT_TOOLTIP_COMPAT_READY version=" UNHOARDER_VERSION_STRING " service=unhoarder-tooltip-compat abi=1 hooks=0x1FA8E0,0x658510 discovery=DiagnosticsService");
+    else
+        Emit("LOOT_TOOLTIP_COMPAT_REFUSED reason=publish-service-failed");
+}
+
+bool DiagnoseTrackedTooltipOwner(
+    std::uintptr_t rva,const void* expected,std::uint32_t expectedSize,
+    std::array<char,64>& owner) noexcept {
+    owner.fill(0);
+    const D2RL::DiagnosticsService* diagnostics{};
+    if (!Context ||
+        Context->QueryService(&diagnostics)!=D2RL::ServiceQueryResult::Success ||
+        !D2RL::HasDiagnosticsServiceField(
+            diagnostics,D2RL::DiagnosticsServiceRequiredSize) ||
+        !diagnostics->queryHookStatus)
+        return false;
+    const D2RL::Diagnostics::HookQuery query{
+        .structSize=D2RL::Diagnostics::HookQuerySize,
+        .flags=0,
+        .rva=rva,
+        .expected=expected,
+        .expectedSize=expectedSize,
+        .reserved=0,
+    };
+    D2RL::Diagnostics::HookStatus status{
+        .structSize=D2RL::Diagnostics::HookStatusSize,
+    };
+    if (diagnostics->queryHookStatus(Context,&query,&status)
+            !=D2RL::Diagnostics::Result::Success ||
+        status.state!=D2RL::Diagnostics::ModificationState::Tracked ||
+        status.kind!=D2RL::Diagnostics::ModificationKind::InlineHook ||
+        status.ownerCount!=1 || !status.ownerPluginId[0])
+        return false;
+    const auto length=strnlen_s(status.ownerPluginId,sizeof(status.ownerPluginId));
+    if (!length || length>=owner.size()) return false;
+    std::memcpy(owner.data(),status.ownerPluginId,length);
+    owner[length]='\0';
+    if (Context->pluginId &&
+        std::string_view(owner.data())==std::string_view(Context->pluginId))
+        return false;
+    return true;
+}
+
+bool TryAttachForeignSharedLabelPaint(
+    const void* expected,std::uint32_t expectedSize) noexcept {
+    std::array<char,64> owner{};
+    if (!DiagnoseTrackedTooltipOwner(
+            TooltipCompat::SharedLabelPaintRva,expected,expectedSize,owner))
+        return false;
+    const auto* communication=ResolveTooltipCommunication();
+    if (!communication) return false;
+    TooltipCompatServiceLease lease;
+    const auto acquired=D2RL::PluginCommunication::Acquire(
+        Context,communication,owner.data(),TooltipCompat::ServiceName,
+        TooltipCompat::ServiceVersion,TooltipCompat::ServiceRequiredSize,&lease);
+    if (acquired!=D2RL::PluginCommunication::Result::Success ||
+        !lease || !TooltipCompat::HasService(lease.Get()))
+        return false;
+    const TooltipCompat::SharedLabelPaintRegistration registration{
+        .structSize=TooltipCompat::SharedLabelPaintRegistrationSize,
+        .flags=0,
+        .callback=&UnHoarderSharedLabelPaintMiddleware,
+        .userData=nullptr,
+    };
+    TooltipCompat::RegistrationHandle handle{};
+    if (lease->registerSharedLabelPaint(Context,&registration,&handle)
+            !=TooltipCompat::Result::Success ||
+        handle==TooltipCompat::InvalidRegistrationHandle)
+        return false;
+    ForeignPaintCompatLease=std::move(lease);
+    ForeignPaintCompatHandle=handle;
+    SharedLabelPaintCompatRoute.store(
+        TooltipCompatRoute::ForeignHost,std::memory_order_release);
+    BackgroundPaintHookInstalled.store(true,std::memory_order_release);
+    char line[240]{};
+    std::snprintf(line,sizeof(line),
+        "LOOT_TOOLTIP_COMPAT_CHAINED point=shared-label-paint rva=0x1FA8E0 host=%s mode=foreign-host",
+        owner.data());
+    Emit(line);
+    return true;
+}
+
+bool TryAttachForeignGlyphRenderer(
+    const void* expected,std::uint32_t expectedSize) noexcept {
+    std::array<char,64> owner{};
+    if (!DiagnoseTrackedTooltipOwner(
+            TooltipCompat::GlyphRendererRva,expected,expectedSize,owner))
+        return false;
+    const auto* communication=ResolveTooltipCommunication();
+    if (!communication) return false;
+    TooltipCompatServiceLease lease;
+    const auto acquired=D2RL::PluginCommunication::Acquire(
+        Context,communication,owner.data(),TooltipCompat::ServiceName,
+        TooltipCompat::ServiceVersion,TooltipCompat::ServiceRequiredSize,&lease);
+    if (acquired!=D2RL::PluginCommunication::Result::Success ||
+        !lease || !TooltipCompat::HasService(lease.Get()))
+        return false;
+    const TooltipCompat::GlyphRendererRegistration registration{
+        .structSize=TooltipCompat::GlyphRendererRegistrationSize,
+        .flags=0,
+        .callback=&UnHoarderGlyphRendererMiddleware,
+        .userData=nullptr,
+    };
+    TooltipCompat::RegistrationHandle handle{};
+    if (lease->registerGlyphRenderer(Context,&registration,&handle)
+            !=TooltipCompat::Result::Success ||
+        handle==TooltipCompat::InvalidRegistrationHandle)
+        return false;
+    ForeignGlyphCompatLease=std::move(lease);
+    ForeignGlyphCompatHandle=handle;
+    GlyphRendererCompatRoute.store(
+        TooltipCompatRoute::ForeignHost,std::memory_order_release);
+    CorrectedGlyphBInstalled.store(true,std::memory_order_release);
+    CorrectedGlyphBArmed.store(true,std::memory_order_release);
+    char line[240]{};
+    std::snprintf(line,sizeof(line),
+        "LOOT_TOOLTIP_COMPAT_CHAINED point=glyph-renderer rva=0x658510 host=%s mode=foreign-host",
+        owner.data());
+    Emit(line);
+    return true;
+}
+
+void DetachForeignTooltipCompatRoutes() noexcept {
+    if (ForeignGlyphCompatHandle && ForeignGlyphCompatLease &&
+        ForeignGlyphCompatLease->unregisterGlyphRenderer && Context)
+        (void)ForeignGlyphCompatLease->unregisterGlyphRenderer(
+            Context,ForeignGlyphCompatHandle);
+    ForeignGlyphCompatHandle=TooltipCompat::InvalidRegistrationHandle;
+    (void)ForeignGlyphCompatLease.Reset();
+
+    if (ForeignPaintCompatHandle && ForeignPaintCompatLease &&
+        ForeignPaintCompatLease->unregisterSharedLabelPaint && Context)
+        (void)ForeignPaintCompatLease->unregisterSharedLabelPaint(
+            Context,ForeignPaintCompatHandle);
+    ForeignPaintCompatHandle=TooltipCompat::InvalidRegistrationHandle;
+    (void)ForeignPaintCompatLease.Reset();
+}
+
+struct TooltipPaintNextFrame final {
+    std::shared_ptr<const std::vector<TooltipPaintSubscriber>> subscribers{};
+    std::size_t nextIndex{};
+    std::uintptr_t caller{};
+    bool consumed{};
+};
+
+void InvokeCompatPaintSubscribers(
+    const std::shared_ptr<const std::vector<TooltipPaintSubscriber>>& subscribers,
+    std::size_t index,std::uintptr_t caller,
+    void* rect,void* textArg,void* colorArg) noexcept;
+
+void __cdecl ContinueCompatPaint(
+    void* nextContext,void* rect,void* textArg,void* colorArg) noexcept {
+    auto* frame=static_cast<TooltipPaintNextFrame*>(nextContext);
+    if (!frame || frame->consumed) return;
+    frame->consumed=true;
+    InvokeCompatPaintSubscribers(
+        frame->subscribers,frame->nextIndex,frame->caller,
+        rect,textArg,colorArg);
+}
+
+void InvokeCompatPaintSubscribers(
+    const std::shared_ptr<const std::vector<TooltipPaintSubscriber>>& subscribers,
+    std::size_t index,std::uintptr_t caller,
+    void* rect,void* textArg,void* colorArg) noexcept {
+    if (!subscribers || index>=subscribers->size()) {
+        if (OriginalSharedLabelPaint)
+            OriginalSharedLabelPaint(rect,textArg,colorArg);
+        return;
+    }
+    const auto& subscriber=(*subscribers)[index];
+    if (!subscriber.callback) {
+        InvokeCompatPaintSubscribers(
+            subscribers,index+1,caller,rect,textArg,colorArg);
+        return;
+    }
+    TooltipPaintNextFrame next{
+        .subscribers=subscribers,
+        .nextIndex=index+1,
+        .caller=caller,
+        .consumed=false,
+    };
+    subscriber.callback(
+        subscriber.userData,caller,rect,textArg,colorArg,
+        &ContinueCompatPaint,&next);
+}
+
+void RunOwnedSharedLabelPaintChain(
+    std::uintptr_t caller,void* rect,void* textArg,void* colorArg) noexcept {
+    const auto subscribers=std::atomic_load_explicit(
+        &TooltipPaintSubscribers,std::memory_order_acquire);
+    TooltipPaintNextFrame next{
+        .subscribers=subscribers,
+        .nextIndex=0,
+        .caller=caller,
+        .consumed=false,
+    };
+    UnHoarderSharedLabelPaintMiddleware(
+        nullptr,caller,rect,textArg,colorArg,&ContinueCompatPaint,&next);
+}
+
+struct TooltipGlyphNextFrame final {
+    std::shared_ptr<const std::vector<TooltipGlyphSubscriber>> subscribers{};
+    std::size_t nextIndex{};
+    std::uintptr_t caller{};
+    bool consumed{};
+    std::uint64_t result{};
+};
+
+std::uint64_t InvokeCompatGlyphSubscribers(
+    const std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>& subscribers,
+    std::size_t index,std::uintptr_t caller,
+    void* glyphContext,float x,float y,const float* rgba) noexcept;
+
+std::uint64_t __cdecl ContinueCompatGlyph(
+    void* nextContext,void* glyphContext,float x,float y,const float* rgba) noexcept {
+    auto* frame=static_cast<TooltipGlyphNextFrame*>(nextContext);
+    if (!frame) return 0;
+    if (frame->consumed) return frame->result;
+    frame->consumed=true;
+    frame->result=InvokeCompatGlyphSubscribers(
+        frame->subscribers,frame->nextIndex,frame->caller,
+        glyphContext,x,y,rgba);
+    return frame->result;
+}
+
+std::uint64_t InvokeCompatGlyphSubscribers(
+    const std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>& subscribers,
+    std::size_t index,std::uintptr_t caller,
+    void* glyphContext,float x,float y,const float* rgba) noexcept {
+    if (!subscribers || index>=subscribers->size())
+        return OriginalCorrectedGlyphB?
+            OriginalCorrectedGlyphB(glyphContext,x,y,rgba):0;
+    const auto& subscriber=(*subscribers)[index];
+    if (!subscriber.callback)
+        return InvokeCompatGlyphSubscribers(
+            subscribers,index+1,caller,glyphContext,x,y,rgba);
+    TooltipGlyphNextFrame next{
+        .subscribers=subscribers,
+        .nextIndex=index+1,
+        .caller=caller,
+        .consumed=false,
+        .result=0,
+    };
+    return subscriber.callback(
+        subscriber.userData,caller,glyphContext,x,y,rgba,
+        &ContinueCompatGlyph,&next);
+}
+
+std::uint64_t RunOwnedGlyphRendererChain(
+    std::uintptr_t caller,void* glyphContext,
+    float x,float y,const float* rgba) noexcept {
+    const auto subscribers=std::atomic_load_explicit(
+        &TooltipGlyphSubscribers,std::memory_order_acquire);
+    TooltipGlyphNextFrame next{
+        .subscribers=subscribers,
+        .nextIndex=0,
+        .caller=caller,
+        .consumed=false,
+        .result=0,
+    };
+    return UnHoarderGlyphRendererMiddleware(
+        nullptr,caller,glyphContext,x,y,rgba,&ContinueCompatGlyph,&next);
+}
+
+void ResetTooltipCompatRuntime() noexcept {
+    DetachForeignTooltipCompatRoutes();
+    SharedLabelPaintCompatRoute.store(
+        TooltipCompatRoute::None,std::memory_order_release);
+    GlyphRendererCompatRoute.store(
+        TooltipCompatRoute::None,std::memory_order_release);
+    std::scoped_lock lock(TooltipCompatMutex);
+    TooltipCompatNextHandle=1;
+    std::atomic_store_explicit(
+        &TooltipPaintSubscribers,
+        std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
+        std::memory_order_release);
+    std::atomic_store_explicit(
+        &TooltipGlyphSubscribers,
+        std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
+        std::memory_order_release);
+}
 
 // Automatic activation for every game after SoE V1/V3 interop is attached.
 // Fail closed on build/fingerprint/API mismatch: no global UI fallback.
@@ -3472,6 +4005,7 @@ void EnableAutomaticNativeHover() noexcept {
 // Preserve native alpha and never modify native glyph/color memory.
 bool TryForwardNativeRowFontGlyph(void* context,float x,float y,
     const float* nativeRgba,std::uintptr_t caller,
+    TooltipCompat::GlyphRendererNextFn next,void* nextContext,
     std::uint64_t& result) noexcept {
     if (!NativeRowFontColorEnabled.load(std::memory_order_acquire))
         return false;
@@ -3510,15 +4044,12 @@ bool TryForwardNativeRowFontGlyph(void* context,float x,float y,
             std::memory_order_relaxed);
         return false;
     }
-    // Item/row/caller ownership is already fully qualified above. D2R may
-    // supply exact white or rarity-colored RGB for this legitimate label,
-    // so reject only malformed/non-opaque glyph colors here.
     if (!NativeRowFontColorPolicy::EligibleGroundLabel(native)) {
         NativeRowFontColorRejectedNative.fetch_add(1,
             std::memory_order_relaxed);
         return false;
     }
-    configured[3]=native[3]; // RGBA JSON RGB only; preserve engine alpha.
+    configured[3]=native[3];
     if (!NativeRowFontColorEnabled.load(std::memory_order_acquire) ||
         !NativeRowBgLiveEnabled.load(std::memory_order_acquire) ||
         draw.sessionEpoch!=NativeRowBgLiveEpoch.load(
@@ -3527,10 +4058,8 @@ bool TryForwardNativeRowFontGlyph(void* context,float x,float y,
             std::memory_order_relaxed);
         return false;
     }
-    // Stack float4 remains alive until the original glyph call returns.
-    // Forward exactly once; this does not write to native item, UI row,
-    // glyph context or the original R9 color pointer.
-    result=OriginalCorrectedGlyphB(context,x,y,configured.data());
+    if (!next) return false;
+    result=next(nextContext,context,x,y,configured.data());
     NativeRowFontColorForwarded.fetch_add(1,
         std::memory_order_relaxed);
     NativeRowFontColorLastUnitId.store(draw.unitId,
@@ -3551,27 +4080,35 @@ bool TryForwardNativeRowFontGlyph(void* context,float x,float y,
     return true;
 }
 
-std::uint64_t __fastcall HookCorrectedGlyphB(
-    void* context,float x,float y,const float* nativeRgba) noexcept {
-    if (!OriginalCorrectedGlyphB) return 0;
-    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+std::uint64_t __cdecl UnHoarderGlyphRendererMiddleware(
+    void*,std::uintptr_t caller,
+    void* context,float x,float y,const float* nativeRgba,
+    TooltipCompat::GlyphRendererNextFn next,void* nextContext) noexcept {
+    if (!next) return 0;
     std::uint64_t colored{};
-    if (TryForwardNativeRowFontGlyph(context,x,y,nativeRgba,caller,colored))
+    if (TryForwardNativeRowFontGlyph(
+            context,x,y,nativeRgba,caller,next,nextContext,colored))
         return colored;
-    // Preserve the existing Alt-visible JSON textColor route unchanged.
     if (caller!=Base+CorrectedGlyphBCallRva+5 ||
         !CorrectedGlyphBArmed.load(std::memory_order_relaxed) ||
         !VerifiedRuleGlyphColor || !nativeRgba)
-        return OriginalCorrectedGlyphB(context,x,y,nativeRgba);
+        return next(nextContext,context,x,y,nativeRgba);
     std::array<float,4> before{};
     SIZE_T copied{};
     if (!ReadProcessMemory(GetCurrentProcess(),nativeRgba,before.data(),
             sizeof(before),&copied) || copied!=sizeof(before))
-        return OriginalCorrectedGlyphB(context,x,y,nativeRgba);
+        return next(nextContext,context,x,y,nativeRgba);
     for (const auto value:before)
         if (!std::isfinite(value) || value<0.f || value>1.001f)
-            return OriginalCorrectedGlyphB(context,x,y,nativeRgba);
-    return OriginalCorrectedGlyphB(context,x,y,VerifiedRuleGlyphColor);
+            return next(nextContext,context,x,y,nativeRgba);
+    return next(nextContext,context,x,y,VerifiedRuleGlyphColor);
+}
+
+std::uint64_t __fastcall HookCorrectedGlyphB(
+    void* context,float x,float y,const float* nativeRgba) noexcept {
+    return RunOwnedGlyphRendererChain(
+        reinterpret_cast<std::uintptr_t>(_ReturnAddress()),
+        context,x,y,nativeRgba);
 }
 
 void ArmCorrectedGlyphB() noexcept {
@@ -3604,10 +4141,16 @@ void ArmCorrectedGlyphB() noexcept {
         call!=nativeCall ||
         !ReadSafe(CorrectedGlyphBRva+0x32,ptr.data(),ptr.size()) ||
         ptr!=r9Consumer ||
-        !ReadSafe(0x908525,prep.data(),prep.size()) || prep!=colorPointerPrep ||
-        !Context->CheckExpectedBytes(CorrectedGlyphBRva,nativeEntry.data(),
+        !ReadSafe(0x908525,prep.data(),prep.size()) || prep!=colorPointerPrep) {
+        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=callsite-or-R9-fingerprint-mismatch hooks=0");
+        return;
+    }
+    if (!Context->CheckExpectedBytes(CorrectedGlyphBRva,nativeEntry.data(),
             static_cast<std::uint32_t>(nativeEntry.size()))) {
-        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=callsite-or-R9-or-entry-fingerprint-mismatch hooks=0");
+        if (TryAttachForeignGlyphRenderer(
+                nativeEntry.data(),static_cast<std::uint32_t>(nativeEntry.size())))
+            return;
+        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-owned-without-unhoarder-tooltip-compat hooks=0");
         return;
     }
     if (!Context->InstallInlineHook(CorrectedGlyphBRva,nativeEntry.data(),
@@ -3616,9 +4159,11 @@ void ArmCorrectedGlyphB() noexcept {
         Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed hooks=0");
         return;
     }
+    GlyphRendererCompatRoute.store(
+        TooltipCompatRoute::NativeOwner,std::memory_order_release);
     CorrectedGlyphBInstalled.store(true,std::memory_order_release);
     CorrectedGlyphBArmed.store(true,std::memory_order_release);
-    Emit("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 recordWrites=0 itemWrites=0");
+    Emit("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 compatHost=1 recordWrites=0 itemWrites=0");
 }
 
 void EnsureSharedLabelPaintHook() noexcept;
@@ -3636,8 +4181,7 @@ void SyncFilterTextColorState() noexcept {
     // the unit and put the correct per-item RGBA into TLS for native glyph B.
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
         EnsureSharedLabelPaintHook();
-    if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
-        !OriginalSharedLabelPaint) {
+    if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire)) {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
         Emit("LOOT_TEXT_COLOR_RULES_REFUSED reason=shared-paint-hook-missing");
         return;
@@ -3664,13 +4208,19 @@ void EnsureSharedLabelPaintHook() noexcept {
     if (!Context || !build || std::string_view(build)!="93847" ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !OriginalLabelFormatter ||
-        !Context->CheckExpectedBytes(0x1FA8E0,expected.data(),
-            static_cast<std::uint32_t>(expected.size())) ||
         !ReadSafe(0x1517AF1,groundBytes.data(),groundBytes.size()) ||
         groundBytes!=groundCall ||
         !ReadSafe(0x1519E41,neighborBytes.data(),neighborBytes.size()) ||
         neighborBytes!=neighborCall) {
-        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED build-or-callsite-or-entry-fingerprint-mismatch; no-hook=1");
+        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED build-or-callsite-fingerprint-mismatch; no-hook=1");
+        return;
+    }
+    if (!Context->CheckExpectedBytes(0x1FA8E0,expected.data(),
+            static_cast<std::uint32_t>(expected.size()))) {
+        if (TryAttachForeignSharedLabelPaint(
+                expected.data(),static_cast<std::uint32_t>(expected.size())))
+            return;
+        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED entry-owned-without-unhoarder-tooltip-compat; no-hook=1");
         return;
     }
     if (!Context->InstallInlineHook(0x1FA8E0,expected.data(),
@@ -3679,8 +4229,10 @@ void EnsureSharedLabelPaintHook() noexcept {
         Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED loader-install-failed; no-fallback=1");
         return;
     }
+    SharedLabelPaintCompatRoute.store(
+        TooltipCompatRoute::NativeOwner,std::memory_order_release);
     BackgroundPaintHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1");
+    Emit("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1 compatHost=1");
 }
 
 // Fingerprint the proven label-color route before allowing any argument
@@ -3725,7 +4277,7 @@ void SyncFilterBackgroundState() noexcept {
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
         EnsureSharedLabelPaintHook();
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
-        !OriginalSharedLabelPaint || !VerifyBackgroundColorRoute()) {
+        !VerifyBackgroundColorRoute()) {
         BackgroundTintArmed.store(false,std::memory_order_release);
         Emit("LOOT_BACKGROUND_RULES_REFUSED native-paint-hook-or-fingerprint-mismatch names-remain-active=1");
         return;
@@ -3753,13 +4305,12 @@ void SyncFilterVisibilityState() noexcept {
     // Hiding requires both visual channels. A color-only mask would leave
     // unstyled native glyphs visible and must fail open instead.
     if (BackgroundPaintHookInstalled.load(std::memory_order_acquire) &&
-        OriginalSharedLabelPaint && VerifyBackgroundColorRoute() &&
+        VerifyBackgroundColorRoute() &&
         !CorrectedGlyphBArmed.load(std::memory_order_acquire))
         ArmCorrectedGlyphB();
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
-        !OriginalSharedLabelPaint || !VerifyBackgroundColorRoute() ||
+        !VerifyBackgroundColorRoute() ||
         !CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
-        !OriginalCorrectedGlyphB ||
         !CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
         Emit("LOOT_VISIBILITY_REFUSED native-painter-or-glyph-unavailable show:false-fails-open=1");
         return;
@@ -4892,6 +5443,19 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     }
 
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_relaxed);
+    SharedLabelPaintCompatRoute.store(TooltipCompatRoute::None,std::memory_order_relaxed);
+    GlyphRendererCompatRoute.store(TooltipCompatRoute::None,std::memory_order_relaxed);
+    TooltipCompatCommunication=nullptr;
+    ForeignPaintCompatHandle=TooltipCompat::InvalidRegistrationHandle;
+    ForeignGlyphCompatHandle=TooltipCompat::InvalidRegistrationHandle;
+    std::atomic_store_explicit(
+        &TooltipPaintSubscribers,
+        std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
+        std::memory_order_release);
+    std::atomic_store_explicit(
+        &TooltipGlyphSubscribers,
+        std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
+        std::memory_order_release);
     BackgroundPaintHookInstalled.store(false,std::memory_order_relaxed);
     OriginalSharedLabelPaint=nullptr;
     GroundIdentities.fill({});
@@ -4958,6 +5522,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         return true;
     }
     HookInstalled.store(true, std::memory_order_release);
+    PublishTooltipCompatService();
     (void)InstallStandaloneAutomapProjection();
     // Reuse the qualified native filter pipeline automatically once the
     // complete JSON ruleset is published and the item-code reader is ready.
@@ -4975,6 +5540,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     RuntimeWorkerStop();
+    DetachForeignTooltipCompatRoutes();
     AutomapProjectionArmed.store(false,std::memory_order_release);
     MinimapOverlayRenderer::Shutdown();
     AutomapProjectionHookInstalled.store(false,std::memory_order_release);
@@ -5017,11 +5583,25 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
         std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterConfigPath.clear();
     HookInstalled.store(false, std::memory_order_release);
+    SharedLabelPaintCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
+    GlyphRendererCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
+    {
+        std::scoped_lock lock(TooltipCompatMutex);
+        std::atomic_store_explicit(
+            &TooltipPaintSubscribers,
+            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
+            std::memory_order_release);
+        std::atomic_store_explicit(
+            &TooltipGlyphSubscribers,
+            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
+            std::memory_order_release);
+    }
     OriginalGetItemCode = nullptr;
     // The loader owns detour removal. Do not null out native trampolines
     // while other thread callbacks could still be forwarding through them.
 
     SoundThreads = nullptr;
+    TooltipCompatCommunication = nullptr;
     Context = nullptr;
     Base = 0;
     ImageSize = 0;
