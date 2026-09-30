@@ -101,7 +101,7 @@ struct Conditions {
 template<class Rule>
 const Rule* FirstMatch(const std::vector<Rule>& rules,const Item& item) noexcept {
     for (const auto& rule:rules) {
-        if (rule.schema2 ? rule.conditions.Matches(item) : rule.code==item.code)
+        if (rule.usesConditions ? rule.conditions.Matches(item) : rule.code==item.code)
             return &rule;
     }
     return nullptr;
@@ -177,7 +177,7 @@ constexpr bool Continues(const Rule& rule) noexcept {
 
 template<class Rule>
 MatchState EvaluateRuleFailOpen(const Rule& rule,const Item& item) noexcept {
-    if(!rule.schema2)
+    if(!rule.usesConditions)
         return rule.code==item.code ? MatchState::Match : MatchState::NoMatch;
     return EvaluateConditionsFailOpen(rule.conditions,item);
 }
@@ -211,16 +211,13 @@ bool ResolveMatchingRulesFailOpen(const std::vector<Rule>& rules,
         static_cast<Apply&&>(apply),[]() noexcept {});
 }
 
-inline bool UsesNativeQualityLevel(const Conditions& c) noexcept {
-    return !c.qualities.empty() || c.itemLevel.enabled || c.superiorEnabled;
-}
 template<class Rule>
 bool NeedsNativeQualityLevel(const std::vector<Rule>& rules,
     const Item& item) noexcept {
     // Continue-aware: after a fully known continued match, later rules may
     // still require quality/ilvl.
     for(const auto& rule:rules) {
-        if(!rule.schema2) {
+        if(!rule.usesConditions) {
             if(rule.code==item.code && !Continues(rule)) return false;
             if(rule.code==item.code) continue;
             continue;
@@ -258,7 +255,7 @@ template<class Rule>
 NextProperty NextNativeProperty(const std::vector<Rule>& rules,
     const Item& item) noexcept {
     for(const auto& rule:rules) {
-        if(!rule.schema2) {
+        if(!rule.usesConditions) {
             if(rule.code==item.code && !Continues(rule))
                 return NextProperty::None;
             continue;
