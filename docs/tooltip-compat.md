@@ -1,11 +1,16 @@
-# UnHoarder Tooltip Compatibility API v1
+# UnHoarder Plugin Interoperability
 
-This is a deliberately small opt-in interface for plugin authors whose plugin
-uses one of the same native tooltip/render functions as UnHoarder.
+This document describes the opt-in contracts available to D2RLoader plugin
+authors whose plugin owns or shares a native boundary also used by UnHoarder.
 
-It is **not** a general-purpose hook-sharing framework. V1 covers only the two
-shared render hooks that most directly affect UnHoarder's visible ground-item
-styling on D2R build `93847`:
+The contracts are deliberately narrow. They are not a general-purpose
+hook-sharing framework, and every cooperative route remains tied to a
+qualified build-`93847` native boundary and its diagnosed D2RLoader owner.
+
+## Tooltip render middleware
+
+The **UnHoarder Tooltip Compatibility API v1** covers the two shared render
+hooks that most directly affect visible ground-item styling:
 
 | Hook | RVA | Purpose |
 | --- | ---: | --- |
@@ -17,12 +22,22 @@ The public contract is:
 `interop/unhoarder_tooltip_compat_v1.hpp`
 
 
-## Standalone runtime
+## Common trust model
 
-UnHoarder has no mod-specific observer, style-transformer, render-scope, or
-DLL-export dependency. The compatibility API
-in this document is the opt-in mechanism for sharing the two covered native
-render hooks with any cooperative D2RLoader plugin.
+UnHoarder has no mod-specific DLL/export dependency for these routes. The
+common rule is **owner first, service second**:
+
+1. qualify the native boundary for the supported game build;
+2. use D2RLoader `DiagnosticsService` to identify the tracked owner;
+3. acquire the versioned service from that exact provider through
+   `PluginCommunicationService`;
+4. validate the service-specific ownership fields and keep its lease while any
+   callback or function pointer can be used.
+
+A DLL name, plugin load order, matching product name, or executable-looking
+foreign pointer is not sufficient evidence. If the owner cannot be proved, the
+service is absent, or the service does not match the qualified boundary,
+UnHoarder fails that feature closed and leaves unrelated features active.
 
 ## The rule
 
@@ -134,8 +149,95 @@ No fixed load order is required for the normal collision case:
   service. When UnHoarder starts, Diagnostics identifies that plugin and
   UnHoarder registers with its host.
 
+## Cooperative UnitStat reader
+
+Header:
+
+`interop/unit_stat_read_compat_v1.hpp`
+
+Service:
+
+`unit-stat-read-compat` ABI v1
+
+Native boundary:
+
+`D2R+0x2F5020`
+
+This contract is for a plugin that legitimately owns/chains the qualified
+UnitStat reader bridge and wants consumers to read through that owner rather
+than attempting a second hook or calling an unknown target.
+
+A provider publishes `D2RLInterop::UnitStatReadCompatV1::Service` under its
+own D2RLoader plugin ID. The service identifies the supported entry RVA, the
+provider's exact live owner target, and a synchronous `readStat` callback.
+
+UnHoarder first qualifies the loader bridge independently. Its normal
+standalone path still requires the direct target to be `D2RCore.dll`. If the
+live target belongs to another plugin, UnHoarder resolves that module's
+D2RLoader plugin ID, acquires `unit-stat-read-compat` from that provider, and
+accepts it only when:
+
+- the service ABI/size and entry RVA match;
+- `ownerTarget` is exactly the bridge target UnHoarder observed;
+- the `readStat` callback belongs to the same provider module;
+- the service lease remains held while the callback can be invoked.
+
+Consumers should reacquire per game when their native qualification is
+per-game. UnHoarder does this on every `GameJoined`.
+
+## Cooperative in-world item-label host
+
+Header:
+
+`interop/in_world_item_label_compat_v1.hpp`
+
+Service:
+
+`in-world-item-label-compat` ABI v1
+
+Native boundary:
+
+`D2R+0xC0420`
+
+This contract covers the separate in-world item-label path used for item hover
+when normal/bulk ground labels are hidden. A plugin that already owns the
+qualified `0xC0420` path can publish a service so consumers do not install a
+competing detour.
+
+The service exposes three synchronous capabilities:
+
+- **observer** — receives the borrowed live item identity and source label;
+- **transformer** — may return replacement label bytes for that same event;
+- **active-item scope** — reports the currently executing same-thread item so a
+  consumer can correlate downstream native rendering safely.
+
+A host must treat observer/transformer registration and unregistration as
+lifetime-sensitive. Successful unregister must be a quiescence barrier: after
+it returns, no callback from that registration may still be executing or start
+from an old dispatch snapshot. Borrowed event, unit, source, and active-item
+pointers must never be retained after the synchronous call.
+
+UnHoarder discovers the actual tracked owner of `0xC0420`, acquires this
+service from that exact plugin ID, and uses it only as identity/scope evidence.
+Its hidden-hover background/text/Show:false behavior still independently
+qualifies the downstream native row append and renderer chain. Publishing this
+service therefore does **not** authorize arbitrary render hooks or bypass
+UnHoarder's native fingerprints.
+
+## Load order for provider-local services
+
+No product-specific load order is required. The plugin that owns the native
+boundary publishes the corresponding provider-local service. A consumer
+discovers that owner and acquires from it.
+
+If the service is not ready at the moment a consumer checks, the consumer
+should fail closed and retry at an appropriate lifecycle boundary rather than
+guessing the provider. UnHoarder retries its per-game cooperative readers on
+`GameJoined`.
+
 ## Scope
 
-V1 intentionally does not cover every native function used by UnHoarder.
-Formatter/name-writer collisions retain their fail-closed behavior. Additional
-hook points should be added only when a real compatibility case requires them.
+Interoperability is intentionally added one proven collision at a time.
+UnHoarder's current public contracts cover the two tooltip render hooks, the
+qualified UnitStat bridge, and the in-world hidden-hover item-label host.
+Uncovered native collisions retain fail-closed behavior.

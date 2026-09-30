@@ -1,6 +1,7 @@
 #pragma once
 // Ground-item quantity prefix: "12x Item Name" when quantity > 1.
-// Used by the qualified visible ground-label writer.
+// Shared by visible ground labels and the generic hidden-hover transform.
+#include "hover_label_style.hpp"
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -68,6 +69,22 @@ inline bool MatchesRuleName(std::string_view displayed,
     std::size_t size{};
     return Append(configured,quantity,expected.data(),expected.size(),size) &&
         displayed==std::string_view(expected.data(),size);
+}
+inline bool BuildHover(std::string_view source,std::string_view replacementName,
+                       bool hasName,char palette,std::uint32_t quantity,
+                       char* output,std::size_t capacity) noexcept {
+    const bool nativePrefix=source.size()>=5 &&
+        std::memcmp(source.data(),HoverStyle::Marker,3)==0;
+    const auto originalName=nativePrefix ? source.substr(4):source;
+    const auto selected=hasName ? replacementName:originalName;
+    std::array<char,256> counted{};
+    std::size_t countBytes{};
+    const bool added=Append(selected,quantity,
+        counted.data(),counted.size(),countBytes);
+    if (!hasName && !palette && !added) return false;
+    return HoverStyle::Build(source,
+        added ? std::string_view(counted.data(),countBytes):selected,
+        hasName || added,palette,output,capacity);
 }
 
 } // namespace UnHoarder::GroundQuantity

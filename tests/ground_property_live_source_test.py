@@ -19,7 +19,7 @@ assert '&verifiedProperties);' in s
 assert s.count('verifiedQuantity,snapshot.get(),&verifiedProperties)')==1
 assert 'CachedGroundRuleItem(verifiedCode,verifiedClassId,' in s
 assert 'GroundRuleItem(code,unit,rules.get(),id)' in s
-resolver=s[s.index('bool ResolveGroundRule('):s.index('// UnHoarder is standalone.')]
+resolver=s[s.index('bool ResolveGroundRule('):s.index('constexpr std::uintptr_t InWorldFormatterRva')]
 assert 'RuleEngine::ResolveMatchingRulesFailOpen(table->rules,item,' in resolver
 assert 'MergeGroundRuleAction(output,rule);' in resolver
 assert 'key=="ethereal"' in s[s.index('bool ParseV2Conditions('):s.index('// RGBA is a JSON STRING:')]
