@@ -5,7 +5,7 @@
 #include <vector>
 using namespace UnHoarder;
 using namespace UnHoarder::RuleEngine;
-struct Rule {bool schema2{true};std::uint32_t code{};Conditions conditions{};bool show{true};};
+struct Rule {bool usesConditions{true};std::uint32_t code{};Conditions conditions{};bool show{true};};
 int main() {
     static_assert(GroundEthereal::NativeEtherealMask==0x00400000U);
     static_assert(GroundEthereal::FromNativeFlags(0x00C02010U));

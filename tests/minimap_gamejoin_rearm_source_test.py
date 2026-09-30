@@ -6,4 +6,4 @@ assert 'ResetMinimapTracking();' in join
 assert 'LOOT_MINIMAP_PROBE_GAMEJOIN_REARM' not in join
 assert join.index('ResetMinimapTracking();') < join.index('InitializeMinimapMarkerRenderer();') < join.index('QualifyGroundQuantityReader();')
 assert 'TryAttachInWorldBackend' not in s
-print('1.0.0 minimap tracking resets on GameJoined without probe logging: ok')
+print('minimap tracking resets on GameJoined without probe logging: ok')

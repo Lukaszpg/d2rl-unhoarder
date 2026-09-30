@@ -42,4 +42,4 @@ for outer in v3['rules']:
     assert len(outer)==1 and next(iter(outer)) in {'show','hide'}
     body=next(iter(outer.values()))
     assert 'backgroundColor' not in body and 'textColor' not in body
-print('1.0.0 JSON tooltip grouping + v3 wrappers + legacy migration aliases source contract ok')
+print('JSON tooltip grouping + v3 wrappers + legacy migration aliases source contract ok')

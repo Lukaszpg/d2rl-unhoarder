@@ -21,4 +21,4 @@ assert 'item.socketsKnown=scalarSnapshot->socketsKnown;' in s
 assert 'scalars.socketsKnown,scalars.sockets,' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
-print('1.0.0 socket rule parse, mode 5, cached paint, fail-open and mode-3 pickup: ok')
+print('socket rule parse, mode 5, cached paint, fail-open and mode-3 pickup: ok')

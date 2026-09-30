@@ -22,4 +22,4 @@ assert 'QualifyGroundPickup(action,player,type,id)==PickupGuard::Decision::Block
 assert 'OriginalNativeActionDispatch(action,player,type,id);' in hook
 assert 'RecordPickupDecision' not in s and 'DrainPickupDecisions' not in s
 assert 'expectedReturnRva' not in h and 'OtherCaller' not in h
-print('1.0.0 caller-independent native pickup guard, no diagnostic bookkeeping: ok')
+print('caller-independent native pickup guard, no diagnostic bookkeeping: ok')

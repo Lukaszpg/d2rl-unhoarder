@@ -15,4 +15,4 @@ assert 'LOOT_MINIMAP_PROJECTION_READY version=" UNHOARDER_VERSION_STRING "' in s
 assert 'mapSenseDependency=0' in s
 assert 'AutomapProjectionProbe' not in s
 assert 'InstallAutomapPayloadObserver' not in s
-print('1.0.0 standalone native automap projection production contract ok')
+print('standalone native automap projection production contract ok')

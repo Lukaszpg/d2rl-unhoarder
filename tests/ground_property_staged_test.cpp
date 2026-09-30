@@ -2,7 +2,7 @@
 #include <cassert>
 #include <vector>
 using namespace UnHoarder::RuleEngine;
-struct Rule { bool schema2{true}; std::uint32_t code{}; Conditions conditions{}; bool show{}; };
+struct Rule { bool usesConditions{true}; std::uint32_t code{}; Conditions conditions{}; bool show{}; };
 int main() {
     Rule show{};show.conditions.codes={123};show.conditions.qualities={3,6};
     show.conditions.itemLevel.enabled=true;

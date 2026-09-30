@@ -8,4 +8,4 @@ assert 'const auto* drawData = ImGui::GetDrawData();' not in r
 assert 'ImGui_ImplDX12_RenderDrawData(drawData, CommandList.Get());' in r
 assert 'backend=standalone-d3d12' in r
 assert 'No external\n// renderer host is required' in h
-print('1.0.0 renderer MSVC ABI fix and standalone-only contract ok')
+print('renderer MSVC ABI fix and standalone-only contract ok')

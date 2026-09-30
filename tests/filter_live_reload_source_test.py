@@ -30,4 +30,4 @@ assert "NativeActionPhase" not in guard
 assert "RecordPickupDecision" not in s
 assert "DrainPickupDecisions" not in s
 assert "ResolveGroundRule(rules.get(),ruleItem,resolvedRule)" in guard
-print("1.0.0 live reload worker and production pickup regression contracts: ok")
+print("live reload worker and production pickup regression contracts: ok")

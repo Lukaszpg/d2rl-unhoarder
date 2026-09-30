@@ -21,4 +21,4 @@ assert 'IsNativeAutomapVisible()' in r
 assert 'ClearPublishedFrameBestEffort();' in r
 assert 'MarkerFrameFreshMilliseconds = 250U' in r
 assert 'struct Diagnostics' not in h and 'GetDiagnostics' not in h and 'GetDiagnostics' not in r
-print('1.0.0 native automap visibility gate / immediate close suppression: ok')
+print('native automap visibility gate / immediate close suppression: ok')

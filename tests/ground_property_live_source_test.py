@@ -26,4 +26,4 @@ assert 'key=="ethereal"' in s[s.index('bool ParseV2Conditions('):s.index('// RGB
 assert 'key=="identified"' in s[s.index('bool ParseV2Conditions('):s.index('// RGBA is a JSON STRING:')]
 assert 'key=="sockets"' in s[s.index('bool ParseV2Conditions('):s.index('// RGBA is a JSON STRING:')]
 assert 'q?rawQuality:0U' in h and 'l?rawLevel:0U' in h
-print('1.0.0 quality/ilvl rule path, composition and fail-open bridges: ok')
+print('quality/ilvl rule path, composition and fail-open bridges: ok')

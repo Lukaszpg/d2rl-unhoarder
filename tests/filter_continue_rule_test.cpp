@@ -4,7 +4,7 @@
 using namespace UnHoarder::RuleEngine;
 
 struct Rule {
-    bool schema2{true};
+    bool usesConditions{true};
     std::uint32_t code{};
     Conditions conditions{};
     bool show{true};

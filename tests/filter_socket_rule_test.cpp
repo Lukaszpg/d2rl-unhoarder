@@ -2,7 +2,7 @@
 #include <cassert>
 #include <vector>
 using namespace UnHoarder::RuleEngine;
-struct Rule {bool schema2{true}; std::uint32_t code{}; Conditions conditions{}; bool show{true};};
+struct Rule {bool usesConditions{true}; std::uint32_t code{}; Conditions conditions{}; bool show{true};};
 int main() {
   Rule codeOnly{};codeOnly.conditions.codes={1};
   Rule socket{};socket.conditions.baseCodes={2};socket.conditions.sockets.enabled=true;

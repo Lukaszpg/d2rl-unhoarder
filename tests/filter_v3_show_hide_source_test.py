@@ -31,4 +31,4 @@ assert all(len(rule)==1 and next(iter(rule)) in {'show','hide'} for rule in exam
 cont=json.loads((root/'unhoarder.v3.continue.example.json').read_text())
 assert cont['rules'][0]['show']['continue'] is True
 assert list(cont['rules'][-1])==['hide'] and cont['rules'][-1]['hide']=={}
-print('1.0.0 PoE-style show/hide wrappers + Continue composition source contract ok')
+print('PoE-style show/hide wrappers + Continue composition source contract ok')

@@ -26,4 +26,4 @@ assert 'scalars.identifiedKnown,scalars.identified};' in s
 assert 'if(c.identifiedEnabled && !item.identifiedKnown)' in r
 assert 'if(c.identifiedEnabled && !item.identifiedKnown) return MatchState::Unknown;' in r
 assert 'item.identified!=c.identifiedExpected) return MatchState::NoMatch;' in r
-print('1.0.0 identified JSON native mode5 lazy fail-open and pickup propagation: ok')
+print('identified JSON native mode5 lazy fail-open and pickup propagation: ok')

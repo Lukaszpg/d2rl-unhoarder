@@ -15,7 +15,7 @@ assert "GetModuleFileNameW" not in resolver
 assert 'L"loot-filter.json"' not in resolver
 assert 'L"loot-filter-probe.json"' not in resolver
 
-assert r"d2rloader\\config" in readme
+assert r"d2rloader\config" in readme
 assert "- config: `d2rloader/config/filter.json`" in readme
 assert "no longer reads filter JSON files from the `plugins` directory" in readme
 print("filter.json resolves from D2RLoader mod config directory")

@@ -3,7 +3,7 @@
 #include <cassert>
 #include <vector>
 using namespace UnHoarder;
-struct TestRule {bool schema2{true}; std::uint32_t code{}; RuleEngine::Conditions conditions{};bool show{true};};
+struct TestRule {bool usesConditions{true}; std::uint32_t code{}; RuleEngine::Conditions conditions{};bool show{true};};
 int main() {
     using namespace GroundPropertyLive;
     auto a=Validate(3,84);assert(a.qualityKnown&&a.itemLevelKnown&&a.quality==3&&a.itemLevel==84);
@@ -12,11 +12,6 @@ int main() {
     assert(!Validate(10,85).qualityKnown);
     assert(!Validate(4,0).itemLevelKnown);
     assert(!Validate(4,100).itemLevelKnown);
-    assert(!Ready(true,true,false,true));
-    assert(!Ready(true,false,false,true));
-    assert(!Ready(false,true,true,false));
-    assert(Ready(true,true,true,true));
-    assert(Ready(false,false,false,false));
     assert(AllowsMode(3,Purpose::StrictGround));
     assert(!AllowsMode(5,Purpose::StrictGround));
     assert(!AllowsMode(4,Purpose::StrictGround));
@@ -34,9 +29,8 @@ int main() {
     item.itemLevel=85;
     assert(RuleEngine::FirstMatch(rules,item)==&rules[0]);
     item.qualityKnown=false;
-    // Raw portable first-match permits generic fallback, so the shared
-    // native caller MUST check Ready() before calling FirstMatch().
-    assert(!Ready(true,true,item.qualityKnown,item.itemLevelKnown));
+    // Raw portable first-match permits generic fallback; production staged
+    // matching uses fail-open property state instead of this legacy pre-check.
     item.qualityKnown=true;item.quality=4;
     assert(RuleEngine::FirstMatch(rules,item)==&rules[1]);
 }

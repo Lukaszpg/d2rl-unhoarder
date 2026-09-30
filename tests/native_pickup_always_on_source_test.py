@@ -11,4 +11,4 @@ for term in ("PickupGuard::Decision::LookupFailed","PickupGuard::Decision::NotGr
 for timer in ("NativeActionPhase","NativeActionDeadline","GetAsyncKeyState","PickupClickMs"):
     assert timer not in qual,timer
 assert "RecordPickupDecision" not in s and "DrainPickupDecisions" not in s
-print("1.0.0 pickup guard remains phase-independent; diagnostic queue removed: ok")
+print("pickup guard remains phase-independent; diagnostic queue removed: ok")

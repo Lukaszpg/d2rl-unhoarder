@@ -24,7 +24,7 @@ Standalone D2RLoader plugin providing a production JSON loot filter for Diablo I
 
 In order to build a filter, head to [UnHoarder Builder](https://lukaszpg.github.io/unhoarder-builder/) site. Upload the required text files of the mod you're using (or vanilla if you're not using any huge overhaul mods) to enable autocomplete. Build your filter and then click `Download filter.json` at the top.
 
-Place `filter.json` in `<D2R_installation_directory>\\mods\\<your_mod_name>\\d2rloader\\config`.
+Place `filter.json` in `<D2R_installation_directory>\mods\<your_mod_name>\d2rloader\config`.
 
 ## Identity
 

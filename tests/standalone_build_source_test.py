@@ -11,4 +11,4 @@ assert 'OUTPUT_NAME "unhoarder"' in cm
 assert 'RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"' in cm
 assert "plugins/unhoarder" not in workflow
 assert "build\\bin\\unhoarder.dll" in workflow
-print("1.0.0 standalone CMake/GitHub Actions build contract ok")
+print("standalone CMake/GitHub Actions build contract ok")

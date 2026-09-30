@@ -21,4 +21,4 @@ assert 'ReadNativeGroundQualityLevel(' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'PickupGuard::GroundMode(header[3])' in s
 assert 'LOOT_BASENAME_TABLES_PATH' in s
-print('1.0.0 baseName Excel column, lazy + mode-5 + pickup regressions: ok')
+print('baseName Excel column, lazy + mode-5 + pickup regressions: ok')
