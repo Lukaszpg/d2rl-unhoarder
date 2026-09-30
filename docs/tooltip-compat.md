@@ -16,6 +16,14 @@ The public contract is:
 
 `interop/unhoarder_tooltip_compat_v1.hpp`
 
+
+## Standalone runtime
+
+UnHoarder does not depend on Sanctuary of Exile or any SoE-specific observer,
+style-transformer, render-scope, or DLL-export contract. The compatibility API
+in this document is the opt-in mechanism for sharing the two covered native
+render hooks with any cooperative D2RLoader plugin.
+
 ## The rule
 
 Only one plugin physically hooks a supported native entry point.
