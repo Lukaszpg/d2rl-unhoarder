@@ -17,7 +17,7 @@ assert 'IdentityLookupWindow' in plugin
 assert 'EnsureSharedLabelPaintHook' in plugin
 assert 'CollisionScanLimit' in sound and 'ProbeCount' not in sound
 assert 'UnHoarderMinimapBootstrap' in renderer
-# Only the old DLL conflict guard remains; legacy JSON paths are no longer read.
+# Development probe paths and binaries are no longer part of production.
 assert 'L"loot-filter-probe.json"' not in plugin
-assert 'GetModuleHandleW(L"loot-filter-probe.dll")' in plugin
-print('production source is item-agnostic; legacy JSON paths are removed')
+assert 'GetModuleHandleW(L"loot-filter-probe.dll")' not in plugin
+print('production source is item-agnostic and free of probe compatibility paths')
