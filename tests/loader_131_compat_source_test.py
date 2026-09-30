@@ -3,7 +3,7 @@ p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 checks={
  'plugin version':'.version = UNHOARDER_VERSION_STRING' in s,
- 'sound loader':'LOOT_COMPAT_SOUND_LOADER version=" UNHOARDER_VERSION_STRING "' in s,
+ 'sound loader':'LOOT_SOUND_QUALIFY matched=1 version=" UNHOARDER_VERSION_STRING "' in s,
  'quantity bridge':'LOOT_COMPAT_QUANTITY_BRIDGE' in s,
  'exact loader 131 bridge':'GroundQuantityBridgeLoader131' in s and '0xFF,0x25,0xF2,0x51,0xB3,0x03,0x90,0x90,0x90,0x90' in s,
  'exact slot qualification':'else if (entry==GroundQuantityBridgeLoader131) requiredSlot=base+0x3E2A218;' in s,
