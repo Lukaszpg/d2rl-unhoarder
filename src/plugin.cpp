@@ -118,7 +118,6 @@ using LabelFormatterFn = std::uint8_t(__fastcall*)(
     void*, void*, void*, std::uint32_t, std::uint64_t, std::uint64_t) noexcept;
 LabelFormatterFn OriginalLabelFormatter{};
 std::atomic_bool FormatterHookInstalled{};
-std::atomic<std::uint64_t> FormatterCalls{};
 const D2RL::PluginContext* Context{};
 std::uintptr_t Base{};
 std::uint32_t ImageSize{};
@@ -129,16 +128,6 @@ using InnerNameWriterFn = std::uint64_t(__fastcall*)(
 InnerNameWriterFn OriginalInnerNameWriter{};
 std::atomic_bool InnerNameHookInstalled{};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Off};
-std::atomic<std::uint64_t> GeometryTotalCalls{};
-std::atomic<std::uint64_t> GeometrySourceCalls{};
-std::atomic<std::uint64_t> GeometryValidPairs{};
-std::atomic<std::uint64_t> GeometryIdMismatches{};
-std::atomic<std::uint64_t> GeometryLookups{};
-std::atomic<std::uint64_t> GeometryNoRule{};
-std::atomic<std::uint64_t> GeometryReadFailures{};
-std::atomic<std::uint64_t> GeometryNoTerminator{};
-std::atomic<std::uint64_t> GeometryWrites{};
-std::atomic<std::uint64_t> GeometryObserved{};
 // An immutable, atomically published code-to-name snapshot. The hook may
 // inspect it without file I/O, parsing, locks held across original calls,
 // or consulting a mutable vector during reload.
@@ -205,13 +194,6 @@ struct GroundRuleDecision {
 std::shared_ptr<const FilterRuleTable> PublishedFilterRules{};
 std::filesystem::path FilterConfigPath;
 std::atomic<std::uint64_t> FilterGeneration{};
-std::atomic<std::uint64_t> FilterLookups{};
-std::atomic<std::uint64_t> FilterMatches{};
-std::atomic<std::uint64_t> FilterNoRule{};
-std::atomic<std::uint64_t> FilterWrites{};
-std::atomic<std::uint64_t> FilterGuardFailures{};
-std::atomic<std::uint64_t> FilterReloadSucceeded{};
-std::atomic<std::uint64_t> FilterReloadRefused{};
 std::atomic_bool FilterLiveReloadAvailable{};
 constexpr std::size_t MaximumFilterFileBytes = 4 * 1024 * 1024;
 constexpr std::size_t MaximumFilterRules = 4096;
@@ -857,14 +839,6 @@ void ObserveMinimapItemPosition(const void* nativeUnit,std::uint32_t rawCode,
 // Every active read uses the qualified bounded one-hop native item-data source.
 // One unreadable field invalidates ALL property-dependent rules, including
 // later generic hide fallbacks, rather than treating missing values as zero.
-std::atomic<std::uint64_t> GroundPropertyLiveReads{};
-std::atomic<std::uint64_t> GroundPropertyLiveUnknown{};
-std::atomic<std::uint64_t> GroundEtherealRuleReads{};
-std::atomic<std::uint64_t> GroundEtherealRuleUnknown{};
-std::atomic<std::uint64_t> GroundEtherealMode5Reads{};
-std::atomic<std::uint64_t> GroundIdentifiedRuleReads{};
-std::atomic<std::uint64_t> GroundIdentifiedRuleUnknown{};
-std::atomic<std::uint64_t> GroundIdentifiedMode5Reads{};
 // Only a verified ground-label presentation path may qualify mode 5.
 // Pickup/action suppression remains strictly mode 3 at its own guard.
 GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
@@ -935,14 +909,12 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
         scalars.ethereal=GroundEthereal::FromNativeFlags(
             GroundPropertyReader::ReadLe32(itemData.data()+0x18));
         if(mode==GroundPropertyLive::PresentingMode)
-            GroundEtherealMode5Reads.fetch_add(1,std::memory_order_relaxed);
     }
     if(includeIdentified && scalars.qualityKnown && scalars.itemLevelKnown) {
         scalars.identifiedKnown=true;
         scalars.identified=GroundIdentified::FromNativeFlags(
             GroundPropertyReader::ReadLe32(itemData.data()+0x18));
         if(mode==GroundPropertyLive::PresentingMode)
-            GroundIdentifiedMode5Reads.fetch_add(1,std::memory_order_relaxed);
     }
     if((!scalars.qualityKnown || !scalars.itemLevelKnown) && reason)
         *reason="quality-or-level-out-of-range";
@@ -953,9 +925,6 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
 
 
 constexpr std::int32_t GroundSocketStatId=194;
-std::atomic<std::uint64_t> GroundSocketRuleReads{};
-std::atomic<std::uint64_t> GroundSocketRuleUnknown{};
-std::atomic<std::uint64_t> GroundSocketMode5Reads{};
 bool ReadNativeGroundSockets(const void* nativeUnit,
     std::uint32_t expectedId,std::uint32_t expectedClassId,
     GroundPropertyLive::Purpose purpose,std::uint32_t& sockets) noexcept {
@@ -989,7 +958,6 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
         return false;
     sockets=static_cast<std::uint32_t>(first);
     if(before[3]==GroundPropertyLive::PresentingMode)
-        GroundSocketMode5Reads.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 
@@ -1026,11 +994,9 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
         if(next==RuleEngine::NextProperty::None) break;
 
         if(next==RuleEngine::NextProperty::Ethereal) {
-            GroundEtherealRuleReads.fetch_add(1,std::memory_order_relaxed);
             const auto fields=ReadNativeGroundQualityLevel(nativeUnit,
                 header[2],header[1],purpose,nullptr,true);
             if(!fields.etherealKnown) {
-                GroundEtherealRuleUnknown.fetch_add(1,std::memory_order_relaxed);
                 break;
             }
             item.etherealKnown=true;
@@ -1043,11 +1009,9 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
         }
 
         if(next==RuleEngine::NextProperty::Identified) {
-            GroundIdentifiedRuleReads.fetch_add(1,std::memory_order_relaxed);
             const auto fields=ReadNativeGroundQualityLevel(nativeUnit,
                 header[2],header[1],purpose,nullptr,false,true);
             if(!fields.identifiedKnown) {
-                GroundIdentifiedRuleUnknown.fetch_add(1,std::memory_order_relaxed);
                 break;
             }
             item.identifiedKnown=true;
@@ -1060,11 +1024,9 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
         }
 
         if(next==RuleEngine::NextProperty::Sockets) {
-            GroundSocketRuleReads.fetch_add(1,std::memory_order_relaxed);
             std::uint32_t count{};
             const bool known=ReadNativeGroundSockets(nativeUnit,header[2],
                 header[1],purpose,count);
-            if(!known) GroundSocketRuleUnknown.fetch_add(1,std::memory_order_relaxed);
             item.socketsKnown=known;
             if(known) item.sockets=count;
             if(!known) break;
@@ -1073,12 +1035,10 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
 
         if((table->usesQuality || table->usesItemLevel) &&
            RuleEngine::NeedsNativeQualityLevel(table->rules,item)) {
-            GroundPropertyLiveReads.fetch_add(1,std::memory_order_relaxed);
             const auto fields=ReadNativeGroundQualityLevel(
                 nativeUnit,header[2],header[1],purpose);
             if((table->usesQuality && !fields.qualityKnown) ||
                (table->usesItemLevel && !fields.itemLevelKnown))
-                GroundPropertyLiveUnknown.fetch_add(1,std::memory_order_relaxed);
             item.qualityKnown=fields.qualityKnown;
             item.quality=fields.quality;
             item.itemLevelKnown=fields.itemLevelKnown;
@@ -1241,9 +1201,6 @@ void Emit(const char* message) noexcept {
         std::strstr(message,"LOOT_GLYPH_B_REFUSED") ||
         std::strstr(message,"LOOT_PICKUP_GUARD_REFUSED") ||
         std::strstr(message,"LOOT_PICKUP_GUARD_INACTIVE") ||
-        std::strstr(message,"LOOT_NATIVE_ACTION_REFUSED") ||
-        std::strstr(message,"LOOT_NATIVE_ACTION_PARTIAL") ||
-        std::strstr(message,"LOOT_NATIVE_ACTION_UNAVAILABLE") ||
         std::strstr(message,"LOOT_GAME_LIFECYCLE_UNAVAILABLE") ||
         std::strstr(message,"LOOT_GAME_LIFECYCLE_REFUSED") ||
         std::strstr(message,"LOOT_SOUND_REFUSED") ||
@@ -1259,7 +1216,6 @@ void Emit(const char* message) noexcept {
         std::strstr(message,"LOOT_FILTER_READY") ||
         std::strstr(message,"LOOT_RULES_LOADED") ||
         std::strstr(message,"LOOT_RULES_PATH") ||
-        std::strstr(message,"LOOT_CONFIG_LEGACY_PATH") ||
         std::strstr(message,"LOOT_FILTER_AUTO_ACTIVE") ||
         std::strstr(message,"LOOT_RELOAD_") ||
         std::strstr(message,"LOOT_PICKUP_GUARD_READY") ||
@@ -2078,17 +2034,14 @@ std::uint64_t __fastcall HookInnerNameWriter(
     void* unit, void* output, std::uint32_t bufferSize, void* outMetadata) noexcept {
     const auto returnAddress = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const auto result = OriginalInnerNameWriter(unit, output, bufferSize, outMetadata);
-    GeometryTotalCalls.fetch_add(1, std::memory_order_relaxed);
     const auto mode = ActiveGeometryMode.load(std::memory_order_acquire);
     if (mode != GeometryMode::Rules ||
         returnAddress != Base + InnerNameWriterCallerRva + DirectCallBytes ||
         !unit || !output || bufferSize != InnerNameBufferBytes ||
         !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire))
         return result;
-    GeometrySourceCalls.fetch_add(1, std::memory_order_relaxed);
     const auto outputAddress = reinterpret_cast<std::uintptr_t>(output);
     if (outputAddress < 0x24 || outputAddress > UINTPTR_MAX - 4) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     const auto recordAddress = outputAddress - 0x24;
@@ -2097,31 +2050,24 @@ std::uint64_t __fastcall HookInnerNameWriter(
     SIZE_T copied{};
     if (!ReadProcessMemory(GetCurrentProcess(), unit, header, sizeof(header), &copied) ||
         copied != sizeof(header) || header[0] != 4) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     copied=0;
     if (!ReadProcessMemory(GetCurrentProcess(),
             reinterpret_cast<const void*>(recordAddress + 0x10),
             &recordId, sizeof(recordId), &copied) || copied != sizeof(recordId)) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     if (recordId != header[2]) {
-        GeometryIdMismatches.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
-    GeometryValidPairs.fetch_add(1, std::memory_order_relaxed);
-    GeometryLookups.fetch_add(1, std::memory_order_relaxed);
     const auto code = CanonicalItemCode(OriginalGetItemCode(unit)); // original helper trampoline
     ObserveMinimapItemPosition(unit,code,recordId,header[1]);
     const char* configuredName = nullptr;
     std::size_t configuredBytes = 0;
     std::shared_ptr<const FilterRuleTable> snapshot;
     {
-        FilterLookups.fetch_add(1,std::memory_order_relaxed);
         if (!PrintableItemCode(code)) {
-            FilterGuardFailures.fetch_add(1,std::memory_order_relaxed);
             return result;
         }
         snapshot = std::atomic_load_explicit(&PublishedFilterRules,
@@ -2138,7 +2084,6 @@ std::uint64_t __fastcall HookInnerNameWriter(
                 configuredBytes=rule->bytes;
             }
         }
-        if (configuredName) FilterMatches.fetch_add(1,std::memory_order_relaxed);
     }
     constexpr std::size_t capacity = InnerNameBufferBytes - InnerNamePrefixBytes;
     const auto textAddress = outputAddress + InnerNamePrefixBytes;
@@ -2147,16 +2092,13 @@ std::uint64_t __fastcall HookInnerNameWriter(
     if (!ReadProcessMemory(GetCurrentProcess(),
             reinterpret_cast<const void*>(textAddress),
             original.data(), original.size(), &copied) || copied != original.size()) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     const auto* end = static_cast<const char*>(
         std::memchr(original.data(), '\0', original.size()));
     if (!end || end == original.data()) {
-        GeometryNoTerminator.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
-    GeometryObserved.fetch_add(1, std::memory_order_relaxed);
     const char* replacement = configuredName;
     std::size_t replacementBytes = configuredBytes;
     // This native writer owns the qualified Alt-visible ground label. It takes
@@ -2176,13 +2118,10 @@ std::uint64_t __fastcall HookInnerNameWriter(
             replacementBytes=countedBytes+1U;
         } else if (!configuredName) {
             // No rule and stat <=1 (or already presented by vanilla).
-            FilterNoRule.fetch_add(1,std::memory_order_relaxed);
-            GeometryNoRule.fetch_add(1,std::memory_order_relaxed);
             return result;
         }
     }
     if (replacementBytes > capacity) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     MEMORY_BASIC_INFORMATION memory{};
@@ -2190,27 +2129,22 @@ std::uint64_t __fastcall HookInnerNameWriter(
     if (!VirtualQuery(destination, &memory, sizeof(memory)) ||
         memory.State != MEM_COMMIT ||
         (memory.Protect & (PAGE_NOACCESS | PAGE_GUARD))) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     const auto protection = memory.Protect & 0xFFU;
     if (protection != PAGE_READWRITE && protection != PAGE_WRITECOPY &&
         protection != PAGE_EXECUTE_READWRITE && protection != PAGE_EXECUTE_WRITECOPY) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     const auto regionStart = reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
     if (regionStart > textAddress || memory.RegionSize > UINTPTR_MAX - regionStart ||
         regionStart + memory.RegionSize < textAddress ||
         regionStart + memory.RegionSize - textAddress < replacementBytes) {
-        GeometryReadFailures.fetch_add(1, std::memory_order_relaxed);
         return result;
     }
     // Only the native formatter's TRANSIENT label record. Geometry is left
     // to the still-running original formatter (text measure + rectangle).
     std::memcpy(destination, replacement, replacementBytes);
-    GeometryWrites.fetch_add(1, std::memory_order_relaxed);
-    FilterWrites.fetch_add(1,std::memory_order_relaxed);
     return result;
 }
 
@@ -3306,27 +3240,10 @@ const D2RL::InventoryService* SoundInventory{};
 const D2RL::ItemService* SoundInventoryItems{};
 std::jthread SoundPickupPollWorker{};
 std::atomic_bool SoundPickupPollPending{};
-std::atomic<std::uint64_t> SoundPickupPolls{};
-std::atomic<std::uint64_t> SoundPickupPollSuccess{};
-std::atomic<std::uint64_t> SoundPickupPollRejected{};
-std::atomic<std::uint64_t> SoundPickupResets{};
-std::atomic<std::uint64_t> SoundPickupBusy{};
 constexpr auto SoundPickupPollInterval=std::chrono::milliseconds(150);
 std::atomic<std::uintptr_t> SoundLoaderBase{};
 std::atomic_bool SoundArmed{};
 std::atomic<ULONGLONG> SoundArmMs{};
-std::atomic<std::uint64_t> SoundSeenTotal{};
-std::atomic<std::uint64_t> SoundBaselineTotal{};
-std::atomic<std::uint64_t> SoundQualifiedNew{};
-std::atomic<std::uint64_t> SoundQueued{};
-std::atomic<std::uint64_t> SoundQueueRejected{};
-std::atomic<std::uint64_t> SoundPlayed{};
-std::atomic<std::uint64_t> SoundUnknown{};
-std::atomic<std::uint64_t> SoundCancelled{};
-std::atomic<std::uint64_t> SoundCacheContention{};
-std::atomic<std::uint64_t> SoundCacheFull{};
-std::atomic<std::uint64_t> SoundAlreadySeen{};
-std::atomic<std::uint64_t> SoundObservedAlt{};
 std::atomic<std::uint64_t> SoundRegistryEpoch{1};
 constexpr ULONGLONG SoundBaselineMs=1500;
 SoundIdentity::Registry SoundSeenRegistry{};
@@ -3506,14 +3423,12 @@ void __cdecl PlayNamedSoundOnGameThread(
     if(request->automatic &&
        (!SoundArmed.load(std::memory_order_acquire) ||
         request->registryEpoch != SoundRegistryEpoch.load(std::memory_order_acquire))) {
-        SoundCancelled.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     if (request->automatic) {
         // A pickup must cancel a queued old alert even if this unit is
         // re-dropped (and re-registered) within the same game epoch.
         if (!SoundSeenMutex.try_lock()) {
-            SoundCancelled.fetch_add(1,std::memory_order_relaxed);
             return;
         }
         const bool valid = request->registryEpoch ==
@@ -3521,7 +3436,6 @@ void __cdecl PlayNamedSoundOnGameThread(
             SoundSeenRegistry.IsCurrent(request->unitId, request->itemTicket);
         SoundSeenMutex.unlock();
         if (!valid) {
-            SoundCancelled.fetch_add(1,std::memory_order_relaxed);
             return;
         }
     }
@@ -3530,8 +3444,6 @@ void __cdecl PlayNamedSoundOnGameThread(
     using PlayNamedFn=void* (__fastcall*)(const char*,void*,int,int);
     auto* player=reinterpret_cast<PlayNamedFn>(base+0x1A0C00U);
     void* result=player(request->name.data(),nullptr,0,1);
-    if(result)SoundPlayed.fetch_add(1,std::memory_order_relaxed);
-    else SoundUnknown.fetch_add(1,std::memory_order_relaxed);
     char codeText[5]{};
     CodeText(request->code,codeText);
     char message[320]{};
@@ -3551,12 +3463,10 @@ bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
     if(name.empty() || name.size()>63 || !SoundThreads ||
        !SoundThreads->runOnGameThread || !Context ||
        !SoundLoaderBase.load(std::memory_order_acquire)) {
-        SoundQueueRejected.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
     auto* request=new(std::nothrow) SoundRequest{};
     if(!request) {
-        SoundQueueRejected.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
     std::memcpy(request->name.data(),name.data(),name.size());
@@ -3572,10 +3482,8 @@ bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
         Context,&PlayNamedSoundOnGameThread,request);
     if(codeResult!=D2RL::Threads::Result::Success) {
         delete request;
-        SoundQueueRejected.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
-    SoundQueued.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 
@@ -3601,9 +3509,7 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     const auto* rule=ResolveGroundRule(rules.get(),item,resolvedRule) ?
         &resolvedRule : nullptr;
     if (!rule || !rule->hasDropSound) return;
-    SoundObservedAlt.fetch_add(1,std::memory_order_relaxed);
     if (!SoundSeenMutex.try_lock()) {
-        SoundCacheContention.fetch_add(1,std::memory_order_relaxed);
         return;
     }
     const auto now=GetTickCount64();
@@ -3613,16 +3519,11 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     std::uint64_t itemTicket{};
     const auto observation=SoundSeenRegistry.Observe(unitId,code,&itemTicket);
     if (observation==SoundIdentity::Registry::Observation::New) {
-        SoundSeenTotal.fetch_add(1,std::memory_order_relaxed);
-        if (baseline) SoundBaselineTotal.fetch_add(1,std::memory_order_relaxed);
     } else if (observation==SoundIdentity::Registry::Observation::AlreadySeen) {
-        SoundAlreadySeen.fetch_add(1,std::memory_order_relaxed);
     } else if (observation==SoundIdentity::Registry::Observation::Full) {
-        SoundCacheFull.fetch_add(1,std::memory_order_relaxed);
     }
     SoundSeenMutex.unlock();
     if (observation!=SoundIdentity::Registry::Observation::New || baseline) return;
-    SoundQualifiedNew.fetch_add(1,std::memory_order_relaxed);
     (void)QueueNamedSound(rule->dropSound.data(),unitId,code,true,
         observedEpoch,itemTicket);
 }
@@ -3654,7 +3555,6 @@ void ForgetCarriedSoundItem(std::uint32_t unitId,
                             PickupPollResults& results) noexcept {
     if (!unitId || !SoundArmed.load(std::memory_order_acquire)) return;
     if (!SoundSeenMutex.try_lock()) {
-        SoundPickupBusy.fetch_add(1,std::memory_order_relaxed);
         return; // A later poll will retry; never forcibly clear the registry.
     }
     const bool cleared=SoundSeenRegistry.Forget(unitId);
@@ -3662,7 +3562,6 @@ void ForgetCarriedSoundItem(std::uint32_t unitId,
     if (cleared) {
         ++results.cleared;
         results.lastUnitId=unitId;
-        SoundPickupResets.fetch_add(1,std::memory_order_relaxed);
     }
 }
 
@@ -3694,7 +3593,6 @@ void __cdecl PollSoundInventoryOnUiThread(
         finish();
         return;
     }
-    SoundPickupPolls.fetch_add(1,std::memory_order_relaxed);
     D2RL::PlayerHandle player{};
     if (SoundInventory->getLocalPlayer(context,&player) !=
         D2RL::Inventory::Result::Success) {
@@ -3733,7 +3631,6 @@ void __cdecl PollSoundInventoryOnUiThread(
         }
     }
     if (enumerate == D2RL::Inventory::Result::Success)
-        SoundPickupPollSuccess.fetch_add(1,std::memory_order_relaxed);
     if (results.cleared) {
         char line[210]{};
         std::snprintf(line,sizeof(line),
@@ -3760,7 +3657,6 @@ void PollSoundInventoryLoop(std::stop_token stop) noexcept {
                 Context,&PollSoundInventoryOnUiThread,nullptr) !=
             D2RL::Threads::Result::Success) {
             SoundPickupPollPending.store(false,std::memory_order_release);
-            SoundPickupPollRejected.fetch_add(1,std::memory_order_relaxed);
         }
     }
 }
@@ -3931,7 +3827,6 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         !HookInstalled.load(std::memory_order_acquire) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !InnerNameHookInstalled.load(std::memory_order_acquire)) {
-        FilterReloadRefused.fetch_add(1,std::memory_order_relaxed);
         char message[260]{};
         std::snprintf(message,sizeof(message),
             "LOOT_RELOAD_REFUSED trigger=%s reason=requires-previously-active-filter "
@@ -3941,7 +3836,6 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         return false;
     }
     if (!ReloadFilterRules()) {
-        FilterReloadRefused.fetch_add(1,std::memory_order_relaxed);
         char message[260]{};
         std::snprintf(message,sizeof(message),
             "LOOT_RELOAD_REFUSED trigger=%s reason=invalid-new-json-or-excel "
@@ -3964,7 +3858,6 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         std::atomic_store_explicit(&PublishedFilterRules,previous,
             std::memory_order_release);
         (void)ActivateConfiguredFilter(false);
-        FilterReloadRefused.fetch_add(1,std::memory_order_relaxed);
         char message[270]{};
         std::snprintf(message,sizeof(message),
             "LOOT_RELOAD_REFUSED trigger=%s reason=reactivation-unavailable "
@@ -3973,7 +3866,6 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         Emit(message);
         return false;
     }
-    FilterReloadSucceeded.fetch_add(1,std::memory_order_relaxed);
     char message[340]{};
     std::snprintf(message,sizeof(message),
         "LOOT_RELOAD_OK version=" UNHOARDER_VERSION_STRING " trigger=%s previousGeneration=%llu "
@@ -4020,7 +3912,6 @@ std::uint8_t __fastcall HookLabelFormatter(
 
     const auto result = OriginalLabelFormatter(
         unit, dest, record, flags, stack5, stack6);
-    FormatterCalls.fetch_add(1, std::memory_order_relaxed);
     RememberGroundIdentity(unit, record, sourceCall, paired, result);
     ExamineGroundSoundCandidate(unit, record, sourceCall, paired, result);
     return result;
@@ -4074,7 +3965,6 @@ using NativeActionDispatchFn=void(__fastcall*)(std::uint32_t,void*,
     std::uint32_t,std::uint32_t) noexcept;
 NativeActionDispatchFn OriginalNativeActionDispatch{};
 std::atomic_bool NativePickupGuardQualified{};
-std::atomic_bool NativeActionDispatchInstalled{};
 thread_local bool NativePickupGuardInside=false;
 std::jthread RuntimeWorker{};
 
@@ -4220,7 +4110,6 @@ void InstallNativePickupGuard() noexcept {
         return;
     }
 
-    NativeActionDispatchInstalled.store(true,std::memory_order_release);
     NativePickupGuardQualified.store(true,std::memory_order_release);
     Emit("LOOT_PICKUP_GUARD_READY version=" UNHOARDER_VERSION_STRING " action=22 type=4 mode=3 "
          "freshLookup=D2R+0x9A5D0 rule=show:false failOpen=1 stateWrites=0");
@@ -4333,12 +4222,6 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         Context=nullptr;
         return false;
     }
-    if(GetModuleHandleW(L"loot-filter-probe.dll")!=nullptr ||
-       GetModuleHandleW(L"d2rl-loot-filter-probe.dll")!=nullptr) {
-        context->LogError("LOOT_FILTER_REFUSED legacy loot-filter-probe DLL is also loaded; remove the old plugin before enabling UnHoarder");
-        Context=nullptr;
-        return false;
-    }
     InWorldLifecycle = nullptr;
     InWorldJoinedListener = D2RL::Lifecycle::InvalidHandle;
 
@@ -4348,15 +4231,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     SoundArmMs.store(0,std::memory_order_relaxed);
     SoundSeenRegistry.Clear();
     SoundRegistryEpoch.store(1);
-    SoundSeenTotal.store(0);SoundBaselineTotal.store(0);
-    SoundQualifiedNew.store(0);SoundQueued.store(0);
-    SoundQueueRejected.store(0);SoundPlayed.store(0);SoundUnknown.store(0);
-    SoundCancelled.store(0);SoundCacheContention.store(0);SoundCacheFull.store(0);
-    SoundAlreadySeen.store(0);SoundObservedAlt.store(0);
     SoundPickupPollPending.store(false);
-    SoundPickupPolls.store(0);SoundPickupPollSuccess.store(0);
-    SoundPickupResets.store(0);SoundPickupBusy.store(0);
-    SoundPickupPollRejected.store(0);
     SoundInventory=nullptr;
     SoundInventoryItems=nullptr;
     SoundThreads=nullptr;
@@ -4379,7 +4254,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         char line[310]{};
         std::snprintf(line,sizeof(line),
             "LOOT_COMPAT_START version=" UNHOARDER_VERSION_STRING " targetBuild=93847 "
-            "sourceMarker=unhoarder-prod-v1 loaderImage=%u peOk=%u stamp=0x%X imageSize=0x%X "
+            "loaderImage=%u peOk=%u stamp=0x%X imageSize=0x%X "
             "threadService=%u quantityPolicy=fail-closed soundPolicy=fail-closed",
             module?1U:0U,peOk?1U:0U,
             peOk?unsigned(nt.FileHeader.TimeDateStamp):0U,
@@ -4406,34 +4281,14 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     BackgroundPaintHookInstalled.store(false,std::memory_order_relaxed);
     OriginalSharedLabelPaint=nullptr;
     GroundIdentities.fill({});
-    GroundPropertyLiveReads.store(0,std::memory_order_relaxed);
-    GroundPropertyLiveUnknown.store(0,std::memory_order_relaxed);
     BackgroundTintArmed.store(false,std::memory_order_relaxed);
     HideGroundArmed.store(false,std::memory_order_relaxed);
     OriginalInnerNameWriter=nullptr;
     InnerNameHookInstalled.store(false,std::memory_order_relaxed);
-    GeometryTotalCalls.store(0,std::memory_order_relaxed);
-    GeometrySourceCalls.store(0,std::memory_order_relaxed);
-    GeometryValidPairs.store(0,std::memory_order_relaxed);
-    GeometryIdMismatches.store(0,std::memory_order_relaxed);
-    GeometryLookups.store(0,std::memory_order_relaxed);
-    GeometryNoRule.store(0,std::memory_order_relaxed);
-    GeometryReadFailures.store(0,std::memory_order_relaxed);
-    GeometryNoTerminator.store(0,std::memory_order_relaxed);
-    GeometryWrites.store(0,std::memory_order_relaxed);
-    GeometryObserved.store(0,std::memory_order_relaxed);
     FormatterHookInstalled.store(false, std::memory_order_relaxed);
-    FormatterCalls.store(0,std::memory_order_relaxed);
     std::atomic_store_explicit(&PublishedFilterRules,
         std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterGeneration.store(0);
-    FilterLookups.store(0);
-    FilterMatches.store(0);
-    FilterNoRule.store(0);
-    FilterWrites.store(0);
-    FilterGuardFailures.store(0);
-    FilterReloadSucceeded.store(0);
-    FilterReloadRefused.store(0);
     FilterLiveReloadAvailable.store(false,std::memory_order_release);
     if (ResolveFilterConfigPath()) {
         // Parsing happens before any ground-label feature hook is installed.
