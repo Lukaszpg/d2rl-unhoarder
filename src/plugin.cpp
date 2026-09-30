@@ -54,7 +54,7 @@
 #include <stop_token>
 #include <limits>
 
-namespace SoE::LootFilter {
+namespace UnHoarder {
 namespace {
 
 // Qualifies against the 93847 process, not a declaration that this is a label function.
@@ -234,7 +234,7 @@ enum class TooltipCompatRoute : std::uint8_t { None, NativeOwner, ForeignHost };
 std::atomic<TooltipCompatRoute> SharedLabelPaintCompatRoute{TooltipCompatRoute::None};
 std::atomic<TooltipCompatRoute> GlyphRendererCompatRoute{TooltipCompatRoute::None};
 
-namespace TooltipCompatLifetime = ::SoE::LootFilter::TooltipCompatLifetime;
+namespace TooltipCompatLifetime = ::UnHoarder::TooltipCompatLifetime;
 
 struct TooltipPaintSubscriber final {
     TooltipCompat::RegistrationHandle handle{};
@@ -1164,7 +1164,7 @@ bool ResolveGroundRule(const FilterRuleTable* table,
 
 // UnHoarder is standalone. Game lifecycle is used only to reset per-game
 // state and refresh optional native readers; core filtering does not depend on
-// Sanctuary of Exile or any mod-specific callback/export contract.
+// No mod-specific callback/export contract is required.
 const D2RL::LifecycleService* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 
@@ -4562,4 +4562,4 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     ImageSize = 0;
 }
 
-} // namespace SoE::LootFilter
+} // namespace UnHoarder

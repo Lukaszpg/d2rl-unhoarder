@@ -15,7 +15,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace SoE::LootFilter::ItemTypeTable {
+namespace UnHoarder::ItemTypeTable {
 namespace fs=std::filesystem;
 
 struct TypeRow {
@@ -210,4 +210,4 @@ inline bool Load(const fs::path& excel,Catalog& out,std::string& error) {
     }
     out=std::move(staged);return true;
 }
-} // namespace SoE::LootFilter::ItemTypeTable
+} // namespace UnHoarder::ItemTypeTable

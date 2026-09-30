@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
-namespace SoE::LootFilter::MinimapWorldPosition {
+namespace UnHoarder::MinimapWorldPosition {
 
 inline constexpr std::size_t MinimumPathBytes = 0x18;
 
@@ -26,4 +26,4 @@ inline Coordinates Decode(const std::uint8_t* path,std::size_t bytes) noexcept {
     return result;
 }
 
-} // namespace SoE::LootFilter::MinimapWorldPosition
+} // namespace UnHoarder::MinimapWorldPosition

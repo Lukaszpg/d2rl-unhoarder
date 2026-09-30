@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-namespace SoE::LootFilter::NativePickupGuardPolicy {
+namespace UnHoarder::NativePickupGuardPolicy {
 // Build 93847: action 0x16, UnitAny type 4.
 inline constexpr std::uint32_t PickupAction=22;
 inline constexpr std::uint32_t ItemUnitType=4;
@@ -45,4 +45,4 @@ constexpr bool SameItemIdentity(std::uint32_t type,std::uint32_t id,
 constexpr bool GroundMode(std::uint32_t mode) noexcept {
     return mode==OnGroundMode;
 }
-} // namespace SoE::LootFilter::NativePickupGuardPolicy
+} // namespace UnHoarder::NativePickupGuardPolicy

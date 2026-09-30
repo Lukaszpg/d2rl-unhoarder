@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-namespace SoE::LootFilter::NativeActionTracePolicy {
+namespace UnHoarder::NativeActionTracePolicy {
 
 // D2R build 93847, recovered from native C at FBEF0 and F9BC0.
 // These are observation-only offsets. NEVER write these fields.

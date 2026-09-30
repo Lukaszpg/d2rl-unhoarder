@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace SoE::LootFilter::SoundIdentity {
+namespace UnHoarder::SoundIdentity {
 
 // A bounded, allocation-free, per-game registry of sound-eligible ground item
 // unit IDs. Callers synchronize access; it never holds native item pointers.
@@ -102,4 +102,4 @@ private:
     std::uint64_t nextTicket_{};
 };
 
-} // namespace SoE::LootFilter::SoundIdentity
+} // namespace UnHoarder::SoundIdentity
