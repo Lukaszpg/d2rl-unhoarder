@@ -19,8 +19,8 @@ The public contract is:
 
 ## Standalone runtime
 
-UnHoarder does not depend on Sanctuary of Exile or any SoE-specific observer,
-style-transformer, render-scope, or DLL-export contract. The compatibility API
+UnHoarder has no mod-specific observer, style-transformer, render-scope, or
+DLL-export dependency. The compatibility API
 in this document is the opt-in mechanism for sharing the two covered native
 render hooks with any cooperative D2RLoader plugin.
 

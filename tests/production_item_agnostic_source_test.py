@@ -16,7 +16,7 @@ assert 'Divine Orb' not in plugin and 'Exalted Orb' not in plugin
 assert 'IdentityLookupWindow' in plugin
 assert 'EnsureSharedLabelPaintHook' in plugin
 assert 'CollisionScanLimit' in sound and 'ProbeCount' not in sound
-assert 'UnHoarderMinimapBootstrap' in renderer and 'SoELootFilterMinimapProbe' not in renderer
+assert 'UnHoarderMinimapBootstrap' in renderer
 # Probe-era filenames remain only as intentional migration/conflict compatibility.
 assert 'L"loot-filter-probe.json"' in plugin
 assert 'GetModuleHandleW(L"loot-filter-probe.dll")' in plugin

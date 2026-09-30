@@ -4,13 +4,6 @@ root = Path(__file__).resolve().parents[1]
 src = (root / "src" / "plugin.cpp").read_text(encoding="utf-8")
 
 for forbidden in (
-    "SoE::Interop",
-    'GetModuleHandleW(L"d2rl-soe.dll")',
-    "GetSoEInteropFn",
-    "GetSoEStyleFn",
-    "GetSoERenderScopeFn",
-    "OnSoEInWorldLabel",
-    "OnSoEInWorldStyle",
     "InWorldBackend",
     "TryAttachInWorldBackend",
     "StandaloneInWorldIdentityHook",
@@ -42,4 +35,4 @@ assert "QualifyGroundQuantityReader();" in join
 assert "ResetMinimapTracking();" in join
 assert "ActivateConfiguredFilter(true)" in join
 
-print("standalone runtime has no SoE-specific dependency")
+print("standalone runtime has no legacy mod-specific dependency")

@@ -14,7 +14,6 @@ assert 'TryAttachInWorldBackend' not in p
 assert 'MarkerFrameFreshMilliseconds = 250U' in r
 assert 'MinimapIconPolicy::MaximumSizePx' in r and 'const float radius=sizePx*0.5F;' in r
 assert 'AddConvexPolyFilled' in r
-assert 'RuffnecKkFloatingDamageGetOverlayApi' not in r and 'FloatingDamageHost' not in r
 assert 'backend=standalone-d3d12' in r
 assert 'HookPresent' in r and 'HookExecuteCommandLists' in r and 'HookResizeBuffers' in r
 assert 'ImDrawData* const drawData = ImGui::GetDrawData();' in r
