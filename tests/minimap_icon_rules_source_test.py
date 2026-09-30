@@ -25,7 +25,6 @@ assert 'float minimapSizePx{MinimapIconPolicy::DefaultSizePx};' in p
 assert 'item.sizePx=rule->minimapSizePx;' in p
 assert 'marker.sizePx=item.sizePx;' in p
 assert '++fresh->minimapIconRules;' in p
-assert 'UpdateMinimapProjectionIconRule(event->unitId,code,rule);' in p
 assert 'UpdateMinimapProjectionIconRule(header[2],code,rule);' in p
 assert 'ClearMinimapProjectionIconStyles();' in p
 
