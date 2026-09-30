@@ -3211,7 +3211,6 @@ std::atomic<std::uint64_t> SoundCacheContention{};
 std::atomic<std::uint64_t> SoundCacheFull{};
 std::atomic<std::uint64_t> SoundAlreadySeen{};
 std::atomic<std::uint64_t> SoundObservedAlt{};
-std::atomic<std::uint64_t> SoundObservedHidden{};
 std::atomic<std::uint64_t> SoundRegistryEpoch{1};
 constexpr ULONGLONG SoundBaselineMs=1500;
 SoundIdentity::Registry SoundSeenRegistry{};
@@ -3381,7 +3380,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
 struct SoundRequest {
     std::array<char,64> name{};
     std::uint32_t unitId{},code{};
-    bool automatic{},hiddenHover{};
+    bool automatic{};
     std::uint64_t registryEpoch{}, itemTicket{};
 };
 void __cdecl PlayNamedSoundOnGameThread(
@@ -3422,7 +3421,7 @@ void __cdecl PlayNamedSoundOnGameThread(
     char message[320]{};
     std::snprintf(message,sizeof(message),
         "LOOT_SOUND_PLAY version=" UNHOARDER_VERSION_STRING " trigger=%s code='%s' unitId=%u name='%s' engineReturned=%u gameThread=%lu note=return-not-audibility-proof",
-        request->automatic?(request->hiddenHover?"first-hidden-hover":"first-alt-ground-label"):"manual-test",codeText,request->unitId,
+        request->automatic?"first-ground-label":"manual-test",codeText,request->unitId,
         request->name.data(),result?1U:0U,static_cast<unsigned long>(GetCurrentThreadId()));
     if(logger) {
         logger->LogInfo(message);
@@ -3431,7 +3430,6 @@ void __cdecl PlayNamedSoundOnGameThread(
 
 bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
                      std::uint32_t code,bool automatic,
-                     bool hiddenHover=false,
                      std::uint64_t observedEpoch=0,
                      std::uint64_t itemTicket=0) noexcept {
     if(name.empty() || name.size()>63 || !SoundThreads ||
@@ -3448,7 +3446,6 @@ bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
     std::memcpy(request->name.data(),name.data(),name.size());
     request->name[name.size()]='\0';
     request->unitId=unitId;request->code=code;request->automatic=automatic;
-    request->hiddenHover=hiddenHover;
     request->registryEpoch=automatic?observedEpoch:
         SoundRegistryEpoch.load(std::memory_order_acquire);
     request->itemTicket=itemTicket;
@@ -3470,8 +3467,8 @@ bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
 // this keeps non-sound items out of the fixed-capacity sound registry. There
 // is no visibility timeout, cooldown, or label-based replay heuristic.
 void ObserveGroundSoundIdentity(std::uint32_t unitId,
-    std::uint32_t rawCode, bool hiddenHover,
-    const void* nativeUnit,std::uint32_t knownClassId) noexcept {
+    std::uint32_t rawCode,const void* nativeUnit,
+    std::uint32_t knownClassId) noexcept {
     if (!SoundArmed.load(std::memory_order_acquire) || !unitId ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
         return;
@@ -3488,8 +3485,7 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     const auto* rule=ResolveGroundRule(rules.get(),item,resolvedRule) ?
         &resolvedRule : nullptr;
     if (!rule || !rule->hasDropSound) return;
-    if (hiddenHover) SoundObservedHidden.fetch_add(1,std::memory_order_relaxed);
-    else SoundObservedAlt.fetch_add(1,std::memory_order_relaxed);
+    SoundObservedAlt.fetch_add(1,std::memory_order_relaxed);
     if (!SoundSeenMutex.try_lock()) {
         SoundCacheContention.fetch_add(1,std::memory_order_relaxed);
         return;
@@ -3512,7 +3508,7 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     if (observation!=SoundIdentity::Registry::Observation::New || baseline) return;
     SoundQualifiedNew.fetch_add(1,std::memory_order_relaxed);
     (void)QueueNamedSound(rule->dropSound.data(),unitId,code,true,
-        hiddenHover,observedEpoch,itemTicket);
+        observedEpoch,itemTicket);
 }
 
 void ExamineGroundSoundCandidate(void* unit,void* record,bool sourceCall,
@@ -3527,7 +3523,7 @@ void ExamineGroundSoundCandidate(void* unit,void* record,bool sourceCall,
        !SoundMemoryRead(reinterpret_cast<std::uintptr_t>(record)+0x10,
                         &recordId,sizeof(recordId)) ||
        recordId!=header[2]) return;
-    ObserveGroundSoundIdentity(header[2],OriginalGetItemCode(unit),false,unit,header[1]);
+    ObserveGroundSoundIdentity(header[2],OriginalGetItemCode(unit),unit,header[1]);
 }
 
 // Re-arm sounds ONLY after an explicit successful inventory/cursor
@@ -3796,7 +3792,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         [](const FilterNameRule& rule) noexcept { return rule.hasName; }));
     char message[390]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_FILTER_AUTO_ACTIVE version=" UNHOARDER_VERSION_STRING " trigger=%s generation=%llu rules=%zu nameRules=%zu hiddenRules=%zu backgrounds=%u textColors=%u sound=%u soeInterop=independent hiddenHoverStyle=optional-soe-v2",
+        "LOOT_FILTER_AUTO_ACTIVE version=" UNHOARDER_VERSION_STRING " trigger=%s generation=%llu rules=%zu nameRules=%zu hiddenRules=%zu backgrounds=%u textColors=%u sound=%u runtime=standalone",
         automatic?"valid-json-startup":"valid-json-reload",
         static_cast<unsigned long long>(rules->generation),rules->rules.size(),nameRules,
         rules->hiddenRules,BackgroundTintArmed.load(std::memory_order_acquire)?1U:0U,
@@ -4240,7 +4236,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     SoundQualifiedNew.store(0);SoundQueued.store(0);
     SoundQueueRejected.store(0);SoundPlayed.store(0);SoundUnknown.store(0);
     SoundCancelled.store(0);SoundCacheContention.store(0);SoundCacheFull.store(0);
-    SoundAlreadySeen.store(0);SoundObservedAlt.store(0);SoundObservedHidden.store(0);
+    SoundAlreadySeen.store(0);SoundObservedAlt.store(0);
     SoundPickupPollPending.store(false);
     SoundPickupPolls.store(0);SoundPickupPollSuccess.store(0);
     SoundPickupResets.store(0);SoundPickupBusy.store(0);
