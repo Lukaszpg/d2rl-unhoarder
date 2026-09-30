@@ -10,4 +10,4 @@ assert 'next(nextContext,rect,textArg,forwardedColor);' in body
 assert 'HiddenGroundLastPainterSkipId' not in body
 assert 'HiddenGroundLastPainterSkipCode' not in body
 assert '.version = UNHOARDER_VERSION_STRING' in s
-print('1.0.0 hidden painter production scope regression: ok')
+print('hidden painter production scope regression: ok')
