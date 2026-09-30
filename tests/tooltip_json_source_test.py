@@ -20,7 +20,7 @@ assert 'tooltip{backgroundColor,textColor}+RGBA(r,g,b,a)' in p
 assert 'block->contains("backgroundColor") && !(*block)["backgroundColor"].is_string()' in p
 assert 'block->contains("textColor") && !(*block)["textColor"].is_string()' in p
 
-examples=list(root.glob('loot-filter.v3*.example.json'))
+examples=list(root.glob('unhoarder.v3*.example.json'))
 assert examples
 found_tooltip=False
 for path in examples:
@@ -36,7 +36,7 @@ for path in examples:
             assert isinstance(tooltip, dict) and tooltip
             assert set(tooltip) <= {'backgroundColor','textColor'}
 assert found_tooltip
-v3=json.loads((root/'loot-filter.v3.example.json').read_text())
+v3=json.loads((root/'unhoarder.v3.example.json').read_text())
 assert v3['version']==3
 for outer in v3['rules']:
     assert len(outer)==1 and next(iter(outer)) in {'show','hide'}
