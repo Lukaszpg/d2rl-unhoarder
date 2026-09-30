@@ -5,7 +5,7 @@
 #include <vector>
 using namespace UnHoarder;
 using namespace UnHoarder::RuleEngine;
-struct Rule {bool schema2{true}; std::uint32_t code{}; Conditions conditions{}; bool show{true};};
+struct Rule {bool usesConditions{true}; std::uint32_t code{}; Conditions conditions{}; bool show{true};};
 int main() {
     static_assert(GroundIdentified::NativeIdentifiedMask==0x00000010U);
     static_assert(!GroundIdentified::FromNativeFlags(0x10800000U));
