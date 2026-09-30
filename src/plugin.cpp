@@ -191,7 +191,7 @@ struct GroundRuleDecision {
     std::array<float,4> minimapFillColor{};
     float minimapSizePx{MinimapIconPolicy::DefaultSizePx};
 };
-std::shared_ptr<const FilterRuleTable> PublishedFilterRules{};
+std::atomic<std::shared_ptr<const FilterRuleTable>> PublishedFilterRules{};
 std::filesystem::path FilterConfigPath;
 std::atomic<std::uint64_t> FilterGeneration{};
 std::atomic_bool FilterLiveReloadAvailable{};
@@ -233,8 +233,8 @@ struct TooltipGlyphSubscriber final {
     std::shared_ptr<TooltipCompatLifetime::State> lifetime{};
 };
 
-std::shared_ptr<const std::vector<TooltipPaintSubscriber>> TooltipPaintSubscribers{};
-std::shared_ptr<const std::vector<TooltipGlyphSubscriber>> TooltipGlyphSubscribers{};
+std::atomic<std::shared_ptr<const std::vector<TooltipPaintSubscriber>>> TooltipPaintSubscribers{};
+std::atomic<std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>> TooltipGlyphSubscribers{};
 std::mutex TooltipCompatMutex;
 std::uint64_t TooltipCompatNextHandle{1};
 
@@ -1142,8 +1142,7 @@ void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
         std::string_view(MinimapOverlayRenderer::ActiveBackendName())=="none")
         (void)InitializeMinimapMarkerRenderer();
     QualifyGroundQuantityReader();
-    if (!std::atomic_load_explicit(&PublishedFilterRules,
-            std::memory_order_acquire) && !FilterConfigPath.empty() &&
+    if (!PublishedFilterRules.load(std::memory_order_acquire) && !FilterConfigPath.empty() &&
         ReloadFilterRules())
         (void)ActivateConfiguredFilter(true);
     RebaselineSoundAtGameJoin();
@@ -1959,8 +1958,7 @@ bool ReloadFilterRules() {
         }
         fresh->generation = FilterGeneration.fetch_add(1,std::memory_order_acq_rel)+1;
         const std::shared_ptr<const FilterRuleTable> published=fresh;
-        std::atomic_store_explicit(&PublishedFilterRules,published,
-            std::memory_order_release);
+        PublishedFilterRules.store(published,std::memory_order_release);
         ClearMinimapProjectionIconStyles();
         char message[560]{};
         std::snprintf(message,sizeof(message),
@@ -2029,8 +2027,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
         if (!PrintableItemCode(code)) {
             return result;
         }
-        snapshot = std::atomic_load_explicit(&PublishedFilterRules,
-            std::memory_order_acquire);
+        snapshot = PublishedFilterRules.load(std::memory_order_acquire);
         if (snapshot) {
             const auto ruleItem=GroundRuleItem(code,unit,snapshot.get(),header[2],
                 GroundPropertyLive::Purpose::VerifiedLabel);
@@ -2164,8 +2161,7 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
         return;
     }
     const auto code=CanonicalItemCode(OriginalGetItemCode(unit));
-    const auto table=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto table=PublishedFilterRules.load(std::memory_order_acquire);
     if (!table) return;
     const auto scalars=GroundRuleItem(code,unit,table.get(),recordId,
         GroundPropertyLive::Purpose::VerifiedLabel);
@@ -2311,8 +2307,7 @@ void __cdecl UnHoarderSharedLabelPaintMiddleware(
                 verifiedCode,&verifiedQuantity,&verifiedClassId,&verifiedProperties);
 
         if (paired && colorOk && identified) {
-            const auto snapshot=std::atomic_load_explicit(&PublishedFilterRules,
-                std::memory_order_acquire);
+            const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
             const auto ruleItem=CachedGroundRuleItem(verifiedCode,verifiedClassId,
                 verifiedQuantity,snapshot.get(),&verifiedProperties);
             GroundRuleDecision resolvedRule{};
@@ -2409,8 +2404,7 @@ TooltipCompat::Result __cdecl RegisterCompatSharedLabelPaint(
 
     try {
         std::scoped_lock lock(TooltipCompatMutex);
-        const auto current=std::atomic_load_explicit(
-            &TooltipPaintSubscribers,std::memory_order_acquire);
+        const auto current=TooltipPaintSubscribers.load(std::memory_order_acquire);
         auto next=std::make_shared<std::vector<TooltipPaintSubscriber>>(
             current?*current:std::vector<TooltipPaintSubscriber>{});
         for (const auto& entry:*next)
@@ -2430,10 +2424,7 @@ TooltipCompat::Result __cdecl RegisterCompatSharedLabelPaint(
             return TooltipCompat::Result::InvalidArgument;
         next->push_back(entry);
         *handle=entry.handle;
-        std::atomic_store_explicit(
-            &TooltipPaintSubscribers,
-            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),
-            std::memory_order_release);
+        TooltipPaintSubscribers.store(std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),std::memory_order_release);
         return TooltipCompat::Result::Success;
     } catch (...) {
         return TooltipCompat::Result::LimitExceeded;
@@ -2453,8 +2444,7 @@ TooltipCompat::Result __cdecl UnregisterCompatSharedLabelPaint(
     try {
         {
             std::scoped_lock lock(TooltipCompatMutex);
-            const auto current=std::atomic_load_explicit(
-                &TooltipPaintSubscribers,std::memory_order_acquire);
+            const auto current=TooltipPaintSubscribers.load(std::memory_order_acquire);
             if (!current) return TooltipCompat::Result::NotFound;
             const auto found=std::find_if(current->begin(),current->end(),
                 [handle](const auto& entry){return entry.handle==handle;});
@@ -2469,10 +2459,7 @@ TooltipCompat::Result __cdecl UnregisterCompatSharedLabelPaint(
             lifetime=found->lifetime;
             TooltipCompatLifetime::BeginClose(lifetime);
             next->erase(next->begin()+static_cast<std::ptrdiff_t>(index));
-            std::atomic_store_explicit(
-                &TooltipPaintSubscribers,
-                std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),
-                std::memory_order_release);
+            TooltipPaintSubscribers.store(std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),std::memory_order_release);
         }
         TooltipCompatLifetime::WaitForQuiescence(lifetime);
         return TooltipCompat::Result::Success;
@@ -2496,8 +2483,7 @@ TooltipCompat::Result __cdecl RegisterCompatGlyphRenderer(
 
     try {
         std::scoped_lock lock(TooltipCompatMutex);
-        const auto current=std::atomic_load_explicit(
-            &TooltipGlyphSubscribers,std::memory_order_acquire);
+        const auto current=TooltipGlyphSubscribers.load(std::memory_order_acquire);
         auto next=std::make_shared<std::vector<TooltipGlyphSubscriber>>(
             current?*current:std::vector<TooltipGlyphSubscriber>{});
         for (const auto& entry:*next)
@@ -2517,10 +2503,7 @@ TooltipCompat::Result __cdecl RegisterCompatGlyphRenderer(
             return TooltipCompat::Result::InvalidArgument;
         next->push_back(entry);
         *handle=entry.handle;
-        std::atomic_store_explicit(
-            &TooltipGlyphSubscribers,
-            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),
-            std::memory_order_release);
+        TooltipGlyphSubscribers.store(std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),std::memory_order_release);
         return TooltipCompat::Result::Success;
     } catch (...) {
         return TooltipCompat::Result::LimitExceeded;
@@ -2540,8 +2523,7 @@ TooltipCompat::Result __cdecl UnregisterCompatGlyphRenderer(
     try {
         {
             std::scoped_lock lock(TooltipCompatMutex);
-            const auto current=std::atomic_load_explicit(
-                &TooltipGlyphSubscribers,std::memory_order_acquire);
+            const auto current=TooltipGlyphSubscribers.load(std::memory_order_acquire);
             if (!current) return TooltipCompat::Result::NotFound;
             const auto found=std::find_if(current->begin(),current->end(),
                 [handle](const auto& entry){return entry.handle==handle;});
@@ -2556,10 +2538,7 @@ TooltipCompat::Result __cdecl UnregisterCompatGlyphRenderer(
             lifetime=found->lifetime;
             TooltipCompatLifetime::BeginClose(lifetime);
             next->erase(next->begin()+static_cast<std::ptrdiff_t>(index));
-            std::atomic_store_explicit(
-                &TooltipGlyphSubscribers,
-                std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),
-                std::memory_order_release);
+            TooltipGlyphSubscribers.store(std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),std::memory_order_release);
         }
         TooltipCompatLifetime::WaitForQuiescence(lifetime);
         return TooltipCompat::Result::Success;
@@ -2767,10 +2746,8 @@ void QuiesceOwnedTooltipCompatSubscribers() noexcept {
     std::vector<std::shared_ptr<TooltipCompatLifetime::State>> lifetimes;
     {
         std::scoped_lock lock(TooltipCompatMutex);
-        const auto paints=std::atomic_load_explicit(
-            &TooltipPaintSubscribers,std::memory_order_acquire);
-        const auto glyphs=std::atomic_load_explicit(
-            &TooltipGlyphSubscribers,std::memory_order_acquire);
+        const auto paints=TooltipPaintSubscribers.load(std::memory_order_acquire);
+        const auto glyphs=TooltipGlyphSubscribers.load(std::memory_order_acquire);
         if (paints) {
             lifetimes.reserve(lifetimes.size()+paints->size());
             for (const auto& entry:*paints) {
@@ -2787,14 +2764,8 @@ void QuiesceOwnedTooltipCompatSubscribers() noexcept {
                 lifetimes.push_back(entry.lifetime);
             }
         }
-        std::atomic_store_explicit(
-            &TooltipPaintSubscribers,
-            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
-            std::memory_order_release);
-        std::atomic_store_explicit(
-            &TooltipGlyphSubscribers,
-            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
-            std::memory_order_release);
+        TooltipPaintSubscribers.store(std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},std::memory_order_release);
+        TooltipGlyphSubscribers.store(std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},std::memory_order_release);
     }
     for (const auto& lifetime:lifetimes)
         TooltipCompatLifetime::WaitForQuiescence(lifetime);
@@ -2868,8 +2839,7 @@ void InvokeCompatPaintSubscribers(
 
 void RunOwnedSharedLabelPaintChain(
     std::uintptr_t caller,void* rect,void* textArg,void* colorArg) noexcept {
-    const auto subscribers=std::atomic_load_explicit(
-        &TooltipPaintSubscribers,std::memory_order_acquire);
+    const auto subscribers=TooltipPaintSubscribers.load(std::memory_order_acquire);
     TooltipPaintNextFrame next{
         .subscribers=subscribers,
         .nextIndex=0,
@@ -2933,8 +2903,7 @@ std::uint64_t InvokeCompatGlyphSubscribers(
 std::uint64_t RunOwnedGlyphRendererChain(
     std::uintptr_t caller,void* glyphContext,
     float x,float y,const float* rgba) noexcept {
-    const auto subscribers=std::atomic_load_explicit(
-        &TooltipGlyphSubscribers,std::memory_order_acquire);
+    const auto subscribers=TooltipGlyphSubscribers.load(std::memory_order_acquire);
     TooltipGlyphNextFrame next{
         .subscribers=subscribers,
         .nextIndex=0,
@@ -3031,8 +3000,7 @@ void ArmCorrectedGlyphB() noexcept {
 void EnsureSharedLabelPaintHook() noexcept;
 
 void SyncFilterTextColorState() noexcept {
-    const auto snapshot=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !snapshot || !snapshot->textColorRules) {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
@@ -3128,8 +3096,7 @@ bool VerifyBackgroundColorRoute() noexcept {
 // fingerprint/hook fails, names can remain armed, but colors stay disabled.
 // Called at startup or on explicit reload, never in a native hook.
 void SyncFilterBackgroundState() noexcept {
-    const auto snapshot=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !snapshot || !snapshot->backgroundRules) {
         BackgroundTintArmed.store(false,std::memory_order_release);
@@ -3158,8 +3125,7 @@ void SyncFilterBackgroundState() noexcept {
 // hide anything if the native painter signature changes on a new build.
 void SyncFilterVisibilityState() noexcept {
     HideGroundArmed.store(false,std::memory_order_release);
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !rules || !rules->hiddenRules) return;
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
@@ -3404,8 +3370,7 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     if (!SoundArmed.load(std::memory_order_acquire) || !unitId ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
         return;
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!rules || !rules->soundRules) return;
     const auto code=CanonicalItemCode(rawCode);
     auto item=GroundRuleItem(code,nativeUnit,rules.get(),unitId,
@@ -3604,7 +3569,7 @@ void StartSoundInventoryObserver() noexcept {
 
 void ArmNewGroundSound() noexcept {
     SoundArmed.store(false,std::memory_order_release);
-    auto rules=std::atomic_load_explicit(&PublishedFilterRules,std::memory_order_acquire);
+    auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if(!Context || !SoundThreads || !SoundThreads->runOnGameThread ||
        !FormatterHookInstalled.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
@@ -3634,8 +3599,7 @@ void ArmLabelFormatter() noexcept;
 // publishes one complete immutable snapshot before any native label mutation is
 // armed. Never call hook installers on the native rendering path.
 bool ActivateConfiguredFilter(bool automatic) noexcept {
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!rules) {
         LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=no-valid-json");
         return false;
@@ -3710,8 +3674,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
 // unchanged. The filter must have been activated at initial startup so we
 // never install a first set of native rendering hooks on the polling worker.
 bool TryLiveFilterReload(const char* trigger) noexcept {
-    const auto previous=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto previous=PublishedFilterRules.load(std::memory_order_acquire);
     if (!Context || !previous ||
         !FilterLiveReloadAvailable.load(std::memory_order_acquire) ||
         !HookInstalled.load(std::memory_order_acquire) ||
@@ -3734,8 +3697,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         LogWarn(message);
         return false;
     }
-    const auto current=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto current=PublishedFilterRules.load(std::memory_order_acquire);
     // Invalidate copied ground-label identity before re-arming the new rules.
     {
         std::lock_guard lock(GroundIdentityMutex);
@@ -3745,8 +3707,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
     if (!activated && (!current || !current->rules.empty())) {
         // A backend became unavailable between validation and activation.
         // Restore the last complete snapshot and its original arming state.
-        std::atomic_store_explicit(&PublishedFilterRules,previous,
-            std::memory_order_release);
+        PublishedFilterRules.store(previous,std::memory_order_release);
         (void)ActivateConfiguredFilter(false);
         char message[270]{};
         std::snprintf(message,sizeof(message),
@@ -3873,8 +3834,7 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     if(!player) return PickupGuard::Decision::NullPlayer;
     if(NativePickupGuardInside) return PickupGuard::Decision::Reentrant;
 
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if(!rules || !rules->hiddenRules)
         return PickupGuard::Decision::NoHiddenRules;
 
@@ -4028,8 +3988,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
                 (void)TryLiveFilterReload("stable-file-change");
             }
 
-            const auto active=std::atomic_load_explicit(&PublishedFilterRules,
-                std::memory_order_acquire);
+            const auto active=PublishedFilterRules.load(std::memory_order_acquire);
             const auto excel=active ? (!active->baseNamesExcelPath.empty() ?
                 active->baseNamesExcelPath : active->itemTypesExcelPath) :
                 std::filesystem::path{};
@@ -4160,14 +4119,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     TooltipCompatCommunication=nullptr;
     ForeignPaintCompatHandle=TooltipCompat::InvalidRegistrationHandle;
     ForeignGlyphCompatHandle=TooltipCompat::InvalidRegistrationHandle;
-    std::atomic_store_explicit(
-        &TooltipPaintSubscribers,
-        std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
-        std::memory_order_release);
-    std::atomic_store_explicit(
-        &TooltipGlyphSubscribers,
-        std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
-        std::memory_order_release);
+    TooltipPaintSubscribers.store(std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},std::memory_order_release);
+    TooltipGlyphSubscribers.store(std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},std::memory_order_release);
     BackgroundPaintHookInstalled.store(false,std::memory_order_relaxed);
     OriginalSharedLabelPaint=nullptr;
     GroundIdentities.fill({});
@@ -4176,8 +4129,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     OriginalInnerNameWriter=nullptr;
     InnerNameHookInstalled.store(false,std::memory_order_relaxed);
     FormatterHookInstalled.store(false, std::memory_order_relaxed);
-    std::atomic_store_explicit(&PublishedFilterRules,
-        std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
+    PublishedFilterRules.store(std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterGeneration.store(0);
     FilterLiveReloadAvailable.store(false,std::memory_order_release);
     if (ResolveFilterConfigPath()) {
@@ -4218,8 +4170,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     (void)InstallStandaloneAutomapProjection();
     // Reuse the qualified native filter pipeline automatically once the
     // complete JSON ruleset is published and the item-code reader is ready.
-    if (std::atomic_load_explicit(&PublishedFilterRules,
-            std::memory_order_acquire))
+    if (PublishedFilterRules.load(std::memory_order_acquire))
         (void)ActivateConfiguredFilter(true);
     else LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
     RegisterInWorldLifecycle();
@@ -4265,8 +4216,7 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_release);
     BackgroundTintArmed.store(false,std::memory_order_release);
 
-    std::atomic_store_explicit(&PublishedFilterRules,
-        std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
+    PublishedFilterRules.store(std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterConfigPath.clear();
     HookInstalled.store(false, std::memory_order_release);
     SharedLabelPaintCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
