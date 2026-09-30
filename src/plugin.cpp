@@ -3928,24 +3928,6 @@ std::uint64_t RunOwnedGlyphRendererChain(
         nullptr,caller,glyphContext,x,y,rgba,&ContinueCompatGlyph,&next);
 }
 
-void ResetTooltipCompatRuntime() noexcept {
-    DetachForeignTooltipCompatRoutes();
-    SharedLabelPaintCompatRoute.store(
-        TooltipCompatRoute::None,std::memory_order_release);
-    GlyphRendererCompatRoute.store(
-        TooltipCompatRoute::None,std::memory_order_release);
-    std::scoped_lock lock(TooltipCompatMutex);
-    TooltipCompatNextHandle=1;
-    std::atomic_store_explicit(
-        &TooltipPaintSubscribers,
-        std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
-        std::memory_order_release);
-    std::atomic_store_explicit(
-        &TooltipGlyphSubscribers,
-        std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
-        std::memory_order_release);
-}
-
 // Automatic activation for every game after SoE V1/V3 interop is attached.
 // Fail closed on build/fingerprint/API mismatch: no global UI fallback.
 void EnableAutomaticNativeHover() noexcept {
@@ -3981,8 +3963,7 @@ void EnableAutomaticNativeHover() noexcept {
     // row/caller chain has qualified ownership. It does not require a
     // backgroundColor action on the rule.
     const bool fontReady=textRule &&
-        CorrectedGlyphBInstalled.load(std::memory_order_acquire) &&
-        OriginalCorrectedGlyphB;
+        CorrectedGlyphBInstalled.load(std::memory_order_acquire);
     // Font may be omitted (no text rule). Report an unavailable
     // glyph hook when text rules were requested; background stays active.
     if (textRule && !fontReady)
