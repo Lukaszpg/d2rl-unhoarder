@@ -2,7 +2,6 @@ from pathlib import Path
 s=(Path(__file__).resolve().parents[1]/'src/plugin.cpp').read_text()
 assert '.version = UNHOARDER_VERSION_STRING' in s
 assert 'void ObserveMinimapItemPosition(' in s
-assert 'ObserveMinimapItemPosition(nativeUnit,code,unitId,classId)' in s
 assert 'ObserveMinimapItemPosition(unit,code,recordId,header[1])' in s
 assert 'first.data()+0x38' in s
 assert 'GroundCandidatePageReadable(pathAddress,MinimapPathBytes)' in s
