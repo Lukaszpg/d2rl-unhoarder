@@ -54,8 +54,6 @@ std::mutex RenderMutex;
 std::mutex HookMutex;
 std::mutex MarkerMutex;
 MarkerFrame PublishedFrame{};
-std::atomic<std::uint64_t> PublishedFrameCount{};
-std::atomic<std::uint64_t> DrawnMarkers{};
 
 bool HooksInstalled{};
 bool MinHookInitializedByRenderer{};
@@ -91,13 +89,6 @@ std::atomic<ID3D12CommandQueue*> CapturedQueue{};
 std::atomic<std::uint32_t> ActiveHookCalls{};
 std::atomic<LogCallback> Logger{};
 std::atomic<const volatile std::uint8_t*> AutomapVisibilityTable{};
-std::atomic<std::uint64_t> AutomapVisibilitySuppressions{};
-std::atomic<std::uint64_t> PresentCalls{};
-std::atomic<std::uint64_t> DirectQueueCaptures{};
-std::atomic<std::uint64_t> RendererInitAttempts{};
-std::atomic<std::uint64_t> RendererInitFailures{};
-std::atomic<std::uint64_t> RenderedFrames{};
-std::atomic<std::uint32_t> LastInitFailureStage{};
 std::atomic<std::uint32_t> DiagnosticMessages{};
 
 enum class Backend : std::uint8_t {
@@ -163,7 +154,6 @@ void ClearPublishedFrameBestEffort() noexcept {
     // safety net for stale projection data. Clearing here also prevents a fast
     // close/reopen from flashing the previous automap position.
     if (!IsNativeAutomapVisible()) {
-        AutomapVisibilitySuppressions.fetch_add(1U, std::memory_order_relaxed);
         ClearPublishedFrameBestEffort();
         return false;
     }
@@ -269,7 +259,6 @@ void DrawMarkerFrameImGui(ImDrawList* drawList) noexcept {
         DrawMarker(drawList, frame.markers[index]);
     }
     drawList->PopClipRect();
-    DrawnMarkers.fetch_add(count, std::memory_order_relaxed);
 }
 
 [[nodiscard]] bool WaitForFenceValueLocked(std::uint64_t value) noexcept {
@@ -333,8 +322,6 @@ void ResetRenderer() noexcept {
 [[nodiscard]] bool FailRendererInitialization(
         std::uint32_t stage,
         const char* reason) noexcept {
-    RendererInitFailures.fetch_add(1U, std::memory_order_relaxed);
-    LastInitFailureStage.store(stage, std::memory_order_relaxed);
     if ((DiagnosticMessages.fetch_or(
             RendererInitFailedMessage,
             std::memory_order_acq_rel) & RendererInitFailedMessage) == 0U) {
@@ -349,7 +336,6 @@ void ResetRenderer() noexcept {
 }
 
 [[nodiscard]] bool InitializeRenderer(IDXGISwapChain3* swapChain) noexcept {
-    RendererInitAttempts.fetch_add(1U, std::memory_order_relaxed);
     if (swapChain == nullptr) {
         return FailRendererInitialization(1U, "null-swap-chain");
     }
@@ -500,12 +486,8 @@ void RenderAutonomousFrameLocked(IDXGISwapChain3* swapChain) noexcept {
     } else {
         frame.fenceValue = fenceValue;
     }
-    const auto rendered = RenderedFrames.fetch_add(
-        1U, std::memory_order_relaxed) + 1U;
-    if (rendered == 1U) {
-        LogOnce(FirstFrameRenderedMessage,
-            "LOOT_MINIMAP_RENDERER_FIRST_DRAW version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 markerRules=json-shape-border-fill-size");
-    }
+    LogOnce(FirstFrameRenderedMessage,
+        "LOOT_MINIMAP_RENDERER_FIRST_DRAW version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 markerRules=json-shape-border-fill-size");
 }
 
 HRESULT STDMETHODCALLTYPE HookPresent(
@@ -513,7 +495,6 @@ HRESULT STDMETHODCALLTYPE HookPresent(
         UINT syncInterval,
         UINT flags) noexcept {
     [[maybe_unused]] const HookCallGuard guard;
-    PresentCalls.fetch_add(1U, std::memory_order_relaxed);
     LogOnce(PresentInterceptedMessage,
         "LOOT_MINIMAP_RENDERER_PRESENT_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12");
     const auto original = OriginalPresent;
@@ -538,7 +519,6 @@ void STDMETHODCALLTYPE HookExecuteCommandLists(
         if (!CommandQueue) {
             CommandQueue = queue;
             CapturedQueue.store(queue, std::memory_order_release);
-            DirectQueueCaptures.fetch_add(1U, std::memory_order_relaxed);
             LogOnce(DirectQueueCapturedMessage,
                 "LOOT_MINIMAP_RENDERER_QUEUE_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 source=first-direct-command-queue minimapIconRules=1");
         }
@@ -703,7 +683,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
     }
     HooksInstalled = true;
     ActiveBackend.store(Backend::StandaloneD3D12, std::memory_order_release);
-    Log("LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0 poc=0");
+    Log("LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0");
     return true;
 }
 
@@ -769,31 +749,12 @@ void Publish(const MarkerFrame& frame) noexcept {
     if (!MarkerMutex.try_lock()) return;
     PublishedFrame = frame;
     MarkerMutex.unlock();
-    PublishedFrameCount.fetch_add(1U, std::memory_order_relaxed);
 }
 
 void Clear() noexcept {
     if (!MarkerMutex.try_lock()) return;
     PublishedFrame = {};
     MarkerMutex.unlock();
-}
-
-Diagnostics GetDiagnostics() noexcept {
-    return {
-        .presentCalls = PresentCalls.load(std::memory_order_relaxed),
-        .directQueueCaptures = DirectQueueCaptures.load(std::memory_order_relaxed),
-        .rendererInitAttempts = RendererInitAttempts.load(std::memory_order_relaxed),
-        .rendererInitFailures = RendererInitFailures.load(std::memory_order_relaxed),
-        .renderedFrames = RenderedFrames.load(std::memory_order_relaxed),
-        .publishedFrames = PublishedFrameCount.load(std::memory_order_relaxed),
-        .drawnMarkers = DrawnMarkers.load(std::memory_order_relaxed),
-        .automapSuppressedFrames = AutomapVisibilitySuppressions.load(
-            std::memory_order_relaxed),
-        .lastInitFailureStage = LastInitFailureStage.load(std::memory_order_relaxed),
-        .hooksInstalled = HooksInstalled,
-        .commandQueueReady = static_cast<bool>(CommandQueue),
-        .rendererInitialized = RendererInitialized,
-    };
 }
 
 const char* ActiveBackendName() noexcept {

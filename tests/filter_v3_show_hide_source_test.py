@@ -25,10 +25,10 @@ assert 'if(!Continues(rule)) return true;' in h
 assert 'if(state==MatchState::Unknown) {' in h and 'onUnknown();' in h
 assert 'A matching Continue block deliberately falls through' in h
 
-example=json.loads((root/'loot-filter.v3.example.json').read_text())
+example=json.loads((root/'unhoarder.v3.example.json').read_text())
 assert example['version']==3
 assert all(len(rule)==1 and next(iter(rule)) in {'show','hide'} for rule in example['rules'])
-cont=json.loads((root/'loot-filter.v3.continue.example.json').read_text())
+cont=json.loads((root/'unhoarder.v3.continue.example.json').read_text())
 assert cont['rules'][0]['show']['continue'] is True
 assert list(cont['rules'][-1])==['hide'] and cont['rules'][-1]['hide']=={}
 print('1.0.0 PoE-style show/hide wrappers + Continue composition source contract ok')

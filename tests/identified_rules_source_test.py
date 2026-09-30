@@ -18,8 +18,6 @@ assert 'GroundPropertyReader::ReadLe32(check.data()+0x18)' in s
 assert 'if((includeEthereal || includeIdentified) &&' in s
 assert 'if(includeIdentified && scalars.qualityKnown && scalars.itemLevelKnown)' in s
 assert 'for(unsigned propertyGroup=0;propertyGroup<4 && table;++propertyGroup)' in s
-for suffix in ('RuleReads','RuleUnknown','Mode5Reads'):
- assert 'GroundIdentified'+suffix in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s
 assert 'scalarOut->identifiedKnown=candidate.identifiedKnown;' in s
