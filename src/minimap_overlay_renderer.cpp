@@ -118,16 +118,16 @@ struct HookCallGuard final {
     auto operator=(const HookCallGuard&) -> HookCallGuard& = delete;
 };
 
-void Log(const char* message) noexcept {
+void Log(LogLevel level, const char* message) noexcept {
     if (const auto callback = Logger.load(std::memory_order_acquire)) {
-        callback(message);
+        callback(level, message);
     }
 }
 
-void LogOnce(std::uint32_t bit, const char* message) noexcept {
+void LogOnce(std::uint32_t bit, LogLevel level, const char* message) noexcept {
     const auto previous = DiagnosticMessages.fetch_or(
         bit, std::memory_order_acq_rel);
-    if ((previous & bit) == 0U) Log(message);
+    if ((previous & bit) == 0U) Log(level, message);
 }
 
 [[nodiscard]] bool IsNativeAutomapVisible() noexcept {
@@ -277,7 +277,7 @@ void DrawMarkerFrameImGui(ImDrawList* drawList) noexcept {
 
 void ResetRendererState() noexcept {
     if (!WaitForGpuIdleLocked()) {
-        LogOnce(FenceWaitFailedMessage,
+        LogOnce(FenceWaitFailedMessage, LogLevel::Warning,
             "LOOT_MINIMAP_RENDERER_WARN version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 reason=gpu-idle-timeout");
     }
     if (AutonomousImGuiContext != nullptr) {
@@ -329,7 +329,7 @@ void ResetRenderer() noexcept {
         std::snprintf(line, sizeof(line),
             "LOOT_MINIMAP_RENDERER_INIT_FAILED version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 stage=%u reason=%s",
             stage, reason ? reason : "unknown");
-        Log(line);
+        Log(LogLevel::Warning, line);
     }
     ResetRendererState();
     return false;
@@ -427,7 +427,7 @@ void ResetRenderer() noexcept {
         return FailRendererInitialization(14U, "imgui-device-objects");
     }
     RendererInitialized = true;
-    LogOnce(RendererInitializedMessage,
+    LogOnce(RendererInitializedMessage, LogLevel::Info,
         "LOOT_MINIMAP_RENDERER_DEVICE_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 imgui=1 dx12=1 markerRules=json-shape-border-fill-size");
     return true;
 }
@@ -441,7 +441,7 @@ void RenderAutonomousFrameLocked(IDXGISwapChain3* swapChain) noexcept {
     if (frameIndex >= Frames.size()) return;
     auto& frame = Frames[frameIndex];
     if (!WaitForFenceValueLocked(frame.fenceValue)) {
-        LogOnce(FenceWaitFailedMessage,
+        LogOnce(FenceWaitFailedMessage, LogLevel::Warning,
             "LOOT_MINIMAP_RENDERER_WARN version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 reason=allocator-still-in-use");
         return;
     }
@@ -481,12 +481,12 @@ void RenderAutonomousFrameLocked(IDXGISwapChain3* swapChain) noexcept {
     const auto fenceValue = NextFenceValue++;
     if (FAILED(CommandQueue->Signal(Fence.Get(), fenceValue))) {
         frame.fenceValue = (std::numeric_limits<std::uint64_t>::max)();
-        LogOnce(FenceSignalFailedMessage,
+        LogOnce(FenceSignalFailedMessage, LogLevel::Warning,
             "LOOT_MINIMAP_RENDERER_WARN version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 reason=fence-signal");
     } else {
         frame.fenceValue = fenceValue;
     }
-    LogOnce(FirstFrameRenderedMessage,
+    LogOnce(FirstFrameRenderedMessage, LogLevel::Info,
         "LOOT_MINIMAP_RENDERER_FIRST_DRAW version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 markerRules=json-shape-border-fill-size");
 }
 
@@ -495,7 +495,7 @@ HRESULT STDMETHODCALLTYPE HookPresent(
         UINT syncInterval,
         UINT flags) noexcept {
     [[maybe_unused]] const HookCallGuard guard;
-    LogOnce(PresentInterceptedMessage,
+    LogOnce(PresentInterceptedMessage, LogLevel::Info,
         "LOOT_MINIMAP_RENDERER_PRESENT_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12");
     const auto original = OriginalPresent;
     if (original == nullptr) return DXGI_ERROR_INVALID_CALL;
@@ -519,7 +519,7 @@ void STDMETHODCALLTYPE HookExecuteCommandLists(
         if (!CommandQueue) {
             CommandQueue = queue;
             CapturedQueue.store(queue, std::memory_order_release);
-            LogOnce(DirectQueueCapturedMessage,
+            LogOnce(DirectQueueCapturedMessage, LogLevel::Info,
                 "LOOT_MINIMAP_RENDERER_QUEUE_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 source=first-direct-command-queue minimapIconRules=1");
         }
     }
@@ -683,7 +683,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
     }
     HooksInstalled = true;
     ActiveBackend.store(Backend::StandaloneD3D12, std::memory_order_release);
-    Log("LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0");
+    Log(LogLevel::Info, "LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0");
     return true;
 }
 
@@ -734,7 +734,7 @@ bool Initialize() noexcept {
         return true;
     }
     if (InstallStandaloneHooks()) return true;
-    Log("LOOT_MINIMAP_RENDERER_REFUSED version=" UNHOARDER_VERSION_STRING " backend=none reason=standalone-hook-install-failed projectionContinues=1 drawing=0 mapSenseDependency=0 floatingDamageDependency=0");
+    Log(LogLevel::Warning, "LOOT_MINIMAP_RENDERER_REFUSED version=" UNHOARDER_VERSION_STRING " backend=none reason=standalone-hook-install-failed projectionContinues=1 drawing=0 mapSenseDependency=0 floatingDamageDependency=0");
     return false;
 }
 
