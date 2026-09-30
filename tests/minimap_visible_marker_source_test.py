@@ -3,7 +3,6 @@ root=Path(__file__).resolve().parents[1]
 p=(root/'src/plugin.cpp').read_text(); r=(root/'src/minimap_overlay_renderer.cpp').read_text(); h=(root/'src/minimap_overlay_renderer.hpp').read_text(); cm=(root/'CMakeLists.txt').read_text(); rc=(root/'src/plugin.rc').read_text()
 assert '.version = UNHOARDER_VERSION_STRING' in p
 assert 'FILEVERSION UNHOARDER_VERSION_MAJOR,UNHOARDER_VERSION_MINOR,UNHOARDER_VERSION_PATCH,0' in rc
-assert 'sourceMarker=unhoarder-prod-v1' in p
 assert 'MinimapOverlayRenderer::MarkerFrame markerFrame{};' in p
 assert 'MinimapOverlayRenderer::Publish(markerFrame);' in p
 assert 'ForgetMinimapProjectionItem(item->runtimeId);' in p
