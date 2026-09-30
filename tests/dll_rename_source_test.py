@@ -8,5 +8,6 @@ assert 'OriginalFilename", "unhoarder.dll"' in rc
 assert 'InternalName", "unhoarder"' in rc
 assert 'GetModuleHandleW(L"loot-filter.dll")' in s
 assert 'GetModuleHandleW(L"d2rl-loot-filter.dll")' in s
-assert '.id = "loot-filter"' in s  # runtime/interoperability compatibility stays intentional
-print('1.0.0 unhoarder.dll rename and old-production conflict guard contract ok')
+assert '.id = "unhoarder"' in s
+assert '.id = "loot-filter"' not in s
+print('unhoarder DLL/plugin identity and old-production conflict guard contract ok')
