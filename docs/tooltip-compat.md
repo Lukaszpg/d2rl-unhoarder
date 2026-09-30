@@ -102,7 +102,7 @@ terminal continuation.
 ## Consumer shape
 
 When another plugin sees that UnHoarder owns a supported entry, acquire the
-service from provider plugin ID `loot-filter`:
+service from provider plugin ID `unhoarder`:
 
 ```cpp
 D2RL::PluginCommunication::ServiceLease<
@@ -111,7 +111,7 @@ D2RL::PluginCommunication::ServiceLease<
 D2RL::PluginCommunication::Acquire(
     context,
     communication,
-    "loot-filter",
+    "unhoarder",
     UnHoarder::TooltipCompatV1::ServiceName,
     UnHoarder::TooltipCompatV1::ServiceVersion,
     UnHoarder::TooltipCompatV1::ServiceRequiredSize,
@@ -129,7 +129,7 @@ There is no hard DLL import and no `GetProcAddress` dependency.
 No fixed load order is required for the normal collision case:
 
 - If UnHoarder loads first, it owns the vanilla entry and publishes the host
-  service. A later plugin can diagnose `loot-filter` as owner and acquire it.
+  service. A later plugin can diagnose `unhoarder` as owner and acquire it.
 - If the other plugin loads first and owns the entry, it publishes the same
   service. When UnHoarder starts, Diagnostics identifies that plugin and
   UnHoarder registers with its host.
