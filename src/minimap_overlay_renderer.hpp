@@ -51,7 +51,12 @@ struct MarkerFrame final {
     std::uint64_t sequence{};
 };
 
-using LogCallback = void(__cdecl*)(const char* message) noexcept;
+enum class LogLevel : std::uint8_t {
+    Info,
+    Warning,
+};
+
+using LogCallback = void(__cdecl*)(LogLevel level, const char* message) noexcept;
 
 void SetDllModule(HMODULE module) noexcept;
 void SetLogCallback(LogCallback callback) noexcept;
