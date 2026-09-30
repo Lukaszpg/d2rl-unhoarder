@@ -30,4 +30,4 @@ assert 'scalars.etherealKnown,scalars.ethereal,' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'GroundPropertyLive::Purpose::StrictGround' in s
-print('1.0.0 ethereal JSON/guarded native mask/mode-5/fail-open/pickup: ok')
+print('ethereal JSON/guarded native mask/mode-5/fail-open/pickup: ok')
