@@ -9,5 +9,13 @@ constexpr bool ConcealBulkVisuals(bool enabled, bool groundCaller,
     return enabled && groundCaller && pairedRecord && readableColor &&
            verifiedIdentity && ruleHidden && exactName;
 }
+// The hover renderer is never suppressed from a rule or row address alone.
+// Every argument is evidence gathered from the same live renderer invocation.
+constexpr bool SuppressHiddenHover(bool enabled, bool currentItem,
+    bool exactAppend, bool sameRow, bool sameText, bool sameGeneration,
+    bool ruleHidden) noexcept {
+    return enabled && currentItem && exactAppend && sameRow && sameText &&
+        sameGeneration && ruleHidden;
+}
 } // namespace UnHoarder::GroundVisibility
 
