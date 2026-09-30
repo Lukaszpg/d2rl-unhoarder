@@ -25,9 +25,4 @@ constexpr Scalars Validate(std::uint32_t rawQuality,
     const bool l=rawLevel>=1U && rawLevel<=99U;
     return {q,l,q?rawQuality:0U,l?rawLevel:0U};
 }
-constexpr bool Ready(bool usesQuality,bool usesItemLevel,
-    bool qualityKnown,bool itemLevelKnown) noexcept {
-    return (!usesQuality || qualityKnown) &&
-           (!usesItemLevel || itemLevelKnown);
-}
 } // namespace UnHoarder::GroundPropertyLive
