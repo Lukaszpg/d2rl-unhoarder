@@ -17,6 +17,11 @@ for term in (
     "ForeignGlyphCompatLease",
     "UnHoarderSharedLabelPaintMiddleware",
     "UnHoarderGlyphRendererMiddleware",
+    "DiagnosticsServiceEnumerateModificationRangesFieldEnd",
+    "CallThroughState::Yes",
+    "TooltipCompatLifetime::InvocationGuard",
+    "TooltipCompatLifetime::WaitForQuiescence",
+    "TooltipCompatRegistrationActiveOnThisThread",
 ):
     assert term in src, term
 
@@ -26,4 +31,8 @@ assert "Calling it zero times suppresses" in docs
 assert "Do not use" in docs and "private MinHook detour" in docs
 assert "GetProcAddress" not in hdr
 assert "decode a foreign detour" in docs
+assert "quiescence barrier" in hdr
+assert "quiescence barrier" in docs
+assert "callThrough == Yes" in docs
+assert "Result::Unsupported" in docs
 print("tooltip compatibility v1 source contract: ok")
