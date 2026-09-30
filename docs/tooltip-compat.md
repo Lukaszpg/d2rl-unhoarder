@@ -34,9 +34,12 @@ The plugin that owns the physical hook publishes
 with that host instead of installing a second hook.
 
 UnHoarder uses `DiagnosticsService` to identify a D2RLoader-tracked owner.
-If the owner publishes this service, UnHoarder registers its own middleware
-with it. If UnHoarder owns the hook, it publishes the same service so another
-plugin can register with UnHoarder.
+It then enumerates the exact modification ranges and accepts a foreign host only
+when the entry itself is a loader-managed `InlineHook` from that same single
+owner and Diagnostics reports `callThrough == Yes`. If the owner publishes
+this service, UnHoarder registers its own middleware with it. If UnHoarder owns
+the hook, it publishes the same service so another plugin can register with
+UnHoarder.
 
 If the modified entry is untracked, has multiple owners, or the owner does not
 publish this contract, UnHoarder does not guess or decode a foreign detour. The
@@ -61,6 +64,15 @@ calling `next` more than once.
 
 The callback and all pointers passed to it are synchronous borrowed values.
 Never retain them.
+
+A successful `unregisterSharedLabelPaint` or `unregisterGlyphRenderer` is a
+**quiescence barrier**. Once it returns, that registration must not be executing
+and no old dispatch snapshot may begin another call into it. This guarantee is
+required so a consumer can safely release its service lease and unload its DLL.
+
+Do not unregister a registration from inside that registration's own active
+callback. UnHoarder returns `Result::Unsupported` for that case to avoid a
+self-deadlock. Unregister after the callback returns.
 
 ## Minimal host shape
 
@@ -125,6 +137,5 @@ No fixed load order is required for the normal collision case:
 ## Scope
 
 V1 intentionally does not cover every native function used by UnHoarder.
-Formatter/name-writer and hidden-hover row hooks retain their existing
-fail-closed behavior. Additional hook points should be added only when a real
-compatibility case requires them.
+Formatter/name-writer collisions retain their fail-closed behavior. Additional
+hook points should be added only when a real compatibility case requires them.
