@@ -81,22 +81,29 @@ cmake -S . -B build `
   -DUNHOARDER_PLUGINSDK_SOURCE_DIR="D:/path/to/PluginSDK"
 ```
 
-## Plugin compatibility
+## Plugin interoperability
 
-Plugins that share UnHoarder's native ground-tooltip render hooks can opt into
-the **UnHoarder Tooltip Compatibility API v1** instead of installing a second
-hook on the same entry point. The contract uses D2RLoader
-`DiagnosticsService` for owner discovery and `PluginCommunicationService`
-for a versioned middleware table; there is no DLL import or foreign detour
-decoding.
+UnHoarder uses D2RLoader `DiagnosticsService` to identify the **actual owner**
+of a shared native boundary and `PluginCommunicationService` to cooperate
+with that exact provider. It never enables compatibility from a DLL name,
+load order, private export, or guessed foreign detour.
 
-V1 intentionally covers only the shared label painter (`0x1FA8E0`) and glyph
-renderer (`0x658510`). Other native-hook collisions retain UnHoarder's
-fail-closed behavior.
+Three versioned contracts are currently defined:
 
-See [docs/tooltip-compat.md](docs/tooltip-compat.md) and copy
-[interop/unhoarder_tooltip_compat_v1.hpp](interop/unhoarder_tooltip_compat_v1.hpp)
-into a compatible plugin.
+| Contract | Native boundary | Role in UnHoarder |
+| --- | ---: | --- |
+| `unhoarder-tooltip-compat` v1 | `0x1FA8E0`, `0x658510` | host or consumer for shared label-paint / glyph-render middleware |
+| `unit-stat-read-compat` v1 | `0x2F5020` | consumer when another plugin owns the qualified UnitStat bridge |
+| `in-world-item-label-compat` v1 | `0xC0420` | consumer when another plugin owns the hidden-hover item-label path |
+
+A foreign provider is accepted only when Diagnostics proves the relevant
+D2RLoader-tracked owner and that same provider publishes the matching service.
+Unknown, untracked, mismatched, or unavailable providers still fail closed
+without disabling unrelated UnHoarder features.
+
+See [docs/tooltip-compat.md](docs/tooltip-compat.md) for the developer contract,
+lifetime rules, provider requirements, and load-order behavior. Public ABI
+headers live under [interop/](interop/).
 
 ## Canonical JSON structure
 
