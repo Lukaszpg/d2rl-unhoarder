@@ -2468,7 +2468,7 @@ void __fastcall HookSharedLabelPaint(void* rect,void* textArg,void* colorArg) no
 // Build-93847 glyph renderer ABI: D2R+0x90857B passes RCX=context,
 // XMM1/XMM2 scalar coordinates and R9=&float[4] color. The renderer moves R9
 // into RDI at +0x32 before reading the RGBA values. Only this qualified glyph
-// renderer is hooked; SoE's ImageWidget submission path is left untouched.
+// renderer is hooked; unrelated UI submission paths are left untouched.
 using CorrectedGlyphBFn=std::uint64_t (__fastcall*)(
     void*,float,float,const float*) noexcept;
 CorrectedGlyphBFn OriginalCorrectedGlyphB{};
@@ -3178,7 +3178,7 @@ void SyncFilterVisibilityState() noexcept {
 
 
 // Per-game first-observed-unit sound alert. The Alt-ground-label and optional
-// SoE / standalone hidden-hover routes feed one registry. The public
+// Qualified ground-label observations feed one registry. The public
 // InventoryService is polled on the UI thread: seeing an existing, alerted
 // unit ID in the player's owned inventory or cursor FORGETS precisely that ID.
 // A later ground observation of the same unit can play another sound. This
