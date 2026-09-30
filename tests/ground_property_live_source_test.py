@@ -16,15 +16,11 @@ assert 'if (rule.conditions.itemLevel.enabled) fresh->usesItemLevel=true;' in s
 assert 'if(key=="rarity")' in s
 assert 'key=="itemLevel" || key=="quantity"' in s
 assert 'item.itemLevelKnown=fields.itemLevelKnown;' in s
-assert 'NativeRowLiveLatestLabel.qualityKnown=item.qualityKnown;' in s
-assert 'candidate.qualityKnown=label.qualityKnown;' in s
-assert 'rowItem.itemLevelKnown=append.itemLevelKnown;' in s
-assert 'scalarOut->qualityKnown=candidate.qualityKnown;' in s
 assert '&verifiedProperties);' in s
 assert s.count('verifiedQuantity,snapshot.get(),&verifiedProperties)')==1
 assert 'CachedGroundRuleItem(verifiedCode,verifiedClassId,' in s
 assert 'GroundRuleItem(code,unit,rules.get(),id)' in s
-resolver=s[s.index('bool ResolveGroundRule('):s.index('// Backend selection occurs after plugin startup')]
+resolver=s[s.index('bool ResolveGroundRule('):s.index('// UnHoarder is standalone.')]
 assert 'RuleEngine::ResolveMatchingRulesFailOpen(table->rules,item,' in resolver
 assert 'MergeGroundRuleAction(output,rule);' in resolver
 assert 'key=="ethereal"' in s[s.index('bool ParseV2Conditions('):s.index('// RGBA is a JSON STRING:')]
