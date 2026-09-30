@@ -48,6 +48,8 @@ assert r"<D2R_installation_directory>\\mods\\<your_mod_name>\\d2rloader\\config"
 
 # Regression output must not pretend the current suite is tied to a historical product version.
 for test in (root / "tests").glob("*_test.py"):
+    if test.name == "production_hygiene_source_test.py":
+        continue
     assert "1.0.0" not in test.read_text(encoding="utf-8"), test.name
 
 print("production hygiene contract ok")
