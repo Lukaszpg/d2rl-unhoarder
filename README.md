@@ -35,7 +35,7 @@ Place `filter.json` in `<D2R_installation_directory>\\mods\\<your_mod_name>\\d2r
 - log: `unhoarder.log`
 - config: `d2rloader/config/filter.json`
 
-The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start if that old production DLL (or the older probe DLL) is already loaded, preventing two versions from competing for the same native hooks.
+The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start if that old production DLL is already loaded, preventing two production versions from competing for the same native hooks.
 
 The runtime configuration is `<mod>/d2rloader/config/filter.json`. UnHoarder no longer reads filter JSON files from the `plugins` directory.
 
@@ -148,8 +148,8 @@ A valid JSON file activates the filter automatically. Saving the JSON triggers a
 
 Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection. These core features run through UnHoarder's own qualified D2RLoader-managed native hooks and have no mod-specific callback/export dependency.
 
-Legacy reverse-engineering capture hotkeys and startup probe dumps are not part of the production runtime anymore. Operational logs are limited to configuration, compatibility/readiness, reloads, and actionable failures.
+Operational logs are limited to configuration, compatibility/readiness, reloads, and actionable failures.
 
 ## Examples
 
-Use `loot-filter.v3.example.json` as the canonical starting point. Additional schema-3 examples cover Continue, base names, item types, sockets, ethereal and identified conditions.
+Use `unhoarder.v3.example.json` as the canonical starting point. Additional schema-3 examples cover Continue, base names, item types, sockets, ethereal and identified conditions.
