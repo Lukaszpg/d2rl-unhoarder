@@ -322,8 +322,8 @@ constexpr std::array<std::uint8_t,10> GroundQuantityBridgeUpdated{{
     0xFF,0x25,0x9A,0x51,0xB3,0x03,0x90,0x90,0x90,0x90}};
 constexpr std::array<std::uint8_t,10> GroundQuantityBridgeSeptember{{
     0xFF,0x25,0xCA,0x51,0xB3,0x03,0x90,0x90,0x90,0x90}};
-// Exact game-build-93847 / loader-1.3.1 RIP-indirect bridge captured
-// 2026-09-24. Never accept arbitrary FF25 bridges: verify the slot AND owner.
+// Exact game-build-93847 / loader-1.3.1 RIP-indirect bridge qualification.
+// Never accept arbitrary FF25 bridges: verify the slot AND owner.
 constexpr std::array<std::uint8_t,10> GroundQuantityBridgeLoader131{{
     0xFF,0x25,0xF2,0x51,0xB3,0x03,0x90,0x90,0x90,0x90}};
 using GroundQuantityReaderFn=std::int32_t(__fastcall*)(void*,std::int32_t,std::uint16_t) noexcept;
@@ -465,8 +465,7 @@ bool GroundCandidatePageReadable(std::uintptr_t address,
 
 
 // Build 93847 production automap projection for JSON-configured item markers.
-// These contracts were qualified during development and are retained with
-// fingerprint validation; no capture buffers are used.
+// Every native entry is retained behind exact runtime fingerprint validation.
 constexpr std::uintptr_t AutomapRenderUnitRva=0xD76E0;
 constexpr std::uintptr_t ProjectClientToAutomapRva=0xD4910;
 constexpr std::uintptr_t GetLocalDataContextRva=0x8B2D0;
@@ -3721,7 +3720,7 @@ void ArmNewGroundSound() noexcept {
     SoundArmed.store(true,std::memory_order_release);
     char message[340]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_ARMED version=" UNHOARDER_VERSION_STRING " mode=session-unit-id-first-observed sources=alt-ground-label+hidden-hover soundRules=%zu baselineMs=%llu no-visibility-replay=1 same-id-redrop=rearm-on-inventory-observation no-item-writes=1 note=not-native-drop-event",
+        "LOOT_SOUND_ARMED version=" UNHOARDER_VERSION_STRING " mode=session-unit-id-first-observed source=qualified-ground-label soundRules=%zu baselineMs=%llu no-visibility-replay=1 same-id-redrop=rearm-on-inventory-observation no-item-writes=1 note=not-native-drop-event",
         rules->soundRules,static_cast<unsigned long long>(SoundBaselineMs));
     Emit(message);
 }
