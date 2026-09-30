@@ -132,7 +132,7 @@ std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Off};
 // inspect it without file I/O, parsing, locks held across original calls,
 // or consulting a mutable vector during reload.
 struct FilterNameRule {
-    bool schema2{};
+    bool usesConditions{};
     RuleEngine::Conditions conditions{};
     std::uint32_t code{};
     std::array<char, CandidateTextMaximum> name{};
@@ -1205,15 +1205,6 @@ void CodeText(std::uint32_t code, char (&out)[5]) noexcept {
     out[4] = '\0';
 }
 
-bool MatchesCode(std::uint32_t code, std::string_view selected) noexcept {
-    if (selected.empty()) return true;
-    char chars[5]{};
-    CodeText(code, chars);
-    std::string_view compact(chars, 4);
-    while (!compact.empty() && compact.back() == ' ') compact.remove_suffix(1);
-    return selected == compact;
-}
-
 // Still no native item reads: the original qualified helper does all item access.
 std::uint32_t __fastcall HookGetItemCode(void* item) noexcept {
     return OriginalGetItemCode(item);
@@ -1802,7 +1793,7 @@ bool ReloadFilterRules() {
             }
 
             FilterNameRule rule{};
-            rule.schema2=fresh->schema>=2;
+            rule.usesConditions=fresh->schema>=2;
             rule.code=codeValue;
             rule.show=fresh->schema==3 ? wrapperShow :
                 (!block->contains("show") || (*block)["show"].get<bool>());
@@ -1810,7 +1801,7 @@ bool ReloadFilterRules() {
                 (*block)["continue"].get<bool>();
             if(!rule.show) ++fresh->hiddenRules;
 
-            if(rule.schema2) {
+            if(rule.usesConditions) {
                 std::string failure;
                 if(block->contains("conditions")) {
                     if(!ParseV2Conditions((*block)["conditions"],rule.conditions,
@@ -3224,14 +3215,14 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
             data,size,&got) && got==size;
 }
 
-[[nodiscard]] bool QualifyNamedSoundBackend(bool verbose) noexcept {
+[[nodiscard]] bool QualifyNamedSoundBackend() noexcept {
     // Both PE identities are known, but the 1.3.1 native layout is provisional:
     // enable ONLY if all old call-chain fingerprints and registration data
     // still match the LIVE executable. Never admit an image on its PE pair alone.
     SoundLoaderBase.store(0,std::memory_order_release);
     const auto mod=GetModuleHandleW(L"D2RLoader.exe");
     if(!mod) {
-        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=no-D2RLoader-image");
+        LogWarn("LOOT_SOUND_QUALIFY refused=no-D2RLoader-image");
         return false;
     }
     const auto base=reinterpret_cast<std::uintptr_t>(mod);
@@ -3246,22 +3237,8 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
     const auto layout=peOk?SoundLoaderIdentity::Classify(
         nt.FileHeader.TimeDateStamp,nt.OptionalHeader.SizeOfImage):
         SoundLoaderIdentity::Layout::Unknown;
-    if(verbose) {
-        char line[390]{};
-        std::snprintf(line,sizeof(line),
-            "LOOT_COMPAT_SOUND_LOADER version=" UNHOARDER_VERSION_STRING " peRead=%u "
-            "stamp=0x%X imageSize=0x%X layout=%s "
-            "oldPair=0x6AAFC972/0x5602000 "
-            "loader131Pair=0x6AB3782C/0x5643000 "
-            "nativeSoundCalls=%s",
-            peOk?1U:0U,peOk?unsigned(nt.FileHeader.TimeDateStamp):0U,
-            peOk?unsigned(nt.OptionalHeader.SizeOfImage):0U,
-            SoundLoaderIdentity::Name(layout),
-            layout==SoundLoaderIdentity::Layout::Unknown?"disabled":"pending-byte-qualification");
-        LogInfo(line);
-    }
     if(layout==SoundLoaderIdentity::Layout::Unknown) {
-        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=unrecognized-loader-image-pair audio-disabled=1");
+        LogWarn("LOOT_SOUND_QUALIFY refused=unrecognized-loader-image-pair audio-disabled=1");
         return false;
     }
     struct Witness {std::uint32_t offset;std::initializer_list<std::uint8_t> bytes;};
@@ -3284,37 +3261,12 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
             SoundMemoryRead(base+witness.offset,found,witness.bytes.size());
         const bool exact=readOk &&
             std::equal(witness.bytes.begin(),witness.bytes.end(),found);
-        if(verbose) {
-            char line[260]{};
-            std::snprintf(line,sizeof(line),
-                "LOOT_COMPAT_SOUND_WITNESS version=" UNHOARDER_VERSION_STRING " rva=0x%X "
-                "readOk=%u exact=%u layout=%s",
-                witness.offset,readOk?1U:0U,exact?1U:0U,
-                SoundLoaderIdentity::Name(layout));
-            LogInfo(line);
-        }
         if(!exact) {
-            if(verbose) {
-                char line[180]{};
-                std::snprintf(line,sizeof(line),
-                    "LOOT_SOUND_QUALIFY refused=native-fingerprint-mismatch rva=0x%X",
-                    witness.offset);
-                LogWarn(line);
-                char actual[3*16+1]{},expected[3*16+1]{};
-                std::size_t i=0;
-                for(const auto ch:witness.bytes) {
-                    if(i>=16)break;
-                    std::snprintf(actual+3*i,sizeof(actual)-3*i,"%02X ",unsigned(found[i]));
-                    std::snprintf(expected+3*i,sizeof(expected)-3*i,"%02X ",unsigned(ch));
-                    ++i;
-                }
-                char detail[330]{};
-                std::snprintf(detail,sizeof(detail),
-                    "LOOT_COMPAT_SOUND_BYTES rva=0x%X readOk=%u "
-                    "expected=[%s] found=[%s] nativeSoundCalls=disabled",
-                    witness.offset,readOk?1U:0U,expected,actual);
-                LogInfo(detail);
-            }
+            char line[220]{};
+            std::snprintf(line,sizeof(line),
+                "LOOT_SOUND_QUALIFY refused=native-fingerprint-mismatch rva=0x%X readOk=%u layout=%s audio-disabled=1",
+                witness.offset,readOk?1U:0U,SoundLoaderIdentity::Name(layout));
+            LogWarn(line);
             return false;
         }
         ++matched;
@@ -3334,20 +3286,20 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
         if(edge.at>nt.OptionalHeader.SizeOfImage-5 ||
            !SoundMemoryRead(base+edge.at,bytes.data(),bytes.size()) ||
            bytes[0]!=0xE8U) {
-            if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=call-chain-unreadable audio-disabled=1");
+            LogWarn("LOOT_SOUND_QUALIFY refused=call-chain-unreadable audio-disabled=1");
             return false;
         }
         std::memcpy(&displacement,bytes.data()+1,sizeof(displacement));
         const auto actual=static_cast<std::int64_t>(edge.at)+5+displacement;
         if(actual!=static_cast<std::int64_t>(edge.target)) {
-            if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=call-chain-target-mismatch audio-disabled=1");
+            LogWarn("LOOT_SOUND_QUALIFY refused=call-chain-target-mismatch audio-disabled=1");
             return false;
         }
     }
     char marker[10]{};
     if(!SoundMemoryRead(base+0x1CDFBB8U,marker,sizeof(marker)) ||
        std::memcmp(marker,"soundplay",sizeof(marker))!=0) {
-        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=soundplay-registration-name-mismatch");
+        LogWarn("LOOT_SOUND_QUALIFY refused=soundplay-registration-name-mismatch");
         return false;
     }
     MEMORY_BASIC_INFORMATION mbi{};
@@ -3360,53 +3312,43 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
          (mbi.Protect & 0xffU)==PAGE_EXECUTE_READWRITE ||
          (mbi.Protect & 0xffU)==PAGE_EXECUTE_WRITECOPY);
     if(!pageOk) {
-        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=player-page-not-executable audio-disabled=1");
+        LogWarn("LOOT_SOUND_QUALIFY refused=player-page-not-executable audio-disabled=1");
         return false;
     }
     // Only publish the native backend after the entire live contract matches.
     SoundLoaderBase.store(base,std::memory_order_release);
-    if(verbose) {
-        char msg[320]{};
-        std::snprintf(msg,sizeof(msg),
-            "LOOT_SOUND_QUALIFY matched=1 version=" UNHOARDER_VERSION_STRING " "
-            "layout=%s nativeNamePlayer=D2RLoader+0x1A0C00 "
-            "witnesses=%zu callChain=3 registration=exact executePage=1 "
-            "nameBased=1 gameThreadRequired=1 rowIndexNotUsed=1",
-            SoundLoaderIdentity::Name(layout),matched);
-        LogInfo(msg);
-    }
+    char msg[320]{};
+    std::snprintf(msg,sizeof(msg),
+        "LOOT_SOUND_QUALIFY matched=1 version=" UNHOARDER_VERSION_STRING " "
+        "layout=%s nativeNamePlayer=D2RLoader+0x1A0C00 "
+        "witnesses=%zu callChain=3 registration=exact executePage=1 "
+        "nameBased=1 gameThreadRequired=1 rowIndexNotUsed=1",
+        SoundLoaderIdentity::Name(layout),matched);
+    LogInfo(msg);
     return true;
 }
 
 struct SoundRequest {
     std::array<char,64> name{};
     std::uint32_t unitId{},code{};
-    bool automatic{};
     std::uint64_t registryEpoch{}, itemTicket{};
 };
 void __cdecl PlayNamedSoundOnGameThread(
     const D2RL::PluginContext* logger,void* requestArg) noexcept {
     std::unique_ptr<SoundRequest> request(static_cast<SoundRequest*>(requestArg));
     if(!request || !request->name[0])return;
-    if(request->automatic &&
-       (!SoundArmed.load(std::memory_order_acquire) ||
-        request->registryEpoch != SoundRegistryEpoch.load(std::memory_order_acquire))) {
+    if(!SoundArmed.load(std::memory_order_acquire) ||
+       request->registryEpoch != SoundRegistryEpoch.load(std::memory_order_acquire)) {
         return;
     }
-    if (request->automatic) {
-        // A pickup must cancel a queued old alert even if this unit is
-        // re-dropped (and re-registered) within the same game epoch.
-        if (!SoundSeenMutex.try_lock()) {
-            return;
-        }
-        const bool valid = request->registryEpoch ==
-            SoundRegistryEpoch.load(std::memory_order_acquire) &&
-            SoundSeenRegistry.IsCurrent(request->unitId, request->itemTicket);
-        SoundSeenMutex.unlock();
-        if (!valid) {
-            return;
-        }
-    }
+    // A pickup must cancel a queued old alert even if this unit is
+    // re-dropped (and re-registered) within the same game epoch.
+    if (!SoundSeenMutex.try_lock()) return;
+    const bool valid = request->registryEpoch ==
+        SoundRegistryEpoch.load(std::memory_order_acquire) &&
+        SoundSeenRegistry.IsCurrent(request->unitId, request->itemTicket);
+    SoundSeenMutex.unlock();
+    if (!valid) return;
     const auto base=SoundLoaderBase.load(std::memory_order_acquire);
     if(!base)return;
     using PlayNamedFn=void* (__fastcall*)(const char*,void*,int,int);
@@ -3416,8 +3358,8 @@ void __cdecl PlayNamedSoundOnGameThread(
     CodeText(request->code,codeText);
     char message[320]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_PLAY version=" UNHOARDER_VERSION_STRING " trigger=%s code='%s' unitId=%u name='%s' engineReturned=%u gameThread=%lu note=return-not-audibility-proof",
-        request->automatic?"first-ground-label":"manual-test",codeText,request->unitId,
+        "LOOT_SOUND_PLAY version=" UNHOARDER_VERSION_STRING " trigger=first-ground-label code='%s' unitId=%u name='%s' engineReturned=%u gameThread=%lu note=return-not-audibility-proof",
+        codeText,request->unitId,
         request->name.data(),result?1U:0U,static_cast<unsigned long>(GetCurrentThreadId()));
     if(logger) {
         logger->LogInfo(message);
@@ -3425,9 +3367,8 @@ void __cdecl PlayNamedSoundOnGameThread(
 }
 
 bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
-                     std::uint32_t code,bool automatic,
-                     std::uint64_t observedEpoch=0,
-                     std::uint64_t itemTicket=0) noexcept {
+                     std::uint32_t code,std::uint64_t observedEpoch,
+                     std::uint64_t itemTicket) noexcept {
     if(name.empty() || name.size()>63 || !SoundThreads ||
        !SoundThreads->runOnGameThread || !Context ||
        !SoundLoaderBase.load(std::memory_order_acquire)) {
@@ -3439,9 +3380,8 @@ bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
     }
     std::memcpy(request->name.data(),name.data(),name.size());
     request->name[name.size()]='\0';
-    request->unitId=unitId;request->code=code;request->automatic=automatic;
-    request->registryEpoch=automatic?observedEpoch:
-        SoundRegistryEpoch.load(std::memory_order_acquire);
+    request->unitId=unitId;request->code=code;
+    request->registryEpoch=observedEpoch;
     request->itemTicket=itemTicket;
     // The callback owns the raw allocation on Success. Never access it
     // after dispatch: the service may run the callback synchronously if we
@@ -3488,7 +3428,7 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     const auto observation=SoundSeenRegistry.Observe(unitId,code,&itemTicket);
     SoundSeenMutex.unlock();
     if (observation!=SoundIdentity::Registry::Observation::New || baseline) return;
-    (void)QueueNamedSound(rule->dropSound.data(),unitId,code,true,
+    (void)QueueNamedSound(rule->dropSound.data(),unitId,code,
         observedEpoch,itemTicket);
 }
 
@@ -3665,23 +3605,10 @@ void StartSoundInventoryObserver() noexcept {
 void ArmNewGroundSound() noexcept {
     SoundArmed.store(false,std::memory_order_release);
     auto rules=std::atomic_load_explicit(&PublishedFilterRules,std::memory_order_acquire);
-    {
-        char guard[340]{};
-        std::snprintf(guard,sizeof(guard),
-            "LOOT_COMPAT_SOUND_GUARD version=" UNHOARDER_VERSION_STRING " threadService=%u "
-            "runOnGameThread=%u formatter=%u rulesMode=%u soundRules=%zu "
-            "nextStep=qualify-native-soundplay-only-when-prerequisites-pass",
-            SoundThreads?1U:0U,
-            SoundThreads && SoundThreads->runOnGameThread?1U:0U,
-            FormatterHookInstalled.load(std::memory_order_acquire)?1U:0U,
-            ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules?1U:0U,
-            rules?rules->soundRules:0);
-        LogInfo(guard);
-    }
     if(!Context || !SoundThreads || !SoundThreads->runOnGameThread ||
        !FormatterHookInstalled.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
-       !rules || !rules->soundRules || !QualifyNamedSoundBackend(true)) {
+       !rules || !rules->soundRules || !QualifyNamedSoundBackend()) {
         LogWarn("LOOT_SOUND_REFUSED reason=needs-filter-arm-sound-rules-ThreadService-and-qualified-native-soundplay");
         return;
     }
