@@ -17,10 +17,18 @@
 #include "ground_ethereal_policy.hpp"
 #include "ground_identified_policy.hpp"
 #include "filter_live_reload.hpp"
+#include "hover_label_style.hpp"
+#include "native_row_live_display_match.hpp"
+#include "native_row_string_layout.hpp"
+#include "native_row_append_match.hpp"
+#include "native_row_bg_policy.hpp"
+#include "native_row_bg_live_policy.hpp"
+#include "native_row_font_color_policy.hpp"
 #include "ground_sound_registry.hpp"
 #include "named_sound_loader_identity.hpp"
 #include "../interop/unhoarder_tooltip_compat_v1.hpp"
 #include "../interop/unit_stat_read_compat_v1.hpp"
+#include "../interop/in_world_item_label_compat_v1.hpp"
 #include "tooltip_compat_lifetime.hpp"
 // D2RLoader PluginSDK ThreadService is queried through its typed service contract.
 #include <D2RLPlugin/threads.h>
@@ -214,6 +222,7 @@ std::atomic_bool BackgroundPaintHookInstalled{};
 
 namespace TooltipCompat = ::UnHoarder::TooltipCompatV1;
 namespace UnitStatCompat = ::D2RLInterop::UnitStatReadCompatV1;
+namespace InWorldCompat = ::D2RLInterop::InWorldItemLabelCompatV1;
 enum class TooltipCompatRoute : std::uint8_t { None, NativeOwner, ForeignHost };
 std::atomic<TooltipCompatRoute> SharedLabelPaintCompatRoute{TooltipCompatRoute::None};
 std::atomic<TooltipCompatRoute> GlyphRendererCompatRoute{TooltipCompatRoute::None};
@@ -1199,9 +1208,20 @@ bool ResolveGroundRule(const FilterRuleTable* table,
         });
 }
 
-// UnHoarder is standalone. Game lifecycle is used only to reset per-game
-// state and refresh optional native readers; core filtering does not depend on
-// No mod-specific callback/export contract is required.
+// The hidden-tooltip hover path can be owned by another D2RLoader plugin.
+// Discover that exact owner through DiagnosticsService and consume only the
+// generic provider-local service. No module name or product ID is hardcoded.
+constexpr std::uintptr_t InWorldFormatterRva = 0xC0420;
+constexpr std::array<std::uint8_t,16> ExpectedInWorldFormatter{{
+    0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,
+    0x24,0x18,0x48,0x89,0x7C,0x24,0x20,0x55
+}};
+D2RL::PluginCommunication::ServiceLease<InWorldCompat::Service>
+    InWorldCompatLease{};
+std::atomic<const InWorldCompat::Service*> InWorldCompatService{};
+bool InWorldCompatObserverAttached{};
+bool InWorldCompatTransformerAttached{};
+
 const D2RL::LifecycleService* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 
@@ -1210,6 +1230,19 @@ void RuntimeWorkerStop() noexcept;
 bool ReloadFilterRules();
 bool ActivateConfiguredFilter(bool automatic) noexcept;
 void RebaselineSoundAtGameJoin() noexcept;
+void ResetNativeRowLiveSession() noexcept;
+void EnableAutomaticNativeHover() noexcept;
+bool TryAttachInWorldLabelCompat() noexcept;
+void DetachInWorldLabelCompat() noexcept;
+void ObserveGroundSoundIdentity(std::uint32_t unitId,
+    std::uint32_t rawCode,const void* nativeUnit,
+    std::uint32_t knownClassId) noexcept;
+void ObserveNativeRowLiveLabel(std::int32_t type,
+    std::uint32_t classId,std::uint32_t unitId,std::uint32_t rawCode,
+    const void* nativeUnit,const char* source,std::uint32_t sourceLength) noexcept;
+void ObserveNativeRowLiveReplacement(std::uint32_t classId,
+    std::uint32_t unitId,std::uint32_t rawCode,
+    std::string_view source,std::string_view rendered) noexcept;
 
 void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
     const D2RL::Lifecycle::GameplayEvent* event, void*) noexcept {
@@ -1220,9 +1253,12 @@ void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
         std::string_view(MinimapOverlayRenderer::ActiveBackendName())=="none")
         (void)InitializeMinimapMarkerRenderer();
     QualifyGroundQuantityReader();
+    (void)TryAttachInWorldLabelCompat();
     if (!PublishedFilterRules.load(std::memory_order_acquire) && !FilterConfigPath.empty() &&
         ReloadFilterRules())
         (void)ActivateConfiguredFilter(true);
+    ResetNativeRowLiveSession();
+    EnableAutomaticNativeHover();
     RebaselineSoundAtGameJoin();
 }
 
@@ -1310,6 +1346,754 @@ bool ReadSafe(std::uintptr_t rva, void* output, std::size_t count) noexcept {
         return false;
     std::memcpy(output, reinterpret_cast<const void*>(address), count);
     return true;
+}
+
+// Qualified native hover-row renderer for build 93847. This function is shared
+// by multiple UI consumers, so ownership is established only through the exact
+// same-thread SoE item/append/row chain. It forwards the single RCX argument
+// exactly once and fails closed on unexpected entry or callsite bytes.
+constexpr std::uintptr_t NativeRowRendererRva=0x8DA7E0;
+constexpr std::uintptr_t NativeRowCallerRva=0x880BC7;
+constexpr std::uintptr_t NativeRowCallerReturnRva=0x880BCC;
+constexpr std::uintptr_t NativeRowColorLeaRva=0x8DA91B;
+// Native styled-text row queue: atlas build 92777 ABI, but EXACT bytes and
+// direct callsite are qualified for build 93847.
+// Shared with other UI consumers. Never chain an unqualified foreign hook.
+constexpr std::uintptr_t NativeRowAppendRva=0x880160;
+constexpr std::uintptr_t NativeRowAppendCallRva=0x843D87;
+constexpr std::uintptr_t NativeRowAppendReturnRva=0x843D8C;
+using NativeRowAppendFn=void(__fastcall*)(void*,const void*,const void*,
+    const void*,const void*) noexcept;
+NativeRowAppendFn OriginalNativeRowAppend{};
+std::atomic_bool NativeRowAppendHookInstalled{};
+constexpr std::size_t NativeRowAppendMaxEvents=256;
+std::atomic<std::uint32_t> NativeRowAppendsTaken{};
+// Completed append ordinal, never row-pointer identity. Published only AFTER
+// the bounded event is written to its phase bucket. Renderer reads a fence.
+std::atomic<std::uint64_t> NativeRowAppendSequence{};
+std::atomic<std::uint64_t> NativeRowAppendCommittedSequence{};
+using NativeRowRendererFn=void(__fastcall*)(void*) noexcept;
+NativeRowRendererFn OriginalNativeRowRenderer{};
+std::atomic_bool NativeRowRendererHookInstalled{};
+std::atomic_flag NativeRowBgDrawGate=ATOMIC_FLAG_INIT;
+thread_local bool NativeRowBgInsideRenderer=false;
+// Automatic, persistent per-game JSON backgroundColor, enabled after GameJoined
+// when host observation/V3 and the native append-to-renderer chain are qualified.
+std::atomic_bool NativeRowBgLiveEnabled{};
+std::atomic<std::uint64_t> NativeRowBgLiveEpoch{1};
+std::atomic<std::uint64_t> NativeRowBgLiveLabels{},NativeRowBgLiveAppends{};
+std::atomic<std::uint64_t> NativeRowBgLiveAttempts{},NativeRowBgLiveWrites{};
+std::atomic<std::uint64_t> NativeRowBgLiveRestored{},NativeRowBgLiveRejected{};
+std::atomic<std::uint64_t> NativeRowBgLiveNoRule{},NativeRowBgLiveRejectedColor{};
+std::atomic<std::uint64_t> NativeRowBgLiveBusy{},NativeRowBgLiveRestoreAnomaly{};
+std::atomic<std::uint32_t> NativeRowBgLiveLastUnitId{},NativeRowBgLiveLastCode{};
+// Automatic native glyph color. NO new hooks or item writes. Only glyph-B
+// nested inside an already-qualified, background-colored native row is eligible.
+std::atomic_bool NativeRowFontColorEnabled{};
+std::atomic<std::uint64_t> NativeRowFontColorAttempts{};
+std::atomic<std::uint64_t> NativeRowFontColorForwarded{};
+std::atomic<std::uint64_t> NativeRowFontColorRejectedCaller{};
+std::atomic<std::uint64_t> NativeRowFontColorRejectedEpoch{};
+std::atomic<std::uint64_t> NativeRowFontColorRejectedRule{};
+std::atomic<std::uint64_t> NativeRowFontColorRejectedNative{};
+std::atomic<std::uint64_t> NativeRowFontColorReadFailures{};
+std::atomic<std::uint64_t> NativeRowFontColorLastAppendSeq{};
+std::atomic<std::uint32_t> NativeRowFontColorLastUnitId{};
+std::atomic<std::uint32_t> NativeRowFontColorLastCode{};
+std::array<std::atomic<std::uint32_t>,4> NativeRowFontColorLastOriginalBits{};
+std::array<std::atomic<std::uint32_t>,4> NativeRowFontColorLastForwardedBits{};
+
+void ResetNativeRowLiveSession() noexcept {
+    NativeRowFontColorEnabled.store(false,std::memory_order_release);
+    NativeRowBgLiveEnabled.store(false,std::memory_order_release);
+    NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
+}
+// Qualified same-thread font-color scope active only during the native row draw.
+// Do not infer glyph ownership from a heartbeat or global shared renderer.
+struct NativeRowFontDraw final {
+    bool active{},hasTextRule{};
+    std::uint32_t unitId{},code{};
+    std::uint64_t appendSequence{},sessionEpoch{};
+    std::array<std::uint32_t,4> configuredGlyphBits{};
+};
+thread_local NativeRowFontDraw NativeRowFontCurrentDraw{};
+void BeginNativeRowFontDraw(std::uint32_t unitId,std::uint32_t code,
+    std::uint64_t appendSeq,const GroundRuleDecision& rule) noexcept {
+    if (!NativeRowFontColorEnabled.load(std::memory_order_acquire) ||
+        NativeRowFontCurrentDraw.active) return;
+    auto& draw=NativeRowFontCurrentDraw;
+    draw={};draw.active=true;draw.unitId=unitId;draw.code=code;
+    draw.appendSequence=appendSeq;
+    draw.sessionEpoch=NativeRowBgLiveEpoch.load(std::memory_order_acquire);
+    draw.hasTextRule=rule.hasTextColor;
+    if (rule.hasTextColor)
+        std::memcpy(draw.configuredGlyphBits.data(),rule.textColor.data(),
+            sizeof(draw.configuredGlyphBits));
+}
+void EndNativeRowFontDraw() noexcept { NativeRowFontCurrentDraw={}; }
+void ResetNativeRowFontColor() noexcept {
+    NativeRowFontColorEnabled.store(false,std::memory_order_release);
+}
+
+// The game uses this render-object address as a reusable UI slot. A matching
+// address across phases does not mean it belongs to the same inventory item.
+// Native strings at +0x00/+0x28 are *candidate* text fields, based on the
+// independently observed qualified tooltip-row layout (not item ownership proof).
+struct NativeRowTextWitness final {
+    std::uint64_t size{},capacity{},encodedCapacity{};
+    // state: 0=implausible-header, 1=empty, 2=inline, 3=heap,
+    // 4=heap-unreadable. Printable ASCII only; control/UTF-8 bytes -> '.'.
+    std::uint8_t state{};
+    std::uint8_t captured{};
+    std::array<char,65> preview{};
+    // First 24 raw bytes retained as hex so UTF-8 / native color escapes
+    // remain distinguishable from printable ASCII placeholders.
+    std::array<char,49> rawHex{};
+    // Bounded copied bytes permit offline comparison with V1 native source.
+    std::array<std::uint8_t,64> raw{};
+};
+
+constexpr std::size_t NativeRowLabelMaxBytes=64;
+struct NativeRowLiveLabel final {
+    std::uint64_t epoch{},sequence{},rulesGeneration{};
+    std::uint32_t unitId{},classId{},code{},sourceLength{};
+    std::uint32_t displayLength{};
+    std::uint32_t quantity{};
+    bool quantityKnown{};
+    bool qualityKnown{};
+    std::uint32_t quality{};
+    bool itemLevelKnown{};
+    std::uint32_t itemLevel{};
+    bool socketsKnown{};
+    std::uint32_t sockets{};
+    bool etherealKnown{};
+    bool ethereal{};
+    bool identifiedKnown{};
+    bool identified{};
+    std::int64_t qpc{};
+    bool scopeMatches{};
+    // Original V1 source proves item/event association; the V2 replacement
+    // is the exact string that the native row should actually contain.
+    std::array<std::uint8_t,NativeRowLabelMaxBytes> source{},display{};
+};
+thread_local NativeRowLiveLabel NativeRowLiveLatestLabel{};
+thread_local std::uint64_t NativeRowLiveNextLabelSeq{};
+// Live fast path observes generic host item callbacks and retains only immutable
+// identity/property bytes needed to qualify the matching native row.
+void ObserveNativeRowLiveLabel(std::int32_t type,
+    std::uint32_t classId,std::uint32_t unitId,std::uint32_t rawCode,
+    const void* nativeUnit,const char* source,std::uint32_t sourceLength) noexcept {
+    if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire)) return;
+    NativeRowLiveLatestLabel={}; // invalid inputs invalidate old identity
+    if (type!=4 || !unitId || !source || !sourceLength ||
+        sourceLength>NativeRowLabelMaxBytes) return;
+    const auto* scope=InWorldCompatService.load(std::memory_order_acquire);
+    if (!scope || !scope->getCurrentItem) return;
+    InWorldCompat::ActiveItem active{};
+    active.structSize=sizeof(active);
+    if (!scope->getCurrentItem(&active) || active.unitType!=4 ||
+        active.unitId!=unitId || active.classId!=classId) return;
+    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
+        std::memory_order_acquire);
+    if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
+        !rules->hiddenRules)) return;
+    LARGE_INTEGER stamp{};
+    if (!QueryPerformanceCounter(&stamp)) return;
+    NativeRowLiveLatestLabel.epoch=NativeRowBgLiveEpoch.load(
+        std::memory_order_acquire);
+    NativeRowLiveLatestLabel.sequence=++NativeRowLiveNextLabelSeq;
+    NativeRowLiveLatestLabel.rulesGeneration=rules->generation;
+    NativeRowLiveLatestLabel.unitId=unitId;
+    NativeRowLiveLatestLabel.classId=classId;
+    NativeRowLiveLatestLabel.code=CanonicalItemCode(rawCode);
+    if(nativeUnit && (rules->usesQuality || rules->usesItemLevel ||
+                      rules->usesSockets || rules->usesEthereal ||
+                      rules->usesIdentified)) {
+        const auto item=GroundRuleItem(rawCode,nativeUnit,rules.get(),unitId,
+            GroundPropertyLive::Purpose::VerifiedLabel);
+        NativeRowLiveLatestLabel.qualityKnown=item.qualityKnown;
+        NativeRowLiveLatestLabel.quality=item.quality;
+        NativeRowLiveLatestLabel.itemLevelKnown=item.itemLevelKnown;
+        NativeRowLiveLatestLabel.itemLevel=item.itemLevel;
+        NativeRowLiveLatestLabel.socketsKnown=item.socketsKnown;
+        NativeRowLiveLatestLabel.sockets=item.sockets;
+        NativeRowLiveLatestLabel.etherealKnown=item.etherealKnown;
+        NativeRowLiveLatestLabel.ethereal=item.ethereal;
+        NativeRowLiveLatestLabel.identifiedKnown=item.identifiedKnown;
+        NativeRowLiveLatestLabel.identified=item.identified;
+    }
+    if(rules->usesQuantity && nativeUnit &&
+       GroundQuantityReader.load(std::memory_order_acquire)) {
+        const auto count=GroundStackQuantity(nativeUnit);
+        NativeRowLiveLatestLabel.quantityKnown=true;
+        NativeRowLiveLatestLabel.quantity=count>1?count:1;
+    }
+    NativeRowLiveLatestLabel.sourceLength=sourceLength;
+    NativeRowLiveLatestLabel.displayLength=sourceLength;
+    NativeRowLiveLatestLabel.qpc=stamp.QuadPart;
+    NativeRowLiveLatestLabel.scopeMatches=true;
+    std::memcpy(NativeRowLiveLatestLabel.source.data(),source,sourceLength);
+    std::memcpy(NativeRowLiveLatestLabel.display.data(),source,sourceLength);
+    NativeRowBgLiveLabels.fetch_add(1,std::memory_order_relaxed);
+}
+
+void ObserveNativeRowLiveReplacement(std::uint32_t classId,
+    std::uint32_t unitId, std::uint32_t rawCode,
+    std::string_view source, std::string_view rendered) noexcept {
+    if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire)) return;
+    auto& event=NativeRowLiveLatestLabel;
+    // V1 has already qualified the active host active-item scope item. Never grant a V2
+    // callback for a different item, an old session or different JSON rules
+    // access to this render row, even when item names happen to be identical.
+    // atomic_load_explicit returns shared_ptr<const FilterRuleTable>, not
+    // a raw pointer. Keep this owning snapshot alive across generation check.
+    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
+        std::memory_order_acquire);
+    if (!event.scopeMatches || !rules ||
+        rules->generation!=event.rulesGeneration ||
+        event.epoch!=NativeRowBgLiveEpoch.load(std::memory_order_acquire) ||
+        !NativeRowLiveDisplayMatch::SameEvent(
+            event.classId,event.unitId,event.code,
+            std::string_view(reinterpret_cast<const char*>(event.source.data()),
+                event.sourceLength),classId,unitId,rawCode,source)) return;
+    // If transformed text is too long for the exact native-row witness,
+    // disable coloring for this item rather than match an unrelated label.
+    if (rendered.empty() || rendered.size()>event.display.size()) {
+        event.scopeMatches=false;
+        return;
+    }
+    event.display.fill(0);
+    event.displayLength=static_cast<std::uint32_t>(rendered.size());
+    std::memcpy(event.display.data(),rendered.data(),rendered.size());
+}
+
+struct NativeStyledTextVector final {
+    std::uintptr_t data{};
+    std::uint64_t count{},capacity{};
+};
+static_assert(sizeof(NativeStyledTextVector)==0x18);
+struct NativeRowLiveAppend final {
+    std::uint64_t epoch{},appendSequence{},labelSequence{},rulesGeneration{};
+    std::uintptr_t component{},data{},row{};
+    std::int64_t qpc{};
+    std::uint32_t unitId{},classId{},code{},sourceLength{};
+    std::uint32_t displayLength{};
+    std::uint32_t quantity{};
+    bool quantityKnown{};
+    bool qualityKnown{};
+    std::uint32_t quality{};
+    bool itemLevelKnown{};
+    std::uint32_t itemLevel{};
+    bool socketsKnown{};
+    std::uint32_t sockets{};
+    bool etherealKnown{};
+    bool ethereal{};
+    bool identifiedKnown{};
+    bool identified{};
+    std::array<std::uint8_t,NativeRowLabelMaxBytes> source{},display{};
+    bool qualified{};
+};
+thread_local NativeRowLiveAppend NativeRowLiveLastAppend{};
+thread_local std::uint64_t NativeRowLiveNextAppendSeq{};
+bool ReadNativeStyledVector(void*,NativeStyledTextVector&) noexcept;
+void __fastcall HookNativeRowAppend(void*,const void*,const void*,
+    const void*,const void*) noexcept;
+// Bounded native-row text reader. Do not chase pointers until
+// the 32-byte candidate has a plausible MSVC string length and capacity.
+// We do not retain the pointer; the preview is copied synchronously.
+bool ReadNativeRowTextBytes(std::uintptr_t address,
+    void* out,std::size_t length) noexcept {
+    if (!address || !out || !length || length>64) return false;
+    MEMORY_BASIC_INFORMATION region{};
+    if (!VirtualQuery(reinterpret_cast<void const*>(address),
+        &region,sizeof(region)) || region.State!=MEM_COMMIT ||
+        (region.Protect&(PAGE_GUARD|PAGE_NOACCESS))) return false;
+    const auto protection=region.Protect&0xFFU;
+    const bool readable=protection==PAGE_READONLY ||
+        protection==PAGE_READWRITE || protection==PAGE_WRITECOPY ||
+        protection==PAGE_EXECUTE_READ ||
+        protection==PAGE_EXECUTE_READWRITE ||
+        protection==PAGE_EXECUTE_WRITECOPY;
+    if (!readable) return false;
+    const auto start=reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+    if (address<start || length>region.RegionSize ||
+        address-start>region.RegionSize-length) return false;
+    std::memcpy(out,reinterpret_cast<void const*>(address),length);
+    return true;
+}
+
+NativeRowTextWitness InspectNativeRowTextCandidate(
+    const std::array<std::uint8_t,0x50>& headers,
+    std::size_t offset,
+    std::uintptr_t elementAddress) noexcept {
+    NativeRowTextWitness result{};
+    // Qualified build-93847 string layout:
+    // +0x00 pointer; +0x08 length; +0x10 capacity with high-bit
+    // inline tag; +0x18 16-byte inline storage. For inline text, pointer
+    // MUST equal the exact field address +0x18 (fail closed otherwise).
+    const auto decoded=NativeRowStringLayout::Decode(
+        headers,offset,elementAddress);
+    result.size=decoded.size;
+    result.capacity=decoded.capacity;
+    result.encodedCapacity=decoded.encodedCapacity;
+    if (!decoded.valid) return result;
+    if (!result.size) {result.state=1;return result;}
+    const auto take=static_cast<std::size_t>(
+        std::min<std::uint64_t>(result.size,64));
+    std::array<std::uint8_t,64> chars{};
+    if (decoded.isInline) {
+        std::memcpy(chars.data(),headers.data()+offset+0x18,take);
+        result.state=2;
+    } else {
+        if (!ReadNativeRowTextBytes(decoded.pointer,chars.data(),take)) {
+            result.state=4;return result;
+        }
+        result.state=3;
+    }
+    result.captured=static_cast<std::uint8_t>(take);
+    result.raw=chars;
+    constexpr char digits[]="0123456789ABCDEF";
+    for(std::size_t i=0;i<take;++i) {
+        result.preview[i]=chars[i]>=0x20 && chars[i]<=0x7E
+            ? static_cast<char>(chars[i]):'.';
+        if (i<24) {
+            result.rawHex[2*i]=digits[chars[i]>>4];
+            result.rawHex[2*i+1]=digits[chars[i]&0x0F];
+        }
+    }
+    result.preview[take]='\0';
+    return result;
+}
+
+// A single, bounded native heap read while the engine has passed us its row
+// pointer synchronously. Refuse cross-region buffers and page guards.
+// These are raw candidate fields, NOT yet a verified hovered-item identity.
+bool SnapshotNativeRow(void* element,
+    std::array<std::int32_t,4>& rect,
+    std::array<std::uint32_t,4>& color,
+    std::array<std::uint8_t,0x50>& textHeaders) noexcept {
+    if (!element) return false;
+    constexpr std::size_t bytes=0x178; // includes RGBA float4 at +0x168
+    MEMORY_BASIC_INFORMATION region{};
+    const auto address=reinterpret_cast<std::uintptr_t>(element);
+    if (!VirtualQuery(element,&region,sizeof(region)) ||
+        region.State!=MEM_COMMIT ||
+        (region.Protect&(PAGE_GUARD|PAGE_NOACCESS))!=0 ||
+        address<reinterpret_cast<std::uintptr_t>(region.BaseAddress) ||
+        bytes>region.RegionSize ||
+        address-reinterpret_cast<std::uintptr_t>(region.BaseAddress)>
+            region.RegionSize-bytes) return false;
+    std::array<std::uint8_t,bytes> snapshot{};
+    std::memcpy(snapshot.data(),element,snapshot.size());
+    std::memcpy(rect.data(),snapshot.data()+0x50,sizeof(rect));
+    std::memcpy(color.data(),snapshot.data()+0x168,sizeof(color));
+    std::memcpy(textHeaders.data(),snapshot.data(),textHeaders.size());
+    return true;
+}
+
+bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept;
+
+void __fastcall HookNativeRowRenderer(void* element) noexcept {
+    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    if (TryNativeRowBgLive(element,caller)) return;
+    if (OriginalNativeRowRenderer) OriginalNativeRowRenderer(element);
+}
+
+void ArmNativeRowRuntime() noexcept {
+    if (NativeRowRendererHookInstalled.load(std::memory_order_acquire) &&
+        NativeRowAppendHookInstalled.load(std::memory_order_acquire)) {
+
+        return;
+    }
+    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
+    if (!Context || !Base || !build || std::string_view(build)!="93847") {
+        LogWarn("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-base no-hook=1 no-fallback=1");
+        return;
+    }
+    constexpr std::array<std::uint8_t,16> entry{{
+        0x40,0x56,0x48,0x81,0xEC,0x10,0x01,0x00,
+        0x00,0x48,0x8B,0x05,0xD8,0x0A,0x0F,0x02
+    }};
+    constexpr std::array<std::uint8_t,5> call{{0xE8,0x14,0x9C,0x05,0x00}};
+    constexpr std::array<std::uint8_t,3> rcxToRsi{{0x48,0x8B,0xF1}};
+    constexpr std::array<std::uint8_t,7> colorLea{{
+        0x4C,0x8D,0xB6,0x68,0x01,0x00,0x00
+    }};
+    std::array<std::uint8_t,5> liveCall{};
+    std::array<std::uint8_t,3> liveMov{};
+    std::array<std::uint8_t,7> liveLea{};
+    if (!ReadSafe(NativeRowCallerRva,liveCall.data(),liveCall.size()) ||
+        liveCall!=call ||
+        !ReadSafe(0x8DA802,liveMov.data(),liveMov.size()) ||
+        liveMov!=rcxToRsi ||
+        !ReadSafe(NativeRowColorLeaRva,liveLea.data(),liveLea.size()) ||
+        liveLea!=colorLea ||
+        !Context->CheckExpectedBytes(NativeRowRendererRva,entry.data(),
+            static_cast<std::uint32_t>(entry.size()))) {
+        LogWarn("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-caller-or-argument-fingerprint-mismatch potential-foreign-hook=1 no-fallback=1");
+        return;
+    }
+    // The atlas's 92777 ABI is NOT enough alone: guard the entire 93847
+    // append function entry, its sole direct caller, and vector offset.
+    // If Extended Item Stats (or another plugin) owns this function entry,
+    // refuse the experiment rather than chaining or overwriting its bridge.
+    constexpr std::array<std::uint8_t,26> appendEntry{{
+        0x48,0x89,0x5C,0x24,0x08,0x48,0x89,0x6C,0x24,0x10,
+        0x48,0x89,0x74,0x24,0x18,0x48,0x89,0x7C,0x24,0x20,
+        0x41,0x56,0x48,0x83,0xEC,0x40
+    }};
+    constexpr std::array<std::uint8_t,5> appendCaller{{
+        0xE8,0xD4,0xC3,0x03,0x00
+    }};
+    constexpr std::array<std::uint8_t,7> appendVector{{
+        0x4C,0x8D,0xB1,0x68,0x01,0x00,0x00
+    }};
+    std::array<std::uint8_t,5> actualCaller{};
+    std::array<std::uint8_t,7> actualVector{};
+    if (!ReadSafe(NativeRowAppendCallRva,actualCaller.data(),actualCaller.size()) ||
+        actualCaller!=appendCaller ||
+        !ReadSafe(0x88017A,actualVector.data(),actualVector.size()) ||
+        actualVector!=appendVector ||
+        !Context->CheckExpectedBytes(NativeRowAppendRva,appendEntry.data(),
+            static_cast<std::uint32_t>(appendEntry.size()))) {
+        LogWarn("LOOT_NATIVE_ROW_APPEND_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-caller-vector-fingerprint-or-foreign-owner nativeRowPhase=refused no-fallback=1 backgroundWrites=0");
+        return;
+    }
+    if (!Context->InstallInlineHook(NativeRowAppendRva,appendEntry.data(),
+        static_cast<std::uint32_t>(appendEntry.size()),
+        HookNativeRowAppend,&OriginalNativeRowAppend) ||
+        !OriginalNativeRowAppend) {
+        LogWarn("LOOT_NATIVE_ROW_APPEND_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed no-fallback=1 backgroundWrites=0");
+        return;
+    }
+    NativeRowAppendHookInstalled.store(true,std::memory_order_release);
+
+    if (!Context->InstallInlineHook(NativeRowRendererRva,entry.data(),
+        static_cast<std::uint32_t>(entry.size()),
+        HookNativeRowRenderer,&OriginalNativeRowRenderer) ||
+        !OriginalNativeRowRenderer) {
+        LogWarn("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed no-fallback=1");
+        return;
+    }
+    NativeRowRendererHookInstalled.store(true,std::memory_order_release);
+
+}
+
+
+
+// Qualify a small heap memory range before copying. Never access stale or
+// unrelated component pointers after this synchronous function invocation.
+bool ReadNativeStyledVector(void* component,
+    NativeStyledTextVector& vector) noexcept {
+    if (!component) return false;
+    const auto address=reinterpret_cast<std::uintptr_t>(component);
+    constexpr std::uintptr_t offset=0x168;
+    if (address>std::numeric_limits<std::uintptr_t>::max()-offset)
+        return false;
+    return ReadNativeRowTextBytes(address+offset,&vector,sizeof(vector));
+}
+
+// Production native-row write guard. Read the current row and latest completed
+// append on this invocation; refuse styling when scope, sequence, vector,
+// original text, or writable-range validation disagrees.
+bool NativeRowBgWritable(void* element) noexcept {
+    if (!element) return false;
+    const auto address=reinterpret_cast<std::uintptr_t>(element);
+    if (address>std::numeric_limits<std::uintptr_t>::max()-0x178U)
+        return false;
+    const auto color=address+0x168U;
+    MEMORY_BASIC_INFORMATION region{};
+    if (!VirtualQuery(reinterpret_cast<void*>(color),&region,sizeof(region)) ||
+        region.State!=MEM_COMMIT ||
+        (region.Protect&(PAGE_GUARD|PAGE_NOACCESS))) return false;
+    const DWORD protection=region.Protect&0xFFU;
+    if (protection!=PAGE_READWRITE &&
+        protection!=PAGE_EXECUTE_READWRITE) return false;
+    const auto base=reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+    return base<=color && color-base<=region.RegionSize &&
+        region.RegionSize-(color-base)>=sizeof(std::array<float,4>);
+}
+
+bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
+    if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire)) return false;
+    if (caller!=Base+NativeRowCallerReturnRva || !element ||
+        !OriginalNativeRowRenderer ||
+        !NativeRowAppendHookInstalled.load(std::memory_order_acquire) ||
+        !NativeRowRendererHookInstalled.load(std::memory_order_acquire))
+        return false;
+    NativeRowBgLiveAttempts.fetch_add(1,std::memory_order_relaxed);
+    const auto append=NativeRowLiveLastAppend; // TLS: same render thread
+    const auto epoch=NativeRowBgLiveEpoch.load(std::memory_order_acquire);
+    LARGE_INTEGER now{},frequency{};
+    if (!append.qualified || !append.epoch || append.epoch!=epoch ||
+        !QueryPerformanceCounter(&now) ||
+        !QueryPerformanceFrequency(&frequency) ||
+        !NativeRowBgLivePolicy::RecentChain(
+            append.qpc,now.QuadPart,frequency.QuadPart) ||
+        !append.labelSequence || !append.unitId ||
+        append.row!=reinterpret_cast<std::uintptr_t>(element) ||
+        !NativeRowBgWritable(element)) {
+        NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    const auto current=NativeRowLiveLatestLabel;
+    if (!NativeRowBgLivePolicy::SameLabel(
+            append.epoch,epoch,append.labelSequence,current.sequence,
+            append.unitId,current.unitId,append.classId,current.classId,
+            append.code,current.code) ||
+        current.rulesGeneration!=append.rulesGeneration ||
+        !current.scopeMatches ||
+        current.sourceLength!=append.sourceLength ||
+        current.source!=append.source ||
+        current.displayLength!=append.displayLength ||
+        current.display!=append.display) {
+        NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
+        std::memory_order_acquire);
+    if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
+                    !rules->hiddenRules) ||
+        rules->generation!=append.rulesGeneration) {
+        NativeRowBgLiveNoRule.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    RuleEngine::Item rowItem{};
+    rowItem.code=CanonicalItemCode(append.code);
+    rowItem.classIdKnown=true;rowItem.classId=append.classId;
+    rowItem.quantityKnown=append.quantityKnown;
+    rowItem.quantity=append.quantity;
+    rowItem.qualityKnown=append.qualityKnown;
+    rowItem.quality=append.quality;
+    rowItem.itemLevelKnown=append.itemLevelKnown;
+    rowItem.itemLevel=append.itemLevel;
+    rowItem.socketsKnown=append.socketsKnown;
+    rowItem.sockets=append.sockets;
+    rowItem.etherealKnown=append.etherealKnown;
+    rowItem.ethereal=append.ethereal;
+    rowItem.identifiedKnown=append.identifiedKnown;
+    rowItem.identified=append.identified;
+    GroundRuleDecision resolvedRule{};
+    const auto* rule=ResolveGroundRule(rules.get(),rowItem,resolvedRule) ?
+        &resolvedRule : nullptr;
+    if (!rule) {
+        NativeRowBgLiveNoRule.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    NativeStyledTextVector vector{};
+    if (!ReadNativeStyledVector(
+            reinterpret_cast<void*>(append.component),vector) ||
+        vector.data!=append.data || vector.count!=1 ||
+        vector.data!=append.row) {
+        NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    std::array<std::int32_t,4> rect{};
+    std::array<std::uint32_t,4> nativeColor{};
+    std::array<std::uint8_t,0x50> header{};
+    if (!SnapshotNativeRow(element,rect,nativeColor,header)) {
+        NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    const auto text=InspectNativeRowTextCandidate(header,0,
+        reinterpret_cast<std::uintptr_t>(element));
+    const bool exact=text.size==append.displayLength &&
+        text.captured==text.size && text.size!=0 &&
+        std::memcmp(text.raw.data(),append.display.data(),
+            append.displayLength)==0;
+    if (!exact || !NativeRowBgPolicy::VanillaHiddenBlack(nativeColor)) {
+        NativeRowBgLiveRejectedColor.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    // A hidden-hover label is a DIFFERENT draw path from bulk ground paint.
+    // Only suppress a show:false row AFTER verifying the exact live SoE item,
+    // generation, same-thread append, renderer row/vector, text, and native
+    // background. Do not inspect Alt/input state and do not mutate native
+    // objects or the item's pickup/interaction state. Unlike bulk ground
+    // paint, this row renderer handles only visual output for this label.
+    if (!rule->show) {
+        LARGE_INTEGER finalNow{};
+        const auto latest=NativeRowLiveLatestLabel;
+        if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire) ||
+            NativeRowBgLiveEpoch.load(std::memory_order_acquire)!=epoch ||
+            NativeRowLiveLastAppend.appendSequence!=append.appendSequence ||
+            NativeRowLiveLastAppend.epoch!=epoch ||
+            latest.sequence!=append.labelSequence ||
+            latest.rulesGeneration!=append.rulesGeneration ||
+            !QueryPerformanceCounter(&finalNow) ||
+            !NativeRowBgLivePolicy::RecentChain(
+                append.qpc,finalNow.QuadPart,frequency.QuadPart) ||
+            rules->generation!=append.rulesGeneration ||
+            !GroundVisibility::SuppressHiddenHover(
+                HideGroundArmed.load(std::memory_order_acquire),
+                current.scopeMatches && current.unitId==append.unitId &&
+                    current.classId==append.classId && current.code==append.code,
+                append.qualified && append.appendSequence!=0,
+                append.row==reinterpret_cast<std::uintptr_t>(element),
+                exact,latest.rulesGeneration==append.rulesGeneration,
+                !rule->show)) {
+            NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
+            return false;
+        }
+        return true; // ONLY this fully verified hidden-hover row is not drawn
+    }
+    if (!rule->hasBackground && !rule->hasTextColor) return false;
+    if (NativeRowBgInsideRenderer ||
+        NativeRowBgDrawGate.test_and_set(std::memory_order_acquire)) {
+        NativeRowBgLiveBusy.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    NativeRowBgInsideRenderer=true;
+    auto* color=reinterpret_cast<std::uint8_t*>(element)+0x168;
+    std::array<std::uint32_t,4> original{},replacement{};
+    std::memcpy(original.data(),color,sizeof(original));
+    const bool changeBackground=rule->hasBackground;
+    if (changeBackground)
+        std::memcpy(replacement.data(),rule->background.data(),sizeof(replacement));
+    LARGE_INTEGER finalNow{};
+    const bool stillQualified=NativeRowBgLiveEnabled.load(
+            std::memory_order_acquire) &&
+        NativeRowBgLiveEpoch.load(std::memory_order_acquire)==epoch &&
+        NativeRowLiveLastAppend.appendSequence==append.appendSequence &&
+        NativeRowLiveLastAppend.epoch==epoch &&
+        NativeRowLiveLatestLabel.sequence==append.labelSequence &&
+        QueryPerformanceCounter(&finalNow) &&
+        NativeRowBgLivePolicy::RecentChain(append.qpc,finalNow.QuadPart,
+            frequency.QuadPart) &&
+        original==nativeColor &&
+        (!changeBackground || replacement!=original) &&
+        rules->generation==append.rulesGeneration;
+    if (!stillQualified) {
+        NativeRowBgInsideRenderer=false;
+        NativeRowBgDrawGate.clear(std::memory_order_release);
+        NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    // Background and font are independent actions on the same fully
+    // qualified hidden-hover row. Background uses a temporary synchronous
+    // float4 write/restore; font uses only the nested glyph call scope.
+    if (changeBackground) {
+        std::memcpy(color,replacement.data(),sizeof(replacement));
+        NativeRowBgLiveWrites.fetch_add(1,std::memory_order_relaxed);
+    }
+    BeginNativeRowFontDraw(append.unitId,append.code,
+        append.appendSequence,*rule);
+    NativeRowBgLiveLastUnitId.store(append.unitId,
+        std::memory_order_release);
+    NativeRowBgLiveLastCode.store(append.code,
+        std::memory_order_release);
+    OriginalNativeRowRenderer(element); // exactly once on success
+    if (changeBackground) {
+        std::array<std::uint32_t,4> after{};
+        std::memcpy(after.data(),color,sizeof(after));
+        if (after==replacement) {
+            std::memcpy(color,original.data(),sizeof(original));
+            NativeRowBgLiveRestored.fetch_add(1,std::memory_order_relaxed);
+        } else {
+            NativeRowBgLiveRestoreAnomaly.fetch_add(1,
+                std::memory_order_relaxed);
+            ResetNativeRowFontColor();
+            NativeRowBgLiveEnabled.store(false,std::memory_order_release);
+            NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
+            // Native renderer changed color: never overwrite its newer value.
+        }
+    }
+    EndNativeRowFontDraw();
+    NativeRowBgInsideRenderer=false;
+    NativeRowBgDrawGate.clear(std::memory_order_release);
+    return true;
+}
+
+// Qualified native append handoff. The actual ABI has 5 pointer
+// arguments in RCX/RDX/R8/R9/stack (atlas, backed by 93847 native prologue).
+// Forward all five to the loader trampoline EXACTLY ONCE; never hold a lock
+// across the original call, and never log/allocate inside this hook.
+void __fastcall HookNativeRowAppend(void* component,const void* text,
+    const void* requestedRect,const void* style,
+    const void* secondaryText) noexcept {
+    const bool live=NativeRowBgLiveEnabled.load(std::memory_order_acquire);
+    NativeRowLiveAppend candidate{};
+    NativeStyledTextVector before{};
+    if (live) {
+        NativeRowLiveLastAppend={}; // any new append revokes previous identity
+        candidate.epoch=NativeRowBgLiveEpoch.load(std::memory_order_acquire);
+        candidate.appendSequence=++NativeRowLiveNextAppendSeq;
+        const auto label=NativeRowLiveLatestLabel;
+        candidate.labelSequence=label.sequence;
+        candidate.rulesGeneration=label.rulesGeneration;
+        candidate.unitId=label.unitId;
+        candidate.classId=label.classId;
+        candidate.code=label.code;
+        candidate.quantity=label.quantity;
+        candidate.quantityKnown=label.quantityKnown;
+        candidate.qualityKnown=label.qualityKnown;
+        candidate.quality=label.quality;
+        candidate.itemLevelKnown=label.itemLevelKnown;
+        candidate.itemLevel=label.itemLevel;
+        candidate.socketsKnown=label.socketsKnown;
+        candidate.sockets=label.sockets;
+        candidate.etherealKnown=label.etherealKnown;
+        candidate.ethereal=label.ethereal;
+        candidate.identifiedKnown=label.identifiedKnown;
+        candidate.identified=label.identified;
+        candidate.sourceLength=label.sourceLength;
+        candidate.source=label.source;
+        candidate.displayLength=label.displayLength;
+        candidate.display=label.display;
+        candidate.component=reinterpret_cast<std::uintptr_t>(component);
+        if (reinterpret_cast<std::uintptr_t>(_ReturnAddress())!=
+            Base+NativeRowAppendReturnRva || !label.scopeMatches ||
+            !label.epoch || label.epoch!=candidate.epoch) candidate={};
+        else {
+            const auto* scope=InWorldCompatService.load(std::memory_order_acquire);
+            InWorldCompat::ActiveItem active{};
+            active.structSize=sizeof(active);
+            if (!scope || !scope->getCurrentItem ||
+                !scope->getCurrentItem(&active) || active.unitType!=4 ||
+                active.unitId!=label.unitId || active.classId!=label.classId)
+                candidate={};
+            else {
+                LARGE_INTEGER stamp{},frequency{};
+                if (!QueryPerformanceCounter(&stamp) ||
+                    !QueryPerformanceFrequency(&frequency) ||
+                    !NativeRowBgLivePolicy::RecentChain(
+                        label.qpc,stamp.QuadPart,frequency.QuadPart) ||
+                    !ReadNativeStyledVector(component,before) || before.count!=0)
+                    candidate={};
+            }
+        }
+    }
+    if (OriginalNativeRowAppend)
+        OriginalNativeRowAppend(component,text,requestedRect,style,secondaryText);
+    if (!live || !candidate.appendSequence ||
+        !NativeRowBgLiveEnabled.load(std::memory_order_acquire) ||
+        candidate.epoch!=NativeRowBgLiveEpoch.load(std::memory_order_acquire) ||
+        NativeRowLiveLatestLabel.sequence!=candidate.labelSequence ||
+        NativeRowLiveLatestLabel.displayLength!=candidate.displayLength ||
+        NativeRowLiveLatestLabel.display!=candidate.display) return;
+    NativeStyledTextVector after{};
+    if (!ReadNativeStyledVector(component,after) ||
+        !NativeRowAppendMatch::ValidNewRow(after.data,before.count,
+            after.count,after.capacity) ||
+        !NativeRowBgPolicy::SingleRow(before.count,after.count)) return;
+    candidate.data=after.data;
+    candidate.row=after.data;
+    std::array<std::int32_t,4> rect{};
+    std::array<std::uint32_t,4> color{};
+    std::array<std::uint8_t,0x50> header{};
+    if (!SnapshotNativeRow(reinterpret_cast<void*>(candidate.row),
+            rect,color,header) ||
+        !NativeRowBgPolicy::VanillaHiddenBlack(color)) return;
+    const auto rowText=InspectNativeRowTextCandidate(header,0,candidate.row);
+    if (rowText.size!=candidate.displayLength ||
+        rowText.captured!=rowText.size || rowText.size==0 ||
+        std::memcmp(rowText.raw.data(),candidate.display.data(),
+            candidate.displayLength)!=0) return;
+    LARGE_INTEGER stamp{};
+    if (!QueryPerformanceCounter(&stamp)) return;
+    candidate.qpc=stamp.QuadPart;
+    candidate.qualified=true;
+    NativeRowLiveLastAppend=candidate;
 }
 
 // Item-code validation used by production rule evaluation and native guards.
@@ -2741,6 +3525,121 @@ bool DiagnoseTrackedTooltipOwner(
     return exactEntryHook;
 }
 
+bool __cdecl OnCompatibleInWorldLabel(
+    const InWorldCompat::Event* event, void*) noexcept {
+    if (!event || event->structSize < sizeof(InWorldCompat::Event)
+        || event->unitType != 4 || !event->nativeUnit || !event->source
+        || !event->sourceLength || event->sourceLength > 255U
+        || !OriginalGetItemCode) return;
+    const auto code=CanonicalItemCode(
+        OriginalGetItemCode(const_cast<void*>(event->nativeUnit)));
+    if (!PrintableItemCode(code)) return;
+    ObserveMinimapItemPosition(event->nativeUnit,code,event->unitId,event->classId);
+    ObserveGroundSoundIdentity(event->unitId,code,event->nativeUnit,event->classId);
+    ObserveNativeRowLiveLabel(event->unitType,event->classId,event->unitId,code,
+        event->nativeUnit,event->source,event->sourceLength);
+}
+
+bool __cdecl OnCompatibleInWorldStyle(
+    const InWorldCompat::Event* event,
+    char* replacement,std::uint32_t capacity,void*) noexcept {
+    if (!event || event->structSize < sizeof(InWorldCompat::Event)
+        || event->unitType != 4 || !event->nativeUnit || !event->source
+        || !event->sourceLength || event->sourceLength > 255U
+        || !replacement || capacity == 0U
+        || !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire)
+        || ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
+        return false;
+    const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
+    if (!snapshot) return false;
+    const auto code=CanonicalItemCode(
+        OriginalGetItemCode(const_cast<void*>(event->nativeUnit)));
+    if (!PrintableItemCode(code)) return false;
+    const auto observed=GroundRuleItem(code,event->nativeUnit,snapshot.get(),
+        event->unitId,GroundPropertyLive::Purpose::VerifiedLabel);
+    GroundRuleDecision resolvedRule{};
+    const auto* rule=ResolveGroundRule(snapshot.get(),observed,resolvedRule)
+        ? &resolvedRule : nullptr;
+    UpdateMinimapProjectionIconRule(event->unitId,code,rule);
+    const auto quantity=GroundStackQuantity(event->nativeUnit);
+    const char palette=rule && rule->hasTextColor
+        ? HoverStyle::PaletteSelector(rule->textColor) : '\0';
+    const auto source=std::string_view(event->source,event->sourceLength);
+    const auto name=rule && rule->hasName
+        ? std::string_view(rule->name.data(),rule->bytes-1U)
+        : std::string_view{};
+    if (!GroundQuantity::BuildHover(source,name,rule && rule->hasName,
+            palette,quantity,replacement,capacity)) return false;
+    if (const auto* end=static_cast<const char*>(
+            std::memchr(replacement,'\0',capacity));end && end>replacement)
+        ObserveNativeRowLiveReplacement(event->classId,event->unitId,code,source,
+            std::string_view(replacement,static_cast<std::size_t>(end-replacement)));
+    return true;
+}
+
+bool TryAttachInWorldLabelCompat() noexcept {
+    if (InWorldCompatLease && InWorldCompatService.load(std::memory_order_acquire))
+        return true;
+    if (!Context || !D2RL::GetBuildName(Context)
+        || std::string_view(D2RL::GetBuildName(Context))!="93847") return false;
+    std::array<char,64> owner{};
+    if (!DiagnoseTrackedTooltipOwner(InWorldFormatterRva,
+            ExpectedInWorldFormatter.data(),
+            static_cast<std::uint32_t>(ExpectedInWorldFormatter.size()),owner)) {
+        LogWarn("LOOT_INWORLD_COMPAT_UNAVAILABLE reason=qualified-0xC0420-host-not-found hidden-hover-style=off hidden-hover-sound=off");
+        return false;
+    }
+    const auto* communication=ResolvePluginCommunication();
+    if (!communication) return false;
+    D2RL::PluginCommunication::ServiceLease<InWorldCompat::Service> lease;
+    const auto acquired=D2RL::PluginCommunication::Acquire(
+        Context,communication,owner.data(),InWorldCompat::ServiceName,
+        InWorldCompat::ServiceVersion,InWorldCompat::ServiceRequiredSize,&lease);
+    if (acquired!=D2RL::PluginCommunication::Result::Success || !lease
+        || !InWorldCompat::HasService(lease.Get())
+        || !lease->isReady || !lease->isReady()) {
+        LogWarn("LOOT_INWORLD_COMPAT_UNAVAILABLE reason=host-service-missing-or-not-ready hidden-hover-style=off hidden-hover-sound=off");
+        return false;
+    }
+    if (!lease->registerObserver(Context,&OnCompatibleInWorldLabel,nullptr)) {
+        LogWarn("LOOT_INWORLD_COMPAT_UNAVAILABLE reason=observer-registration-refused");
+        return false;
+    }
+    InWorldCompatObserverAttached=true;
+    if (!lease->registerTransformer(Context,&OnCompatibleInWorldStyle,nullptr)) {
+        (void)lease->unregisterObserver(Context,&OnCompatibleInWorldLabel,nullptr);
+        InWorldCompatObserverAttached=false;
+        LogWarn("LOOT_INWORLD_COMPAT_UNAVAILABLE reason=transform-registration-refused");
+        return false;
+    }
+    InWorldCompatTransformerAttached=true;
+    const auto* service=lease.Get();
+    InWorldCompatLease=std::move(lease);
+    InWorldCompatService.store(service,std::memory_order_release);
+    char line[300]{};
+    std::snprintf(line,sizeof(line),
+        "LOOT_INWORLD_COMPAT_READY version=" UNHOARDER_VERSION_STRING " host=%s "
+        "service=in-world-item-label-compat abi=1 entryRva=0xC0420 "
+        "observe=1 transform=1 activeScope=1 productSpecificLookup=0",owner.data());
+    LogInfo(line);
+    return true;
+}
+
+void DetachInWorldLabelCompat() noexcept {
+    const auto* service=InWorldCompatService.exchange(nullptr,std::memory_order_acq_rel);
+    if (service && Context) {
+        if (InWorldCompatTransformerAttached && service->unregisterTransformer)
+            (void)service->unregisterTransformer(
+                Context,&OnCompatibleInWorldStyle,nullptr);
+        if (InWorldCompatObserverAttached && service->unregisterObserver)
+            (void)service->unregisterObserver(
+                Context,&OnCompatibleInWorldLabel,nullptr);
+    }
+    InWorldCompatTransformerAttached=false;
+    InWorldCompatObserverAttached=false;
+    (void)InWorldCompatLease.Reset();
+}
+
 bool TryAttachForeignSharedLabelPaint(
     const void* expected,std::uint32_t expectedSize) noexcept {
     std::array<char,64> owner{};
@@ -2993,11 +3892,92 @@ std::uint64_t RunOwnedGlyphRendererChain(
         nullptr,caller,glyphContext,x,y,rgba,&ContinueCompatGlyph,&next);
 }
 
+bool TryForwardNativeRowFontGlyph(void* context,float x,float y,
+    const float* nativeRgba,std::uintptr_t caller,
+    TooltipCompat::GlyphRendererNextFn next,void* nextContext,
+    std::uint64_t& result) noexcept {
+    if (!NativeRowFontColorEnabled.load(std::memory_order_acquire))
+        return false;
+    const auto& draw=NativeRowFontCurrentDraw;
+    if (!draw.active || !NativeRowBgInsideRenderer || !draw.unitId ||
+        !draw.appendSequence || !NativeRowBgLiveEnabled.load(
+            std::memory_order_acquire)) return false;
+    NativeRowFontColorAttempts.fetch_add(1,std::memory_order_relaxed);
+    if (caller!=Base+CorrectedGlyphBCallRva+5 || VerifiedRuleGlyphColor) {
+        NativeRowFontColorRejectedCaller.fetch_add(1,
+            std::memory_order_relaxed);
+        return false;
+    }
+    if (!draw.sessionEpoch ||
+        draw.sessionEpoch!=NativeRowBgLiveEpoch.load(
+            std::memory_order_acquire)) {
+        NativeRowFontColorRejectedEpoch.fetch_add(1,
+            std::memory_order_relaxed);
+        return false;
+    }
+    std::array<float,4> configured{};
+    std::memcpy(configured.data(),draw.configuredGlyphBits.data(),
+        sizeof(configured));
+    if (!draw.hasTextRule ||
+        !NativeRowFontColorPolicy::ValidJsonColor(configured)) {
+        NativeRowFontColorRejectedRule.fetch_add(1,
+            std::memory_order_relaxed);
+        return false;
+    }
+    std::array<float,4> native{};
+    SIZE_T read{};
+    if (!nativeRgba ||
+        !ReadProcessMemory(GetCurrentProcess(),nativeRgba,native.data(),
+            sizeof(native),&read) || read!=sizeof(native)) {
+        NativeRowFontColorReadFailures.fetch_add(1,
+            std::memory_order_relaxed);
+        return false;
+    }
+    if (!NativeRowFontColorPolicy::EligibleGroundLabel(native)) {
+        NativeRowFontColorRejectedNative.fetch_add(1,
+            std::memory_order_relaxed);
+        return false;
+    }
+    configured[3]=native[3];
+    if (!NativeRowFontColorEnabled.load(std::memory_order_acquire) ||
+        !NativeRowBgLiveEnabled.load(std::memory_order_acquire) ||
+        draw.sessionEpoch!=NativeRowBgLiveEpoch.load(
+            std::memory_order_acquire)) {
+        NativeRowFontColorRejectedEpoch.fetch_add(1,
+            std::memory_order_relaxed);
+        return false;
+    }
+    if (!next) return false;
+    result=next(nextContext,context,x,y,configured.data());
+    NativeRowFontColorForwarded.fetch_add(1,
+        std::memory_order_relaxed);
+    NativeRowFontColorLastUnitId.store(draw.unitId,
+        std::memory_order_relaxed);
+    NativeRowFontColorLastCode.store(draw.code,
+        std::memory_order_relaxed);
+    NativeRowFontColorLastAppendSeq.store(draw.appendSequence,
+        std::memory_order_relaxed);
+    std::array<std::uint32_t,4> beforeBits{},forwardedBits{};
+    std::memcpy(beforeBits.data(),native.data(),sizeof(beforeBits));
+    std::memcpy(forwardedBits.data(),configured.data(),sizeof(forwardedBits));
+    for (unsigned i=0;i<4;++i) {
+        NativeRowFontColorLastOriginalBits[i].store(beforeBits[i],
+            std::memory_order_relaxed);
+        NativeRowFontColorLastForwardedBits[i].store(forwardedBits[i],
+            std::memory_order_relaxed);
+    }
+    return true;
+}
+
 std::uint64_t __cdecl UnHoarderGlyphRendererMiddleware(
     void*,std::uintptr_t caller,
     void* context,float x,float y,const float* nativeRgba,
     TooltipCompat::GlyphRendererNextFn next,void* nextContext) noexcept {
     if (!next) return 0;
+    std::uint64_t hiddenHoverColored{};
+    if (TryForwardNativeRowFontGlyph(
+            context,x,y,nativeRgba,caller,next,nextContext,hiddenHoverColored))
+        return hiddenHoverColored;
     if (caller!=Base+CorrectedGlyphBCallRva+5 ||
         !CorrectedGlyphBArmed.load(std::memory_order_relaxed) ||
         !VerifiedRuleGlyphColor || !nativeRgba)
@@ -3227,6 +4207,55 @@ void SyncFilterVisibilityState() noexcept {
         "LOOT_VISIBILITY_READY version=" UNHOARDER_VERSION_STRING " hiddenRules=%zu source=JSON-show:false bulk-ground-native-painter-skip native-painter-forwarded=0-for-qualified-hidden-only key-state-independent=1 hover-native-path=qualified-hidden-row-skip pickup-state-writes=0",
         rules->hiddenRules);
     LogInfo(message);
+}
+
+
+void EnableAutomaticNativeHover() noexcept {
+    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
+        std::memory_order_acquire);
+    const auto* scope=InWorldCompatService.load(std::memory_order_acquire);
+    if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
+                    !rules->hiddenRules) ||
+        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
+        !scope || !scope->getCurrentItem || !scope->isReady ||
+        !scope->isReady() || !OriginalGetItemCode || !HookInstalled.load()) {
+        LogWarn("LOOT_NATIVE_HOVER_UNAVAILABLE reason=json-or-generic-host-scope-or-native-filter-not-ready no-fallback=1");
+        return;
+    }
+    if (!NativeRowAppendHookInstalled.load(std::memory_order_acquire) ||
+        !NativeRowRendererHookInstalled.load(std::memory_order_acquire))
+        ArmNativeRowRuntime();
+    if (!NativeRowAppendHookInstalled.load(std::memory_order_acquire) ||
+        !NativeRowRendererHookInstalled.load(std::memory_order_acquire) ||
+        !OriginalNativeRowAppend || !OriginalNativeRowRenderer) {
+        LogWarn("LOOT_NATIVE_HOVER_UNAVAILABLE native-append-or-renderer-hook-refused no-fallback=1");
+        return;
+    }
+    bool textRule=false;
+    for (const auto& rule:rules->rules)
+        if (rule.hasTextColor &&
+            NativeRowFontColorPolicy::ValidJsonColor(rule.textColor)) {
+            textRule=true;
+            break;
+        }
+    // Font color is independently eligible once the same-thread item/append/
+    // row/caller chain has qualified ownership. It does not require a
+    // backgroundColor action on the rule.
+    const bool fontReady=textRule &&
+        CorrectedGlyphBInstalled.load(std::memory_order_acquire);
+    // Font may be omitted (no text rule). Report an unavailable
+    // glyph hook when text rules were requested; background stays active.
+    if (textRule && !fontReady)
+        LogWarn("LOOT_NATIVE_HOVER_UNAVAILABLE font-glyph-hook-not-ready background-only=1");
+    NativeRowBgLiveEnabled.store(true,std::memory_order_release);
+    NativeRowFontColorEnabled.store(fontReady,std::memory_order_release);
+    char line[230]{};
+    std::snprintf(line,sizeof(line),
+        "LOOT_NATIVE_HOVER_READY version=" UNHOARDER_VERSION_STRING " background=%u font=%u hiddenRules=%zu rules=%zu "
+        "hide-hover=qualified-native-row-suppression globalRect=0",
+        rules->backgroundRules?1U:0U,fontReady?1U:0U,
+        rules->hiddenRules,rules->rules.size());
+    LogInfo(line);
 }
 
 
@@ -3689,6 +4718,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
         SoundArmed.store(false,std::memory_order_release);
         SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);
+        ResetNativeRowLiveSession();
         LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=valid-json-empty-rules");
         return false;
     }
@@ -3721,6 +4751,10 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     SyncFilterBackgroundState();
     SyncFilterTextColorState();
     SyncFilterVisibilityState();
+    if (rules->backgroundRules || rules->textColorRules || rules->hiddenRules)
+        EnableAutomaticNativeHover();
+    else
+        ResetNativeRowLiveSession();
     // New files/initial activation use the existing first-observed baseline.
     // For live reloads, keep already-observed sound IDs while cancelling any
     // sounds queued from the previous generation (the old epoch).
@@ -4151,6 +5185,9 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     }
     InWorldLifecycle = nullptr;
     InWorldJoinedListener = D2RL::Lifecycle::InvalidHandle;
+    InWorldCompatService.store(nullptr,std::memory_order_relaxed);
+    InWorldCompatObserverAttached=false;
+    InWorldCompatTransformerAttached=false;
 
     Base = context->exeBase;
     SoundArmed.store(false,std::memory_order_relaxed);
@@ -4270,6 +5307,9 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     GroundQuantityReader.store(nullptr,std::memory_order_release);
     (void)GroundQuantityCompatLease.Reset();
     HideGroundArmed.store(false,std::memory_order_release);
+    ResetNativeRowLiveSession();
+    ResetNativeRowFontColor();
+    DetachInWorldLabelCompat();
     // Stop background scheduling before allowing loader-owned service pointers
     // or the plugin context to become invalid. No new inventory callback is
     // queued after this join; loader owns cancellation of already-queued work.
