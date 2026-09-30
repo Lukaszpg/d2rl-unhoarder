@@ -4,7 +4,7 @@ p=(root/'src/plugin.cpp').read_text()
 r=(root/'src/minimap_overlay_renderer.cpp').read_text()
 h=(root/'src/minimap_overlay_renderer.hpp').read_text()
 policy=(root/'src/minimap_icon_policy.hpp').read_text()
-e=(root/'loot-filter.v3.example.json').read_text()
+e=(root/'unhoarder.v3.example.json').read_text()
 
 assert '.version = UNHOARDER_VERSION_STRING' in p
 assert 'bool hasMinimapIcon{};' in p
