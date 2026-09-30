@@ -1209,16 +1209,14 @@ void Emit(const char* message) noexcept {
         std::strstr(message,"LOOT_FILTER_REFUSED") ||
         std::strstr(message,"LOOT_FILTER_INACTIVE") ||
         std::strstr(message,"LOOT_FILTER_AUTO_INACTIVE") ||
-        std::strstr(message,"LOOT_INWORLD_BLOCKED") ||
-        std::strstr(message,"LOOT_INWORLD_LIFECYCLE_UNAVAILABLE") ||
-        std::strstr(message,"LOOT_INWORLD_LIFECYCLE_REFUSED") ||
-        std::strstr(message,"LOOT_NATIVE_HOVER_UNAVAILABLE") ||
         std::strstr(message,"LOOT_GLYPH_B_REFUSED") ||
         std::strstr(message,"LOOT_PICKUP_GUARD_REFUSED") ||
         std::strstr(message,"LOOT_PICKUP_GUARD_INACTIVE") ||
         std::strstr(message,"LOOT_NATIVE_ACTION_REFUSED") ||
         std::strstr(message,"LOOT_NATIVE_ACTION_PARTIAL") ||
         std::strstr(message,"LOOT_NATIVE_ACTION_UNAVAILABLE") ||
+        std::strstr(message,"LOOT_GAME_LIFECYCLE_UNAVAILABLE") ||
+        std::strstr(message,"LOOT_GAME_LIFECYCLE_REFUSED") ||
         std::strstr(message,"LOOT_SOUND_REFUSED") ||
         std::strstr(message,"LOOT_SOUND_QUALIFY refused=") ||
         std::strstr(message,"LOOT_MINIMAP_RENDERER_REFUSED") ||
@@ -1236,7 +1234,6 @@ void Emit(const char* message) noexcept {
         std::strstr(message,"LOOT_FILTER_AUTO_ACTIVE") ||
         std::strstr(message,"LOOT_RELOAD_") ||
         std::strstr(message,"LOOT_PICKUP_GUARD_READY") ||
-        std::strstr(message,"LOOT_NATIVE_HOVER_READY") ||
         std::strstr(message,"LOOT_SOUND_QUALIFY matched=") ||
         std::strstr(message,"LOOT_SOUND_ARMED") ||
         std::strstr(message,"LOOT_MINIMAP_PROJECTION_READY") ||
@@ -3843,9 +3840,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
     }
     const auto current=std::atomic_load_explicit(&PublishedFilterRules,
         std::memory_order_acquire);
-    // Only the live render-thread identity epoch is invalidated. The ground
-    // item and the native label renderer remain owned by D2R/SoE.
-    NativeRowBgLiveEpoch.fetch_add(1,std::memory_order_acq_rel);
+    // Invalidate copied ground-label identity before re-arming the new rules.
     {
         std::lock_guard lock(GroundIdentityMutex);
         GroundIdentities.fill({}); // no old styled-name/paint identity survives
