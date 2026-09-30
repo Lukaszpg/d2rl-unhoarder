@@ -1467,8 +1467,8 @@ bool ParseV2Conditions(const nlohmann::json& value,
                     {"magic",4},{"set",5},{"rare",6},
                     {"unique",7},{"crafted",8},{"tempered",9}
                 }};
-                for(const auto& [name,value]:choices)
-                    if(label==name) {out=value;return true;}
+                for(const auto& [name,quality]:choices)
+                    if(label==name) {out=quality;return true;}
                 return false;
             };
             const auto& values=it.value();
@@ -1480,9 +1480,9 @@ bool ParseV2Conditions(const nlohmann::json& value,
                 if(values.empty() || values.size()>9) {
                     error="rarity-array-must-have-1..9-names";return false;
                 }
-                for(const auto& value:values) {
+                for(const auto& rarityValue:values) {
                     std::uint32_t number{};
-                    if(!qualityValue(value,number)) {
+                    if(!qualityValue(rarityValue,number)) {
                         error="unsupported-rarity-name";return false;
                     }
                     parsed.push_back(number);
