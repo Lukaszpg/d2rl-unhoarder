@@ -2,7 +2,7 @@
 
 **Author:** MindH1ve
 
-Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847 / Sanctuary of Exile.
+Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847. Sanctuary of Exile is not required.
 
 ## Installation
 
@@ -145,7 +145,7 @@ The filter intentionally does not expose hidden unidentified affixes or unique i
 
 A valid JSON file activates the filter automatically. Saving the JSON triggers an atomic live reload after the file is stable; **Ctrl+Shift+F9** remains as the manual reload shortcut. Invalid JSON keeps the previous valid ruleset active.
 
-Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection.
+Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection. These core features run through UnHoarder's own qualified D2RLoader-managed native hooks and do not require a SoE DLL or SoE-specific callback/export API.
 
 Legacy reverse-engineering capture hotkeys and startup probe dumps are not part of the production runtime anymore. Operational logs are limited to configuration, compatibility/readiness, reloads, and actionable failures.
 
