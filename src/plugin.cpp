@@ -20,6 +20,7 @@
 #include "ground_sound_registry.hpp"
 #include "named_sound_loader_identity.hpp"
 #include "../interop/unhoarder_tooltip_compat_v1.hpp"
+#include "../interop/unit_stat_read_compat_v1.hpp"
 #include "tooltip_compat_lifetime.hpp"
 // D2RLoader PluginSDK ThreadService is queried through its typed service contract.
 #include <D2RLPlugin/threads.h>
@@ -212,6 +213,7 @@ SharedLabelPaintFn OriginalSharedLabelPaint{};
 std::atomic_bool BackgroundPaintHookInstalled{};
 
 namespace TooltipCompat = ::UnHoarder::TooltipCompatV1;
+namespace UnitStatCompat = ::D2RLInterop::UnitStatReadCompatV1;
 enum class TooltipCompatRoute : std::uint8_t { None, NativeOwner, ForeignHost };
 std::atomic<TooltipCompatRoute> SharedLabelPaintCompatRoute{TooltipCompatRoute::None};
 std::atomic<TooltipCompatRoute> GlyphRendererCompatRoute{TooltipCompatRoute::None};
@@ -261,7 +263,7 @@ bool TooltipCompatRegistrationActiveOnThisThread(
         if (active->handle==handle) return true;
     return false;
 }
-const D2RL::PluginCommunicationService* TooltipCompatCommunication{};
+const D2RL::PluginCommunicationService* PluginCommunication{};
 D2RL::PluginCommunication::ServiceLease<TooltipCompat::Service>
     ForeignPaintCompatLease{};
 D2RL::PluginCommunication::ServiceLease<TooltipCompat::Service>
@@ -327,14 +329,85 @@ constexpr std::array<std::uint8_t,10> GroundQuantityBridgeSeptember{{
 // Never accept arbitrary FF25 bridges: verify the slot AND owner.
 constexpr std::array<std::uint8_t,10> GroundQuantityBridgeLoader131{{
     0xFF,0x25,0xF2,0x51,0xB3,0x03,0x90,0x90,0x90,0x90}};
-using GroundQuantityReaderFn=std::int32_t(__fastcall*)(void*,std::int32_t,std::uint16_t) noexcept;
+using GroundQuantityReaderFn=UnitStatCompat::ReadStatFn;
 std::atomic<GroundQuantityReaderFn> GroundQuantityReader{};
+D2RL::PluginCommunication::ServiceLease<UnitStatCompat::Service>
+    GroundQuantityCompatLease{};
+
+const D2RL::PluginCommunicationService* ResolvePluginCommunication() noexcept;
+
+bool ResolvePluginIdForModule(
+    HMODULE module,
+    std::array<char,D2RL::PluginCommunication::MaxNameBytes+1>& pluginId) noexcept {
+    pluginId.fill(0);
+    if (!module) return false;
+    const auto exported=GetProcAddress(module,"D2RLoaderGetPluginInfo");
+    if (!exported) return false;
+    const auto getInfo=reinterpret_cast<D2RL::GetPluginInfoFn>(exported);
+    const auto* info=getInfo();
+    if (!D2RL::HasPluginInfoField(info,D2RL::PluginInfoFlagsSize) ||
+        info->abiVersion!=D2RL_PLUGIN_ABI_VERSION || !info->id)
+        return false;
+    const auto length=strnlen_s(info->id,pluginId.size());
+    if (!length || length>=pluginId.size()) return false;
+    std::memcpy(pluginId.data(),info->id,length);
+    pluginId[length]='\0';
+    return true;
+}
+
+bool TryAcquireCooperativeGroundQuantityReader(
+    HMODULE owner,
+    std::uintptr_t target) noexcept {
+    std::array<char,D2RL::PluginCommunication::MaxNameBytes+1> provider{};
+    if (!ResolvePluginIdForModule(owner,provider)) return false;
+    if (Context && Context->pluginId &&
+        std::string_view(provider.data())==std::string_view(Context->pluginId))
+        return false;
+
+    const auto* communication=ResolvePluginCommunication();
+    if (!communication) return false;
+
+    D2RL::PluginCommunication::ServiceLease<UnitStatCompat::Service> lease;
+    const auto result=D2RL::PluginCommunication::Acquire(
+        Context,communication,provider.data(),UnitStatCompat::ServiceName,
+        UnitStatCompat::ServiceVersion,UnitStatCompat::ServiceRequiredSize,&lease);
+    if (result!=D2RL::PluginCommunication::Result::Success ||
+        !lease || !UnitStatCompat::HasService(lease.Get()))
+        return false;
+
+    const auto* service=lease.Get();
+    if (service->ownerTarget!=target ||
+        service->entryRva!=GroundQuantityReaderRva)
+        return false;
+
+    HMODULE readerOwner{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(
+                reinterpret_cast<std::uintptr_t>(service->readStat)),
+            &readerOwner) || readerOwner!=owner)
+        return false;
+
+    const auto reader=service->readStat;
+    GroundQuantityCompatLease=std::move(lease);
+    GroundQuantityReader.store(reader,std::memory_order_release);
+    char line[320]{};
+    std::snprintf(line,sizeof(line),
+        "LOOT_QUANTITY_COMPAT_READY version=" UNHOARDER_VERSION_STRING " "
+        "stat=quantity/70 host=%s service=unit-stat-read-compat abi=1 "
+        "entryRva=0x2F5020 ownerTarget=exact readerOwner=host",
+        provider.data());
+    LogInfo(line);
+    return true;
+}
 
 // Initialized from GameJoined, never by an arbitrary renderer callback.
-// The known loader bridge must terminate in D2RCore. Foreign executable targets
-// fail closed rather than receiving a product-specific compatibility exception.
+// The known loader bridge may terminate directly in D2RCore or in a D2RLoader
+// plugin that explicitly publishes the generic UnitStat compatibility service.
+// Arbitrary foreign executable targets still fail closed.
 void QualifyGroundQuantityReader() noexcept {
     GroundQuantityReader.store(nullptr,std::memory_order_release);
+    (void)GroundQuantityCompatLease.Reset();
     if (!Context || !Context->exeBase || !D2RL::GetBuildName(Context) ||
         std::string_view(D2RL::GetBuildName(Context))!="93847") return;
     const auto base=static_cast<std::uintptr_t>(Context->exeBase);
@@ -394,7 +467,7 @@ void QualifyGroundQuantityReader() noexcept {
     if (actualSlot!=requiredSlot) return;
     const bool loader131Bridge=entry==GroundQuantityBridgeLoader131;
     if(loader131Bridge)
-        Context->LogInfo("LOOT_COMPAT_QUANTITY_BRIDGE_ACCEPTED version=" UNHOARDER_VERSION_STRING " slotRva=0x3E2A218 fingerprint=exact targetAdmission=pending ownerRestriction=D2RCore-only");
+        Context->LogInfo("LOOT_COMPAT_QUANTITY_BRIDGE_ACCEPTED version=" UNHOARDER_VERSION_STRING " slotRva=0x3E2A218 fingerprint=exact targetAdmission=pending ownerRestriction=D2RCore-or-cooperative-service");
     std::uintptr_t target{};
     copied=0;
     if (!ReadProcessMemory(GetCurrentProcess(),
@@ -414,16 +487,21 @@ void QualifyGroundQuantityReader() noexcept {
         if(loader131Bridge) Context->LogWarn("LOOT_COMPAT_QUANTITY_OWNER version=" UNHOARDER_VERSION_STRING " result=unresolved quantity=disabled");
         return;
     }
+    const auto d2rCore=GetModuleHandleW(L"D2RCore.dll");
     if(loader131Bridge) {
-        char ownerLine[220]{};
-        const char* const ownerKind=owner==GetModuleHandleW(L"D2RCore.dll")?"D2RCore":"other";
+        char ownerLine[250]{};
+        const char* const ownerKind=owner==d2rCore?"D2RCore":"foreign-plugin";
         std::snprintf(ownerLine,sizeof(ownerLine),
-            "LOOT_COMPAT_QUANTITY_OWNER version=" UNHOARDER_VERSION_STRING " owner=%s executePage=1 quantity=%s",
-            ownerKind,std::string_view(ownerKind)=="other"?"disabled":"admitted");
+            "LOOT_COMPAT_QUANTITY_OWNER version=" UNHOARDER_VERSION_STRING " "
+            "owner=%s executePage=1 route=%s",
+            ownerKind,owner==d2rCore?"direct":"cooperative-service-required");
         Context->LogInfo(ownerLine);
     }
-    if (owner!=GetModuleHandleW(L"D2RCore.dll")) {
-        Context->LogWarn("LOOT_QUANTITY_UNAVAILABLE reader-owner-unrecognized fallback=vanilla");
+    if (owner!=d2rCore) {
+        if (TryAcquireCooperativeGroundQuantityReader(owner,target)) return;
+        Context->LogWarn(
+            "LOOT_QUANTITY_UNAVAILABLE reader-owner-no-compatible-service "
+            "fallback=vanilla");
         return;
     }
     GroundQuantityReader.store(
@@ -2556,20 +2634,20 @@ const TooltipCompat::Service PublishedTooltipCompatService{
     .unregisterGlyphRenderer=&UnregisterCompatGlyphRenderer,
 };
 
-const D2RL::PluginCommunicationService* ResolveTooltipCommunication() noexcept {
-    if (TooltipCompatCommunication) return TooltipCompatCommunication;
+const D2RL::PluginCommunicationService* ResolvePluginCommunication() noexcept {
+    if (PluginCommunication) return PluginCommunication;
     const D2RL::PluginCommunicationService* service{};
     if (!Context ||
         Context->QueryService(&service)!=D2RL::ServiceQueryResult::Success ||
         !D2RL::HasPluginCommunicationServiceField(
             service,D2RL::PluginCommunicationServiceRequiredSize))
         return nullptr;
-    TooltipCompatCommunication=service;
+    PluginCommunication=service;
     return service;
 }
 
 void PublishTooltipCompatService() noexcept {
-    const auto* communication=ResolveTooltipCommunication();
+    const auto* communication=ResolvePluginCommunication();
     if (!communication || !communication->publishService) {
         LogWarn("LOOT_TOOLTIP_COMPAT_REFUSED reason=plugin-communication-unavailable");
         return;
@@ -2669,7 +2747,7 @@ bool TryAttachForeignSharedLabelPaint(
     if (!DiagnoseTrackedTooltipOwner(
             TooltipCompat::SharedLabelPaintRva,expected,expectedSize,owner))
         return false;
-    const auto* communication=ResolveTooltipCommunication();
+    const auto* communication=ResolvePluginCommunication();
     if (!communication) return false;
     TooltipCompatServiceLease lease;
     const auto acquired=D2RL::PluginCommunication::Acquire(
@@ -2708,7 +2786,7 @@ bool TryAttachForeignGlyphRenderer(
     if (!DiagnoseTrackedTooltipOwner(
             TooltipCompat::GlyphRendererRva,expected,expectedSize,owner))
         return false;
-    const auto* communication=ResolveTooltipCommunication();
+    const auto* communication=ResolvePluginCommunication();
     if (!communication) return false;
     TooltipCompatServiceLease lease;
     const auto acquired=D2RL::PluginCommunication::Acquire(
@@ -4116,7 +4194,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     ActiveGeometryMode.store(GeometryMode::Off, std::memory_order_relaxed);
     SharedLabelPaintCompatRoute.store(TooltipCompatRoute::None,std::memory_order_relaxed);
     GlyphRendererCompatRoute.store(TooltipCompatRoute::None,std::memory_order_relaxed);
-    TooltipCompatCommunication=nullptr;
+    PluginCommunication=nullptr;
     ForeignPaintCompatHandle=TooltipCompat::InvalidRegistrationHandle;
     ForeignGlyphCompatHandle=TooltipCompat::InvalidRegistrationHandle;
     TooltipPaintSubscribers.store(std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},std::memory_order_release);
@@ -4190,6 +4268,7 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     FilterLiveReloadAvailable.store(false,std::memory_order_release);
     NativePickupGuardQualified.store(false,std::memory_order_release);
     GroundQuantityReader.store(nullptr,std::memory_order_release);
+    (void)GroundQuantityCompatLease.Reset();
     HideGroundArmed.store(false,std::memory_order_release);
     // Stop background scheduling before allowing loader-owned service pointers
     // or the plugin context to become invalid. No new inventory callback is
@@ -4227,7 +4306,7 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     // while other thread callbacks could still be forwarding through them.
 
     SoundThreads = nullptr;
-    TooltipCompatCommunication = nullptr;
+    PluginCommunication = nullptr;
     Context = nullptr;
     Base = 0;
     ImageSize = 0;
