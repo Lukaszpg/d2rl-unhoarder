@@ -3,7 +3,7 @@
 // quality/item-level and optional guarded ethereal/identified scalars; sockets use stat 194.
 // This header is portable so the fail-open rule gate has real C++ tests.
 #include <cstdint>
-namespace SoE::LootFilter::GroundPropertyLive {
+namespace UnHoarder::GroundPropertyLive {
 // D2R build 93847: observed in native ground-label presentation as mode 5
 // for 667 ms before the same item moved to mode 3. The mode-5 exception is
 // limited to trusted label presentation; never use it to authorize pickup.
@@ -30,4 +30,4 @@ constexpr bool Ready(bool usesQuality,bool usesItemLevel,
     return (!usesQuality || qualityKnown) &&
            (!usesItemLevel || itemLevelKnown);
 }
-} // namespace SoE::LootFilter::GroundPropertyLive
+} // namespace UnHoarder::GroundPropertyLive

@@ -5,9 +5,9 @@
 // Each matched in verified presentation mode 5 and ground mode 3.
 // Unknown pointer/flags is NOT interpreted as unidentified.
 #include <cstdint>
-namespace SoE::LootFilter::GroundIdentified {
+namespace UnHoarder::GroundIdentified {
 constexpr std::uint32_t NativeIdentifiedMask=0x00000010U;
 constexpr bool FromNativeFlags(std::uint32_t flags) noexcept {
     return (flags & NativeIdentifiedMask)!=0U;
 }
-} // namespace SoE::LootFilter::GroundIdentified
+} // namespace UnHoarder::GroundIdentified

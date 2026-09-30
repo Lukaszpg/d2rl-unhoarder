@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace SoE::LootFilter::BaseNameTable {
+namespace UnHoarder::BaseNameTable {
 
 inline std::uint32_t PackCode(std::string_view text) noexcept {
     std::uint32_t result{};
@@ -159,4 +159,4 @@ inline bool LoadPair(const std::filesystem::path& excel,
     return true;
 }
 
-} // namespace SoE::LootFilter::BaseNameTable
+} // namespace UnHoarder::BaseNameTable

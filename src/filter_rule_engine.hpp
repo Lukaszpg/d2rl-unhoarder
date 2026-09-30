@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace SoE::LootFilter::RuleEngine {
+namespace UnHoarder::RuleEngine {
 struct NumberTest {
     bool enabled{};
     bool hasEq{}, hasMin{}, hasMax{};
@@ -311,4 +311,4 @@ const Rule* FirstMatchFailOpenProperties(const std::vector<Rule>& rules,
     }
     return nullptr;
 }
-} // namespace SoE::LootFilter::RuleEngine
+} // namespace UnHoarder::RuleEngine

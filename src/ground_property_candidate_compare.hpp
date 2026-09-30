@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace SoE::LootFilter::GroundCandidateProbe {
+namespace UnHoarder::GroundCandidateProbe {
 constexpr std::size_t QualityCandidateOffset=0x00;
 constexpr std::size_t RawFlagsCandidateOffset=0x18;
 constexpr std::size_t LevelCandidateOffset=0x38;
@@ -48,4 +48,4 @@ constexpr Comparison Compare(Snapshot sample,std::uint32_t sdkQuality,
         sample.available && sample.qualityCandidate==sdkQuality,
         sample.available && sample.levelCandidate==sdkLevel};
 }
-} // namespace SoE::LootFilter::GroundCandidateProbe
+} // namespace UnHoarder::GroundCandidateProbe

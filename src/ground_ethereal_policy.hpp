@@ -5,9 +5,9 @@
 // ethereal bit and is now tested via a guarded runtime read. Do NOT
 // interpret the other differing bit as an ethereal bit.
 #include <cstdint>
-namespace SoE::LootFilter::GroundEthereal {
+namespace UnHoarder::GroundEthereal {
 constexpr std::uint32_t NativeEtherealMask = 0x00400000U;
 constexpr bool FromNativeFlags(std::uint32_t flags) noexcept {
     return (flags & NativeEtherealMask)!=0U;
 }
-} // namespace SoE::LootFilter::GroundEthereal
+} // namespace UnHoarder::GroundEthereal
