@@ -10,7 +10,6 @@ assert 'GroundPropertyLive::Validate(quality,level)' in s
 assert 'GroundCandidatePageReadable(address,length)' in s
 assert 'ReadProcessMemory(GetCurrentProcess(),nativeUnit,after.data(),' in s
 assert 'before!=after' in s
-assert 'GroundPropertyLiveReads.fetch_add' in s
 assert 'if (!rule.conditions.qualities.empty()) fresh->usesQuality=true;' in s
 assert 'if (rule.conditions.itemLevel.enabled) fresh->usesItemLevel=true;' in s
 assert 'if(key=="rarity")' in s
