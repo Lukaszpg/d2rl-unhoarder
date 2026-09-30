@@ -7,9 +7,9 @@
 namespace D2RLInterop::UnitStatReadCompatV1 {
 
 // Cooperative ABI for the active owner of D2R's total UnitStat bridge.
-// A consumer identifies the plugin that owns the live bridge target and then
-// acquires this provider-local service. No product-specific plugin ID is part
-// of the contract.
+// Service discovery remains provider-local: a consumer first identifies the
+// plugin that owns the live bridge target, then acquires this service from that
+// exact provider. No product-specific plugin ID is part of the contract.
 inline constexpr char ServiceName[] = "unit-stat-read-compat";
 inline constexpr std::uint32_t ServiceVersion = 1;
 inline constexpr std::uint64_t SupportedEntryRva = 0x002F5020ULL;
