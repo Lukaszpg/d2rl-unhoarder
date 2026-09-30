@@ -14,4 +14,4 @@ worker=s[s.index('void RuntimeWorkerLoop('):s.index('void RuntimeWorkerStart(',s
 for key in ('VK_F6','VK_F7','VK_F8','VK_F10','VK_F11','VK_F12'):
     assert key not in worker,key
 assert 'VK_F9' in worker
-print('1.0.0 production world-position tracking has no probe hotkeys: ok')
+print('production world-position tracking has no probe hotkeys: ok')
