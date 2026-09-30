@@ -1,7 +1,7 @@
 #include "minimap_icon_policy.hpp"
 #include <cassert>
 
-using namespace SoE::LootFilter::MinimapIconPolicy;
+using namespace UnHoarder::MinimapIconPolicy;
 
 int main() {
     static_assert(MinimumSizePx == 12);

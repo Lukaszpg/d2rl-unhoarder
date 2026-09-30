@@ -3,7 +3,7 @@
 #include <cassert>
 #include <chrono>
 #include <fstream>
-using namespace SoE::LootFilter;
+using namespace UnHoarder;
 namespace fs=std::filesystem;
 static void Write(const fs::path& p,const std::string& s) {
     fs::create_directories(p.parent_path());
