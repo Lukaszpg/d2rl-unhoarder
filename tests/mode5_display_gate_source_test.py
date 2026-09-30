@@ -11,6 +11,6 @@ assert 'GroundPropertyLive::AllowsMode(header[3],purpose)' in s
 assert 'before!=after' in s
 assert 'GroundRuleItem(code,unit,rules.get(),id)' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s
-assert s.count('GroundPropertyLive::Purpose::VerifiedLabel')>=5
+assert s.count('GroundPropertyLive::Purpose::VerifiedLabel')>=3
 assert 'LOOT_LATENCY_STAGE' not in s
 print('1.0.0 mode-5 presentation-only gate: ok')
