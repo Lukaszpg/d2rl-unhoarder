@@ -7,7 +7,7 @@ checks={
  'quantity bridge':'LOOT_COMPAT_QUANTITY_BRIDGE' in s,
  'exact loader 131 bridge':'GroundQuantityBridgeLoader131' in s and '0xFF,0x25,0xF2,0x51,0xB3,0x03,0x90,0x90,0x90,0x90' in s,
  'exact slot qualification':'else if (entry==GroundQuantityBridgeLoader131) requiredSlot=base+0x3E2A218;' in s,
- 'quantity owner is standalone D2RCore only':'owner!=GetModuleHandleW(L"D2RCore.dll")' in s,
+ 'quantity owner is D2RCore or cooperative service':'const auto d2rCore=GetModuleHandleW(L"D2RCore.dll")' in s and 'if (owner!=d2rCore)' in s and 'TryAcquireCooperativeGroundQuantityReader(owner,target)' in s,
  'paired audio identity recognition':'SoundLoaderIdentity::Classify(' in s and 'SoundLoaderIdentity::Layout::Unknown' in s,
  'original audio witnesses retained':'{0x1FCB26U,{0x48,0x8D,0x0D,0xA3,0x03,0x00,0x00}}' in s and '{0x1A0C43U,{0xE8,0x38,0xFB,0xFF,0xFF}}' in s,
  'audio call chain targets':'{0x1FCFE3U,0x1A0C00U}' in s and '{0x1A0C18U,0xD9760U}' in s and '{0x1A0C43U,0x1A0780U}' in s,
