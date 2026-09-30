@@ -1493,8 +1493,7 @@ void ObserveNativeRowLiveLabel(std::int32_t type,
     active.structSize=sizeof(active);
     if (!scope->getCurrentItem(&active) || active.unitType!=4 ||
         active.unitId!=unitId || active.classId!=classId) return;
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
         !rules->hiddenRules)) return;
     LARGE_INTEGER stamp{};
@@ -1547,8 +1546,7 @@ void ObserveNativeRowLiveReplacement(std::uint32_t classId,
     // access to this render row, even when item names happen to be identical.
     // atomic_load_explicit returns shared_ptr<const FilterRuleTable>, not
     // a raw pointer. Keep this owning snapshot alive across generation check.
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!event.scopeMatches || !rules ||
         rules->generation!=event.rulesGeneration ||
         event.epoch!=NativeRowBgLiveEpoch.load(std::memory_order_acquire) ||
@@ -1850,8 +1848,7 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
         NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
                     !rules->hiddenRules) ||
         rules->generation!=append.rulesGeneration) {
@@ -4211,8 +4208,7 @@ void SyncFilterVisibilityState() noexcept {
 
 
 void EnableAutomaticNativeHover() noexcept {
-    const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
-        std::memory_order_acquire);
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     const auto* scope=InWorldCompatService.load(std::memory_order_acquire);
     if (!rules || (!rules->backgroundRules && !rules->textColorRules &&
                     !rules->hiddenRules) ||
