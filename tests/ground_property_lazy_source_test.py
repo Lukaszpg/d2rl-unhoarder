@@ -13,4 +13,4 @@ assert 'if(CheapConditionsCannotMatch(c,item)) continue;' in h
 assert 'if(c.Matches(item) && !Continues(rule)) return false;' in h
 assert 'return MatchState::Unknown;' in h
 assert 'A matching Continue block deliberately falls through' in h
-print('1.0.0 property reads are ordered, Continue-aware, lazy and fail-open')
+print('property reads are ordered, Continue-aware, lazy and fail-open')
