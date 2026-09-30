@@ -90,6 +90,11 @@ using RegisterSharedLabelPaintFn = Result(__cdecl*)(
     const SharedLabelPaintRegistration* registration,
     RegistrationHandle* handle) noexcept;
 
+// A successful unregister is a quiescence barrier: after it returns, this
+// registration is not executing and cannot begin another invocation. A host
+// must not return Success while an old dispatch snapshot can still call the
+// consumer. Unregistering a registration from that registration's own active
+// callback is unsupported; do it after the callback returns.
 using UnregisterSharedLabelPaintFn = Result(__cdecl*)(
     const D2RL::PluginContext* consumer,
     RegistrationHandle handle) noexcept;
@@ -99,6 +104,7 @@ using RegisterGlyphRendererFn = Result(__cdecl*)(
     const GlyphRendererRegistration* registration,
     RegistrationHandle* handle) noexcept;
 
+// Same quiescence guarantee as unregisterSharedLabelPaint.
 using UnregisterGlyphRendererFn = Result(__cdecl*)(
     const D2RL::PluginContext* consumer,
     RegistrationHandle handle) noexcept;
