@@ -52,4 +52,4 @@ assert '"shape": "diamond"' in e
 assert '"borderColor": "RGBA(' in e
 assert '"fillColor": "RGBA(' in e
 assert '"size": 24' in e
-print('1.0.0 JSON minimapIcon shape/border/fill/size source contract ok')
+print('JSON minimapIcon shape/border/fill/size source contract ok')
