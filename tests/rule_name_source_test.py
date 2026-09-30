@@ -9,4 +9,4 @@ assert 'syntax=schema3:{show|hide:{ruleName?,conditions?,continue?,name?,tooltip
 # ruleName is metadata only: it is accepted but never copied into FilterNameRule/runtime decisions.
 struct=(root/'src/plugin.cpp').read_text().split('struct FilterNameRule',1)[1].split('};',1)[0]
 assert 'ruleName' not in struct
-print('1.0.0 ruleName metadata source contract ok')
+print('ruleName metadata source contract ok')
