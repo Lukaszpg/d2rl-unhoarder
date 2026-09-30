@@ -37,6 +37,13 @@ assert "schema2" not in plugin
 assert "schema2" not in rules
 assert "usesConditions" in plugin
 assert "usesConditions" in rules
+assert "std::atomic<std::shared_ptr<const FilterRuleTable>> PublishedFilterRules" in plugin
+assert "std::atomic_load_explicit(&PublishedFilterRules" not in plugin
+assert "std::atomic_store_explicit(&PublishedFilterRules" not in plugin
+assert "std::atomic_load_explicit(&TooltipPaintSubscribers" not in plugin
+assert "std::atomic_store_explicit(&TooltipPaintSubscribers" not in plugin
+assert "std::atomic_load_explicit(&TooltipGlyphSubscribers" not in plugin
+assert "std::atomic_store_explicit(&TooltipGlyphSubscribers" not in plugin
 
 # CI treats first-party UnHoarder warnings as errors; ImGui remains explicitly exempt in CMake.
 assert "-DUNHOARDER_WARNINGS_AS_ERRORS=ON" in workflow
