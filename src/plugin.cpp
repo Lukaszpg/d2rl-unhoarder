@@ -1218,7 +1218,7 @@ void RegisterInWorldLifecycle() noexcept {
 constexpr D2RL::PluginInfo Info{
     .infoSize = D2RL::PluginInfoSize,
     .abiVersion = D2RL_PLUGIN_ABI_VERSION,
-    .id = "loot-filter",
+    .id = "unhoarder",
     .name = "UnHoarder",
     .version = UNHOARDER_VERSION_STRING,
     .author = "MindH1ve",
@@ -1334,41 +1334,17 @@ bool PrintableItemCode(std::uint32_t code) noexcept {
 }
 
 
-// Resolve the canonical filter.json path, retaining read-only migration
-// Fallbacks for previous production/development filenames when the canonical file is absent.
+// Resolve filter.json through D2RLoader's mod-scoped config directory.
+// pluginConfigPath points inside <scope>\\d2rloader\\config, so using its
+// parent keeps the JSON out of the plugins directory without guessing the mod name.
 bool ResolveFilterConfigPath() noexcept {
-    HMODULE self{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&ResolveFilterConfigPath), &self) || !self)
+    if (!Context || !D2RL::HasContext(Context) ||
+        !Context->pluginConfigPath || !Context->pluginConfigPath[0])
         return false;
-    std::array<wchar_t, 32768> modulePath{};
-    const auto length = GetModuleFileNameW(self, modulePath.data(),
-        static_cast<DWORD>(modulePath.size()));
-    if (length == 0 || length >= modulePath.size()) return false;
-
-    const auto directory=std::filesystem::path(modulePath.data()).parent_path();
-    const auto canonical=directory/L"filter.json";
-    const auto previousProduction=directory/L"loot-filter.json";
-    const auto legacyDevelopmentConfig=directory/L"loot-filter-probe.json";
-    std::error_code error;
-    if(std::filesystem::exists(canonical,error) && !error) {
-        FilterConfigPath=canonical;
-        return true;
-    }
-    error.clear();
-    if(std::filesystem::exists(previousProduction,error) && !error) {
-        FilterConfigPath=previousProduction;
-        Emit("LOOT_CONFIG_LEGACY_PATH using=loot-filter.json rename-to=filter.json");
-        return true;
-    }
-    error.clear();
-    if(std::filesystem::exists(legacyDevelopmentConfig,error) && !error) {
-        FilterConfigPath=legacyDevelopmentConfig;
-        Emit("LOOT_CONFIG_LEGACY_PATH using=loot-filter-probe.json rename-to=filter.json");
-        return true;
-    }
-    FilterConfigPath=canonical;
+    const auto configDirectory=
+        std::filesystem::path(Context->pluginConfigPath).parent_path();
+    if (configDirectory.empty()) return false;
+    FilterConfigPath=configDirectory/L"filter.json";
     return true;
 }
 
@@ -4462,11 +4438,11 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     if (ResolveFilterConfigPath()) {
         // Parsing happens before any ground-label feature hook is installed.
         // Missing/invalid JSON leaves the filter unarmed; no fallback rules
-        // are silently created next to the user's DLL.
+        // or legacy plugin-directory configs are silently selected.
         (void)ReloadFilterRules();
         const auto path=std::string("LOOT_RULES_PATH '")+FilterPathUtf8()+"'";
         Emit(path.c_str());
-    } else Emit("LOOT_RULES_WARNING could-not-resolve-own-DLL-directory");
+    } else Emit("LOOT_RULES_WARNING could-not-resolve-mod-config-directory");
     if (!DetermineImageSize()) {
         context->LogError("LOOT_FILTER_REFUSED invalid main D2R PE image");
         return false;
