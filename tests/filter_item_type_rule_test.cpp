@@ -2,8 +2,8 @@
 #include "../src/base_name_table.hpp"
 #include <cassert>
 #include <vector>
-using namespace SoE::LootFilter;
-using namespace SoE::LootFilter::RuleEngine;
+using namespace UnHoarder;
+using namespace UnHoarder::RuleEngine;
 struct Rule {bool schema2{true};std::uint32_t code{};Conditions conditions{};bool show{true};};
 int main() {
     const auto code=[](std::string_view c){return BaseNameTable::PackCode(c);};

@@ -1,6 +1,6 @@
 #include "../src/filter_live_reload.hpp"
 #include <cassert>
-using namespace SoE::LootFilter::FilterLiveReload;
+using namespace UnHoarder::FilterLiveReload;
 int main() {
     Watcher watcher;
     Stamp v1{true,100,std::filesystem::file_time_type(std::filesystem::file_time_type::duration(100))};
