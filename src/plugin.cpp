@@ -20,6 +20,7 @@
 #include "ground_sound_registry.hpp"
 #include "named_sound_loader_identity.hpp"
 #include "../interop/unhoarder_tooltip_compat_v1.hpp"
+#include "tooltip_compat_lifetime.hpp"
 // D2RLoader PluginSDK ThreadService is queried through its typed service contract.
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
@@ -233,23 +234,51 @@ enum class TooltipCompatRoute : std::uint8_t { None, NativeOwner, ForeignHost };
 std::atomic<TooltipCompatRoute> SharedLabelPaintCompatRoute{TooltipCompatRoute::None};
 std::atomic<TooltipCompatRoute> GlyphRendererCompatRoute{TooltipCompatRoute::None};
 
+namespace TooltipCompatLifetime = ::SoE::LootFilter::TooltipCompatLifetime;
+
 struct TooltipPaintSubscriber final {
     TooltipCompat::RegistrationHandle handle{};
     TooltipCompat::SharedLabelPaintMiddlewareFn callback{};
     void* userData{};
     std::array<char,64> owner{};
+    std::shared_ptr<TooltipCompatLifetime::State> lifetime{};
 };
 struct TooltipGlyphSubscriber final {
     TooltipCompat::RegistrationHandle handle{};
     TooltipCompat::GlyphRendererMiddlewareFn callback{};
     void* userData{};
     std::array<char,64> owner{};
+    std::shared_ptr<TooltipCompatLifetime::State> lifetime{};
 };
 
 std::shared_ptr<const std::vector<TooltipPaintSubscriber>> TooltipPaintSubscribers{};
 std::shared_ptr<const std::vector<TooltipGlyphSubscriber>> TooltipGlyphSubscribers{};
 std::mutex TooltipCompatMutex;
 std::uint64_t TooltipCompatNextHandle{1};
+
+struct TooltipCompatActiveRegistrationScope;
+thread_local TooltipCompatActiveRegistrationScope* TooltipCompatActiveRegistration{};
+
+struct TooltipCompatActiveRegistrationScope final {
+    TooltipCompat::RegistrationHandle handle{};
+    TooltipCompatActiveRegistrationScope* previous{};
+
+    explicit TooltipCompatActiveRegistrationScope(
+        TooltipCompat::RegistrationHandle registrationHandle) noexcept
+        : handle(registrationHandle),previous(TooltipCompatActiveRegistration) {
+        TooltipCompatActiveRegistration=this;
+    }
+    ~TooltipCompatActiveRegistrationScope() noexcept {
+        TooltipCompatActiveRegistration=previous;
+    }
+};
+
+bool TooltipCompatRegistrationActiveOnThisThread(
+    TooltipCompat::RegistrationHandle handle) noexcept {
+    for (auto* active=TooltipCompatActiveRegistration;active;active=active->previous)
+        if (active->handle==handle) return true;
+    return false;
+}
 const D2RL::PluginCommunicationService* TooltipCompatCommunication{};
 D2RL::PluginCommunication::ServiceLease<TooltipCompat::Service>
     ForeignPaintCompatLease{};
@@ -2485,11 +2514,15 @@ bool TooltipCompatOwnerMatches(
     return std::strncmp(owner.data(),consumer->pluginId,owner.size())==0;
 }
 
-void TooltipCompatCopyOwner(
+bool TooltipCompatCopyOwner(
     std::array<char,64>& out,const D2RL::PluginContext* consumer) noexcept {
     out.fill(0);
-    if (!consumer || !consumer->pluginId) return;
-    std::snprintf(out.data(),out.size(),"%s",consumer->pluginId);
+    if (!consumer || !consumer->pluginId || !consumer->pluginId[0]) return false;
+    const auto length=strnlen_s(consumer->pluginId,out.size());
+    if (!length || length>=out.size()) return false;
+    std::memcpy(out.data(),consumer->pluginId,length);
+    out[length]='\0';
+    return true;
 }
 
 TooltipCompat::Result __cdecl RegisterCompatSharedLabelPaint(
@@ -2523,7 +2556,9 @@ TooltipCompat::Result __cdecl RegisterCompatSharedLabelPaint(
         if (!entry.handle) entry.handle=TooltipCompatNextHandle++;
         entry.callback=registration->callback;
         entry.userData=registration->userData;
-        TooltipCompatCopyOwner(entry.owner,consumer);
+        entry.lifetime=std::make_shared<TooltipCompatLifetime::State>();
+        if (!TooltipCompatCopyOwner(entry.owner,consumer))
+            return TooltipCompat::Result::InvalidArgument;
         next->push_back(entry);
         *handle=entry.handle;
         std::atomic_store_explicit(
@@ -2542,22 +2577,35 @@ TooltipCompat::Result __cdecl UnregisterCompatSharedLabelPaint(
     if (!consumer || !consumer->pluginId ||
         handle==TooltipCompat::InvalidRegistrationHandle)
         return TooltipCompat::Result::InvalidArgument;
+    if (TooltipCompatRegistrationActiveOnThisThread(handle))
+        return TooltipCompat::Result::Unsupported;
+
+    std::shared_ptr<TooltipCompatLifetime::State> lifetime;
     try {
-        std::scoped_lock lock(TooltipCompatMutex);
-        const auto current=std::atomic_load_explicit(
-            &TooltipPaintSubscribers,std::memory_order_acquire);
-        if (!current) return TooltipCompat::Result::NotFound;
-        auto found=std::find_if(current->begin(),current->end(),
-            [handle](const auto& entry){return entry.handle==handle;});
-        if (found==current->end()) return TooltipCompat::Result::NotFound;
-        if (!TooltipCompatOwnerMatches(found->owner,consumer))
-            return TooltipCompat::Result::OwnerMismatch;
-        auto next=std::make_shared<std::vector<TooltipPaintSubscriber>>(*current);
-        next->erase(next->begin()+std::distance(current->begin(),found));
-        std::atomic_store_explicit(
-            &TooltipPaintSubscribers,
-            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),
-            std::memory_order_release);
+        {
+            std::scoped_lock lock(TooltipCompatMutex);
+            const auto current=std::atomic_load_explicit(
+                &TooltipPaintSubscribers,std::memory_order_acquire);
+            if (!current) return TooltipCompat::Result::NotFound;
+            const auto found=std::find_if(current->begin(),current->end(),
+                [handle](const auto& entry){return entry.handle==handle;});
+            if (found==current->end()) return TooltipCompat::Result::NotFound;
+            if (!TooltipCompatOwnerMatches(found->owner,consumer))
+                return TooltipCompat::Result::OwnerMismatch;
+            if (!found->lifetime) return TooltipCompat::Result::Unsupported;
+
+            auto next=std::make_shared<std::vector<TooltipPaintSubscriber>>(*current);
+            const auto index=static_cast<std::size_t>(
+                std::distance(current->begin(),found));
+            lifetime=found->lifetime;
+            TooltipCompatLifetime::BeginClose(lifetime);
+            next->erase(next->begin()+static_cast<std::ptrdiff_t>(index));
+            std::atomic_store_explicit(
+                &TooltipPaintSubscribers,
+                std::shared_ptr<const std::vector<TooltipPaintSubscriber>>(std::move(next)),
+                std::memory_order_release);
+        }
+        TooltipCompatLifetime::WaitForQuiescence(lifetime);
         return TooltipCompat::Result::Success;
     } catch (...) {
         return TooltipCompat::Result::LimitExceeded;
@@ -2595,7 +2643,9 @@ TooltipCompat::Result __cdecl RegisterCompatGlyphRenderer(
         if (!entry.handle) entry.handle=TooltipCompatNextHandle++;
         entry.callback=registration->callback;
         entry.userData=registration->userData;
-        TooltipCompatCopyOwner(entry.owner,consumer);
+        entry.lifetime=std::make_shared<TooltipCompatLifetime::State>();
+        if (!TooltipCompatCopyOwner(entry.owner,consumer))
+            return TooltipCompat::Result::InvalidArgument;
         next->push_back(entry);
         *handle=entry.handle;
         std::atomic_store_explicit(
@@ -2614,22 +2664,35 @@ TooltipCompat::Result __cdecl UnregisterCompatGlyphRenderer(
     if (!consumer || !consumer->pluginId ||
         handle==TooltipCompat::InvalidRegistrationHandle)
         return TooltipCompat::Result::InvalidArgument;
+    if (TooltipCompatRegistrationActiveOnThisThread(handle))
+        return TooltipCompat::Result::Unsupported;
+
+    std::shared_ptr<TooltipCompatLifetime::State> lifetime;
     try {
-        std::scoped_lock lock(TooltipCompatMutex);
-        const auto current=std::atomic_load_explicit(
-            &TooltipGlyphSubscribers,std::memory_order_acquire);
-        if (!current) return TooltipCompat::Result::NotFound;
-        auto found=std::find_if(current->begin(),current->end(),
-            [handle](const auto& entry){return entry.handle==handle;});
-        if (found==current->end()) return TooltipCompat::Result::NotFound;
-        if (!TooltipCompatOwnerMatches(found->owner,consumer))
-            return TooltipCompat::Result::OwnerMismatch;
-        auto next=std::make_shared<std::vector<TooltipGlyphSubscriber>>(*current);
-        next->erase(next->begin()+std::distance(current->begin(),found));
-        std::atomic_store_explicit(
-            &TooltipGlyphSubscribers,
-            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),
-            std::memory_order_release);
+        {
+            std::scoped_lock lock(TooltipCompatMutex);
+            const auto current=std::atomic_load_explicit(
+                &TooltipGlyphSubscribers,std::memory_order_acquire);
+            if (!current) return TooltipCompat::Result::NotFound;
+            const auto found=std::find_if(current->begin(),current->end(),
+                [handle](const auto& entry){return entry.handle==handle;});
+            if (found==current->end()) return TooltipCompat::Result::NotFound;
+            if (!TooltipCompatOwnerMatches(found->owner,consumer))
+                return TooltipCompat::Result::OwnerMismatch;
+            if (!found->lifetime) return TooltipCompat::Result::Unsupported;
+
+            auto next=std::make_shared<std::vector<TooltipGlyphSubscriber>>(*current);
+            const auto index=static_cast<std::size_t>(
+                std::distance(current->begin(),found));
+            lifetime=found->lifetime;
+            TooltipCompatLifetime::BeginClose(lifetime);
+            next->erase(next->begin()+static_cast<std::ptrdiff_t>(index));
+            std::atomic_store_explicit(
+                &TooltipGlyphSubscribers,
+                std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>(std::move(next)),
+                std::memory_order_release);
+        }
+        TooltipCompatLifetime::WaitForQuiescence(lifetime);
         return TooltipCompat::Result::Success;
     } catch (...) {
         return TooltipCompat::Result::LimitExceeded;
@@ -2686,8 +2749,8 @@ bool DiagnoseTrackedTooltipOwner(
     if (!Context ||
         Context->QueryService(&diagnostics)!=D2RL::ServiceQueryResult::Success ||
         !D2RL::HasDiagnosticsServiceField(
-            diagnostics,D2RL::DiagnosticsServiceRequiredSize) ||
-        !diagnostics->queryHookStatus)
+            diagnostics,D2RL::DiagnosticsServiceEnumerateModificationRangesFieldEnd) ||
+        !diagnostics->queryHookStatus || !diagnostics->enumerateModificationRanges)
         return false;
     const D2RL::Diagnostics::HookQuery query{
         .structSize=D2RL::Diagnostics::HookQuerySize,
@@ -2706,14 +2769,50 @@ bool DiagnoseTrackedTooltipOwner(
         status.kind!=D2RL::Diagnostics::ModificationKind::InlineHook ||
         status.ownerCount!=1 || !status.ownerPluginId[0])
         return false;
-    const auto length=strnlen_s(status.ownerPluginId,sizeof(status.ownerPluginId));
-    if (!length || length>=owner.size()) return false;
-    std::memcpy(owner.data(),status.ownerPluginId,length);
-    owner[length]='\0';
+
+    const auto ownerLength=strnlen_s(
+        status.ownerPluginId,sizeof(status.ownerPluginId));
+    if (!ownerLength || ownerLength>=owner.size()) return false;
+    std::memcpy(owner.data(),status.ownerPluginId,ownerLength);
+    owner[ownerLength]='\0';
     if (Context->pluginId &&
         std::string_view(owner.data())==std::string_view(Context->pluginId))
         return false;
-    return true;
+
+    std::uint32_t rangeCount{};
+    auto result=diagnostics->enumerateModificationRanges(
+        Context,&query,nullptr,0,&rangeCount);
+    std::vector<D2RL::Diagnostics::ModificationRange> ranges;
+    for (unsigned attempt=0;
+         result==D2RL::Diagnostics::Result::BufferTooSmall && attempt<4;
+         ++attempt) {
+        if (!rangeCount || rangeCount>32U) return false;
+        ranges.resize(rangeCount);
+        result=diagnostics->enumerateModificationRanges(
+            Context,&query,ranges.data(),
+            static_cast<std::uint32_t>(ranges.size()),&rangeCount);
+    }
+    if (result!=D2RL::Diagnostics::Result::Success ||
+        !rangeCount || rangeCount>ranges.size())
+        return false;
+    ranges.resize(rangeCount);
+
+    bool exactEntryHook{};
+    for (const auto& range:ranges) {
+        if (range.structSize<D2RL::Diagnostics::ModificationRangeRequiredSize ||
+            range.state!=D2RL::Diagnostics::ModificationState::Tracked ||
+            range.kind!=D2RL::Diagnostics::ModificationKind::InlineHook ||
+            range.callThrough!=D2RL::Diagnostics::CallThroughState::Yes ||
+            !range.ownerPluginId[0])
+            return false;
+        const auto rangeOwnerLength=strnlen_s(
+            range.ownerPluginId,sizeof(range.ownerPluginId));
+        if (rangeOwnerLength!=ownerLength ||
+            std::memcmp(range.ownerPluginId,owner.data(),ownerLength)!=0)
+            return false;
+        if (range.rva==rva) exactEntryHook=true;
+    }
+    return exactEntryHook;
 }
 
 bool TryAttachForeignSharedLabelPaint(
@@ -2795,6 +2894,43 @@ bool TryAttachForeignGlyphRenderer(
     return true;
 }
 
+void QuiesceOwnedTooltipCompatSubscribers() noexcept {
+    std::vector<std::shared_ptr<TooltipCompatLifetime::State>> lifetimes;
+    {
+        std::scoped_lock lock(TooltipCompatMutex);
+        const auto paints=std::atomic_load_explicit(
+            &TooltipPaintSubscribers,std::memory_order_acquire);
+        const auto glyphs=std::atomic_load_explicit(
+            &TooltipGlyphSubscribers,std::memory_order_acquire);
+        if (paints) {
+            lifetimes.reserve(lifetimes.size()+paints->size());
+            for (const auto& entry:*paints) {
+                if (!entry.lifetime) continue;
+                TooltipCompatLifetime::BeginClose(entry.lifetime);
+                lifetimes.push_back(entry.lifetime);
+            }
+        }
+        if (glyphs) {
+            lifetimes.reserve(lifetimes.size()+glyphs->size());
+            for (const auto& entry:*glyphs) {
+                if (!entry.lifetime) continue;
+                TooltipCompatLifetime::BeginClose(entry.lifetime);
+                lifetimes.push_back(entry.lifetime);
+            }
+        }
+        std::atomic_store_explicit(
+            &TooltipPaintSubscribers,
+            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
+            std::memory_order_release);
+        std::atomic_store_explicit(
+            &TooltipGlyphSubscribers,
+            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
+            std::memory_order_release);
+    }
+    for (const auto& lifetime:lifetimes)
+        TooltipCompatLifetime::WaitForQuiescence(lifetime);
+}
+
 void DetachForeignTooltipCompatRoutes() noexcept {
     if (ForeignGlyphCompatHandle && ForeignGlyphCompatLease &&
         ForeignGlyphCompatLease->unregisterGlyphRenderer && Context)
@@ -2843,11 +2979,13 @@ void InvokeCompatPaintSubscribers(
         return;
     }
     const auto& subscriber=(*subscribers)[index];
-    if (!subscriber.callback) {
+    TooltipCompatLifetime::InvocationGuard lifetime(subscriber.lifetime);
+    if (!subscriber.callback || !lifetime.entered()) {
         InvokeCompatPaintSubscribers(
             subscribers,index+1,caller,rect,textArg,colorArg);
         return;
     }
+    TooltipCompatActiveRegistrationScope active(subscriber.handle);
     TooltipPaintNextFrame next{
         .subscribers=subscribers,
         .nextIndex=index+1,
@@ -2906,9 +3044,11 @@ std::uint64_t InvokeCompatGlyphSubscribers(
         return OriginalCorrectedGlyphB?
             OriginalCorrectedGlyphB(glyphContext,x,y,rgba):0;
     const auto& subscriber=(*subscribers)[index];
-    if (!subscriber.callback)
+    TooltipCompatLifetime::InvocationGuard lifetime(subscriber.lifetime);
+    if (!subscriber.callback || !lifetime.entered())
         return InvokeCompatGlyphSubscribers(
             subscribers,index+1,caller,glyphContext,x,y,rgba);
+    TooltipCompatActiveRegistrationScope active(subscriber.handle);
     TooltipGlyphNextFrame next{
         .subscribers=subscribers,
         .nextIndex=index+1,
@@ -4410,17 +4550,7 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     HookInstalled.store(false, std::memory_order_release);
     SharedLabelPaintCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
     GlyphRendererCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
-    {
-        std::scoped_lock lock(TooltipCompatMutex);
-        std::atomic_store_explicit(
-            &TooltipPaintSubscribers,
-            std::shared_ptr<const std::vector<TooltipPaintSubscriber>>{},
-            std::memory_order_release);
-        std::atomic_store_explicit(
-            &TooltipGlyphSubscribers,
-            std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},
-            std::memory_order_release);
-    }
+    QuiesceOwnedTooltipCompatSubscribers();
     OriginalGetItemCode = nullptr;
     // The loader owns detour removal. Do not null out native trampolines
     // while other thread callbacks could still be forwarding through them.
