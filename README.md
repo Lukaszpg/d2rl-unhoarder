@@ -80,6 +80,23 @@ cmake -S . -B build `
   -DUNHOARDER_PLUGINSDK_SOURCE_DIR="D:/path/to/PluginSDK"
 ```
 
+## Plugin compatibility
+
+Plugins that share UnHoarder's native ground-tooltip render hooks can opt into
+the **UnHoarder Tooltip Compatibility API v1** instead of installing a second
+hook on the same entry point. The contract uses D2RLoader
+`DiagnosticsService` for owner discovery and `PluginCommunicationService`
+for a versioned middleware table; there is no DLL import or foreign detour
+decoding.
+
+V1 intentionally covers only the shared label painter (`0x1FA8E0`) and glyph
+renderer (`0x658510`). Other native-hook collisions retain UnHoarder's
+fail-closed behavior.
+
+See [docs/tooltip-compat.md](docs/tooltip-compat.md) and copy
+[interop/unhoarder_tooltip_compat_v1.hpp](interop/unhoarder_tooltip_compat_v1.hpp)
+into a compatible plugin.
+
 ## Canonical JSON structure
 
 Schema 3 mirrors Path of Exile's ordered Show/Hide block model. Every element of `rules` contains exactly one `show` or `hide` wrapper. Matching normally stops at that block; `"continue": true` applies the block and continues to later rules, allowing actions to compose and later values to override earlier ones.
