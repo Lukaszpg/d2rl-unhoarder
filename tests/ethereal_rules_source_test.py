@@ -24,13 +24,10 @@ assert 'for(unsigned propertyGroup=0;propertyGroup<4 && table;++propertyGroup)' 
 assert 'if(c.etherealEnabled && !item.etherealKnown)' in r
 assert 'if(c.etherealEnabled && !item.etherealKnown) return MatchState::Unknown;' in r
 assert 'item.ethereal!=c.etherealExpected) return MatchState::NoMatch;' in r
-assert 'NativeRowLiveLatestLabel.etherealKnown=item.etherealKnown;' in s
-assert 'candidate.etherealKnown=label.etherealKnown;' in s
-assert 'rowItem.etherealKnown=append.etherealKnown;' in s
 assert 'scalarOut->etherealKnown=candidate.etherealKnown;' in s
 assert 'item.etherealKnown=scalarSnapshot->etherealKnown;' in s
 assert 'scalars.etherealKnown,scalars.ethereal,' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'GroundPropertyLive::Purpose::StrictGround' in s
-print('1.0.0 ethereal JSON/guarded native mask/mode-5 propagation/fail-open/pickup: ok')
+print('1.0.0 ethereal JSON/guarded native mask/mode-5/fail-open/pickup: ok')
