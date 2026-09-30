@@ -908,13 +908,11 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
         scalars.etherealKnown=true;
         scalars.ethereal=GroundEthereal::FromNativeFlags(
             GroundPropertyReader::ReadLe32(itemData.data()+0x18));
-        if(mode==GroundPropertyLive::PresentingMode)
     }
     if(includeIdentified && scalars.qualityKnown && scalars.itemLevelKnown) {
         scalars.identifiedKnown=true;
         scalars.identified=GroundIdentified::FromNativeFlags(
             GroundPropertyReader::ReadLe32(itemData.data()+0x18));
-        if(mode==GroundPropertyLive::PresentingMode)
     }
     if((!scalars.qualityKnown || !scalars.itemLevelKnown) && reason)
         *reason="quality-or-level-out-of-range";
@@ -957,7 +955,6 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
        finalHeader!=before || first!=second || first<0 || first>15)
         return false;
     sockets=static_cast<std::uint32_t>(first);
-    if(before[3]==GroundPropertyLive::PresentingMode)
     return true;
 }
 
@@ -1037,8 +1034,6 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
            RuleEngine::NeedsNativeQualityLevel(table->rules,item)) {
             const auto fields=ReadNativeGroundQualityLevel(
                 nativeUnit,header[2],header[1],purpose);
-            if((table->usesQuality && !fields.qualityKnown) ||
-               (table->usesItemLevel && !fields.itemLevelKnown))
             item.qualityKnown=fields.qualityKnown;
             item.quality=fields.quality;
             item.itemLevelKnown=fields.itemLevelKnown;
@@ -3518,10 +3513,6 @@ void ObserveGroundSoundIdentity(std::uint32_t unitId,
     const auto observedEpoch=SoundRegistryEpoch.load(std::memory_order_acquire);
     std::uint64_t itemTicket{};
     const auto observation=SoundSeenRegistry.Observe(unitId,code,&itemTicket);
-    if (observation==SoundIdentity::Registry::Observation::New) {
-    } else if (observation==SoundIdentity::Registry::Observation::AlreadySeen) {
-    } else if (observation==SoundIdentity::Registry::Observation::Full) {
-    }
     SoundSeenMutex.unlock();
     if (observation!=SoundIdentity::Registry::Observation::New || baseline) return;
     (void)QueueNamedSound(rule->dropSound.data(),unitId,code,true,
@@ -3611,7 +3602,7 @@ void __cdecl PollSoundInventoryOnUiThread(
     const D2RL::Inventory::ItemFilter filter{
         D2RL::Inventory::ItemFilterSize,0,carriedMask,0
     };
-    const auto enumerate = SoundInventory->forEachInventoryItem(
+    (void)SoundInventory->forEachInventoryItem(
         context,player,&filter,&OnSoundInventoryItem,&results);
     // Cursor is not guaranteed to be included in inventory enumeration.
     // A ground pickup held on the cursor must also re-arm the original item.
@@ -3630,7 +3621,6 @@ void __cdecl PollSoundInventoryOnUiThread(
                   ForgetCarriedSoundItem(info.runtimeId,results); }
         }
     }
-    if (enumerate == D2RL::Inventory::Result::Success)
     if (results.cleared) {
         char line[210]{};
         std::snprintf(line,sizeof(line),
