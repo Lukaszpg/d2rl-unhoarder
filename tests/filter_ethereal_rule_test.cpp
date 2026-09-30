@@ -3,8 +3,8 @@
 #include "../src/ground_property_live_policy.hpp"
 #include <cassert>
 #include <vector>
-using namespace SoE::LootFilter;
-using namespace SoE::LootFilter::RuleEngine;
+using namespace UnHoarder;
+using namespace UnHoarder::RuleEngine;
 struct Rule {bool schema2{true};std::uint32_t code{};Conditions conditions{};bool show{true};};
 int main() {
     static_assert(GroundEthereal::NativeEtherealMask==0x00400000U);

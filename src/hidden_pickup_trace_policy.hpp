@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-namespace SoE::LootFilter::HiddenPickupTracePolicy {
+namespace UnHoarder::HiddenPickupTracePolicy {
 // A candidate is never equivalent to an actual native D2R click target.
 constexpr bool FreshHint(std::uint64_t now,std::uint64_t observed,
                          std::uint64_t maxAge) noexcept {

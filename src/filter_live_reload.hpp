@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 
-namespace SoE::LootFilter::FilterLiveReload {
+namespace UnHoarder::FilterLiveReload {
 struct Stamp {
     bool present{};
     std::uint64_t bytes{};
@@ -43,4 +43,4 @@ private:
     std::uint64_t lastChanged_{};
     bool seeded_{},unsettled_{};
 };
-} // namespace SoE::LootFilter::FilterLiveReload
+} // namespace UnHoarder::FilterLiveReload

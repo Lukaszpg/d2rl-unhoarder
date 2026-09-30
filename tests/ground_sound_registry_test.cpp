@@ -1,7 +1,7 @@
 #include "src/ground_sound_registry.hpp"
 #include <cassert>
 #include <cstdint>
-using SoE::LootFilter::SoundIdentity::Registry;
+using UnHoarder::SoundIdentity::Registry;
 int main() {
     Registry registry;
     using O=Registry::Observation;

@@ -2,8 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-namespace SoE::LootFilter::MinimapWorldPositionProbe {
-// SoE's portal witness reads D2StaticPathStrc::tGameCoord at +0x10.
+namespace UnHoarder::MinimapWorldPositionProbe {
+// The original portal witness reads D2StaticPathStrc::tGameCoord at +0x10.
 // Applying that layout to a ground item is a hypothesis pending game evidence.
 inline constexpr std::size_t MinimumPathBytes=0x18;
 struct Candidate {
@@ -26,4 +26,4 @@ inline bool SameSample(const Key& a,const Key& b) noexcept {
     return a.code==b.code && a.id==b.id && a.classId==b.classId &&
         a.mode==b.mode && a.x==b.x && a.y==b.y && a.status==b.status;
 }
-} // namespace SoE::LootFilter::MinimapWorldPositionProbe
+} // namespace UnHoarder::MinimapWorldPositionProbe

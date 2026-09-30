@@ -15,7 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace SoE::LootFilter::MinimapOverlayRenderer {
+namespace UnHoarder::MinimapOverlayRenderer {
 
 inline constexpr std::size_t MaximumMarkers = 64U;
 
@@ -88,4 +88,4 @@ void Clear() noexcept;
 [[nodiscard]] Diagnostics GetDiagnostics() noexcept;
 [[nodiscard]] const char* ActiveBackendName() noexcept;
 
-} // namespace SoE::LootFilter::MinimapOverlayRenderer
+} // namespace UnHoarder::MinimapOverlayRenderer

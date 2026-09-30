@@ -54,7 +54,7 @@
 #include <stop_token>
 #include <limits>
 
-namespace SoE::LootFilter {
+namespace UnHoarder {
 namespace {
 
 // Qualifies against the 93847 process, not a declaration that this is a label function.
@@ -234,7 +234,7 @@ enum class TooltipCompatRoute : std::uint8_t { None, NativeOwner, ForeignHost };
 std::atomic<TooltipCompatRoute> SharedLabelPaintCompatRoute{TooltipCompatRoute::None};
 std::atomic<TooltipCompatRoute> GlyphRendererCompatRoute{TooltipCompatRoute::None};
 
-namespace TooltipCompatLifetime = ::SoE::LootFilter::TooltipCompatLifetime;
+namespace TooltipCompatLifetime = ::UnHoarder::TooltipCompatLifetime;
 
 struct TooltipPaintSubscriber final {
     TooltipCompat::RegistrationHandle handle{};
@@ -1164,7 +1164,7 @@ bool ResolveGroundRule(const FilterRuleTable* table,
 
 // UnHoarder is standalone. Game lifecycle is used only to reset per-game
 // state and refresh optional native readers; core filtering does not depend on
-// Sanctuary of Exile or any mod-specific callback/export contract.
+// No mod-specific callback/export contract is required.
 const D2RL::LifecycleService* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 
@@ -1218,7 +1218,7 @@ void RegisterInWorldLifecycle() noexcept {
 constexpr D2RL::PluginInfo Info{
     .infoSize = D2RL::PluginInfoSize,
     .abiVersion = D2RL_PLUGIN_ABI_VERSION,
-    .id = "loot-filter",
+    .id = "unhoarder",
     .name = "UnHoarder",
     .version = UNHOARDER_VERSION_STRING,
     .author = "MindH1ve",
@@ -1334,41 +1334,17 @@ bool PrintableItemCode(std::uint32_t code) noexcept {
 }
 
 
-// Resolve the canonical filter.json path, retaining read-only migration
-// Fallbacks for previous production/development filenames when the canonical file is absent.
+// Resolve filter.json through D2RLoader's mod-scoped config directory.
+// pluginConfigPath points inside <scope>\\d2rloader\\config, so using its
+// parent keeps the JSON out of the plugins directory without guessing the mod name.
 bool ResolveFilterConfigPath() noexcept {
-    HMODULE self{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(&ResolveFilterConfigPath), &self) || !self)
+    if (!Context || !D2RL::HasContext(Context) ||
+        !Context->pluginConfigPath || !Context->pluginConfigPath[0])
         return false;
-    std::array<wchar_t, 32768> modulePath{};
-    const auto length = GetModuleFileNameW(self, modulePath.data(),
-        static_cast<DWORD>(modulePath.size()));
-    if (length == 0 || length >= modulePath.size()) return false;
-
-    const auto directory=std::filesystem::path(modulePath.data()).parent_path();
-    const auto canonical=directory/L"filter.json";
-    const auto previousProduction=directory/L"loot-filter.json";
-    const auto legacyDevelopmentConfig=directory/L"loot-filter-probe.json";
-    std::error_code error;
-    if(std::filesystem::exists(canonical,error) && !error) {
-        FilterConfigPath=canonical;
-        return true;
-    }
-    error.clear();
-    if(std::filesystem::exists(previousProduction,error) && !error) {
-        FilterConfigPath=previousProduction;
-        Emit("LOOT_CONFIG_LEGACY_PATH using=loot-filter.json rename-to=filter.json");
-        return true;
-    }
-    error.clear();
-    if(std::filesystem::exists(legacyDevelopmentConfig,error) && !error) {
-        FilterConfigPath=legacyDevelopmentConfig;
-        Emit("LOOT_CONFIG_LEGACY_PATH using=loot-filter-probe.json rename-to=filter.json");
-        return true;
-    }
-    FilterConfigPath=canonical;
+    const auto configDirectory=
+        std::filesystem::path(Context->pluginConfigPath).parent_path();
+    if (configDirectory.empty()) return false;
+    FilterConfigPath=configDirectory/L"filter.json";
     return true;
 }
 
@@ -2183,9 +2159,9 @@ std::uint64_t __fastcall HookInnerNameWriter(
     GeometryObserved.fetch_add(1, std::memory_order_relaxed);
     const char* replacement = configuredName;
     std::size_t replacementBytes = configuredBytes;
-    // This native writer is the Alt-visible ground label, unlike the SoE V2
-    // hidden-hover relay above. Both take the current quantity from the same
-    // borrowed TYPE_ITEM and add the prefix before native text measurement.
+    // This native writer owns the qualified Alt-visible ground label. It takes
+    // the current quantity from the borrowed TYPE_ITEM and adds the prefix
+    // before native text measurement.
     std::array<char,InnerNameBufferBytes> countedName{};
     {
         const auto currentName=std::string_view(original.data(),
@@ -4462,11 +4438,11 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     if (ResolveFilterConfigPath()) {
         // Parsing happens before any ground-label feature hook is installed.
         // Missing/invalid JSON leaves the filter unarmed; no fallback rules
-        // are silently created next to the user's DLL.
+        // or legacy plugin-directory configs are silently selected.
         (void)ReloadFilterRules();
         const auto path=std::string("LOOT_RULES_PATH '")+FilterPathUtf8()+"'";
         Emit(path.c_str());
-    } else Emit("LOOT_RULES_WARNING could-not-resolve-own-DLL-directory");
+    } else Emit("LOOT_RULES_WARNING could-not-resolve-mod-config-directory");
     if (!DetermineImageSize()) {
         context->LogError("LOOT_FILTER_REFUSED invalid main D2R PE image");
         return false;
@@ -4562,4 +4538,4 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     ImageSize = 0;
 }
 
-} // namespace SoE::LootFilter
+} // namespace UnHoarder

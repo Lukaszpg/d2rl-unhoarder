@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace SoE::LootFilter::TooltipCompatLifetime {
+namespace UnHoarder::TooltipCompatLifetime {
 
 struct State final {
     std::atomic<std::uint32_t> inFlight{};
@@ -56,4 +56,4 @@ inline void WaitForQuiescence(const std::shared_ptr<State>& state) noexcept {
     }
 }
 
-} // namespace SoE::LootFilter::TooltipCompatLifetime
+} // namespace UnHoarder::TooltipCompatLifetime

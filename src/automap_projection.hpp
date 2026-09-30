@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <limits>
 
-namespace SoE::LootFilter::AutomapProjection {
+namespace UnHoarder::AutomapProjection {
 
 struct Point final {
     std::int32_t x{};
@@ -68,4 +68,4 @@ struct ClipRect final {
         && static_cast<std::int64_t>(point.y) < bottom;
 }
 
-} // namespace SoE::LootFilter::AutomapProjection
+} // namespace UnHoarder::AutomapProjection

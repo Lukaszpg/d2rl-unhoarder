@@ -36,7 +36,7 @@ set(
 # ---------------------------------------------------------------------------
 # UnHoarder consumes the public standalone SDK directly from D2RLoader/PluginSDK.
 # Pinning the commit keeps CI and local builds reproducible while avoiding any
-# build-time dependency on the RuffnecKk Suite repository.
+# build-time dependency on an external plugin suite repository.
 set(BUILD_TESTING OFF CACHE BOOL "Disable dependency CTest targets in UnHoarder builds" FORCE)
 set(D2RLPLUGIN_BUILD_EXAMPLES OFF CACHE BOOL "Do not build PluginSDK examples for UnHoarder" FORCE)
 set(D2RLPLUGIN_BUILD_EXAMPLES_BY_DEFAULT OFF CACHE BOOL "Do not build PluginSDK examples by default" FORCE)

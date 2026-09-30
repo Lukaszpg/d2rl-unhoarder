@@ -8,7 +8,7 @@
 #include <string_view>
 #include <array>
 
-namespace SoE::LootFilter::GroundQuantity {
+namespace UnHoarder::GroundQuantity {
 inline bool HasCountSuffix(std::string_view text) noexcept {
     if (text.size()<4 || text.back()!=')') return false;
     const auto open=text.rfind(" (");
@@ -70,4 +70,4 @@ inline bool MatchesRuleName(std::string_view displayed,
         displayed==std::string_view(expected.data(),size);
 }
 
-} // namespace SoE::LootFilter::GroundQuantity
+} // namespace UnHoarder::GroundQuantity

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace SoE::LootFilter::GroundPropertyReader {
+namespace UnHoarder::GroundPropertyReader {
 
 constexpr std::uint32_t ReadLe32(const std::uint8_t* bytes) noexcept {
     return std::uint32_t(bytes[0]) |
@@ -11,4 +11,4 @@ constexpr std::uint32_t ReadLe32(const std::uint8_t* bytes) noexcept {
         (std::uint32_t(bytes[3])<<24U);
 }
 
-} // namespace SoE::LootFilter::GroundPropertyReader
+} // namespace UnHoarder::GroundPropertyReader

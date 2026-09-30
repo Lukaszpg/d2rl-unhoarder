@@ -2,7 +2,7 @@
 #include <array>
 #include <cassert>
 #include <string_view>
-using namespace SoE::LootFilter::GroundQuantity;
+using namespace UnHoarder::GroundQuantity;
 int main(){
     std::array<char,256> out{}; std::size_t n{};
     assert(!Append("Divine Orb",0,out.data(),out.size(),n));

@@ -2,7 +2,7 @@
 #include "../src/filter_rule_engine.hpp"
 #include <cassert>
 #include <vector>
-using namespace SoE::LootFilter;
+using namespace UnHoarder;
 struct TestRule {bool schema2{true}; std::uint32_t code{}; RuleEngine::Conditions conditions{};bool show{true};};
 int main() {
     using namespace GroundPropertyLive;

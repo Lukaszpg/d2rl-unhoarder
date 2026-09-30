@@ -1,13 +1,15 @@
 from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 s=(root/'src/plugin.cpp').read_text(); cm=(root/'CMakeLists.txt').read_text(); rc=(root/'src/plugin.rc').read_text(); readme=(root/'README.md').read_text()
-assert '.id = "loot-filter"' in s and '.name = "UnHoarder"' in s
+assert '.id = "unhoarder"' in s and '.name = "UnHoarder"' in s
+assert '- log: `unhoarder.log`' in readme
 assert '.author = "MindH1ve"' in s
 assert 'OUTPUT_NAME "unhoarder"' in cm and 'add_library(unhoarder SHARED' in cm
 assert 'OriginalFilename", "unhoarder.dll"' in rc and 'InternalName", "unhoarder"' in rc and 'CompanyName", "MindH1ve"' in rc
 assert 'L"filter.json"' in s
-assert 'L"loot-filter.json"' in s  # v1.0.0 migration fallback only
-assert 'L"loot-filter-probe.json"' in s  # probe-era migration fallback only
+assert 'Context->pluginConfigPath' in s
+assert 'L"loot-filter.json"' not in s
+assert 'L"loot-filter-probe.json"' not in s
 assert 'GetModuleHandleW(L"loot-filter.dll")' in s
 assert 'GetModuleHandleW(L"loot-filter-probe.dll")' in s
 worker=s[s.index('void RuntimeWorkerLoop('):s.index('void RuntimeWorkerStart(',s.index('void RuntimeWorkerLoop('))]

@@ -3,7 +3,7 @@
 #include <cassert>
 #include <chrono>
 #include <fstream>
-using namespace SoE::LootFilter;
+using namespace UnHoarder;
 namespace fs=std::filesystem;
 static void Write(const fs::path& path,const std::string& text) {
     fs::create_directories(path.parent_path());
@@ -11,12 +11,12 @@ static void Write(const fs::path& path,const std::string& text) {
 }
 int main() {
     const auto temp=fs::temp_directory_path()/
-        ("loot-filter-base-name-test-"+std::to_string(
+        ("unhoarder-base-name-test-"+std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count()));
-    const auto excel=temp/"mods"/"soe-resurrected"/
-        "soe-resurrected.mpq"/"data"/"global"/"excel";
-    const auto config=temp/"mods"/"soe-resurrected"/"d2rloader"/
-        "plugins"/"loot-filter.json";
+    const auto excel=temp/"mods"/"test-mod"/
+        "test-mod.mpq"/"data"/"global"/"excel";
+    const auto config=temp/"mods"/"test-mod"/"d2rloader"/
+        "config"/"filter.json";
     Write(excel/"weapons.txt",
         "\xef\xbb\xbf" "name\tfoo\tcode\r\n"
         "Berserker Axe\tunused\t7wa\r\n"

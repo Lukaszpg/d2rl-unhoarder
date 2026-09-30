@@ -3,7 +3,7 @@
 #include <cassert>
 #include <cstdint>
 
-using namespace SoE::LootFilter::AutomapProjectionProbe;
+using namespace UnHoarder::AutomapProjectionProbe;
 
 int main() {
     Point client{};

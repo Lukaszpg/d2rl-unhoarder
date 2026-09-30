@@ -1,8 +1,8 @@
 #include "src/ground_visibility_policy.hpp"
 #include "src/ground_quantity_label.hpp"
 #include <cassert>
-using SoE::LootFilter::GroundVisibility::ConcealBulkVisuals;
-using SoE::LootFilter::GroundQuantity::MatchesRuleName;
+using UnHoarder::GroundVisibility::ConcealBulkVisuals;
+using UnHoarder::GroundQuantity::MatchesRuleName;
 int main() {
     // A native bulk item-label paint is concealed regardless of how labels
     // were activated: hold, toggle or an alternative input binding.

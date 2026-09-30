@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace SoE::LootFilter::MinimapIconPolicy {
+namespace UnHoarder::MinimapIconPolicy {
 
 inline constexpr std::int64_t MinimumSizePx = 12;
 inline constexpr std::int64_t MaximumSizePx = 40;
@@ -20,4 +20,4 @@ inline constexpr float DefaultSizePx = 12.0F;
     return true;
 }
 
-} // namespace SoE::LootFilter::MinimapIconPolicy
+} // namespace UnHoarder::MinimapIconPolicy

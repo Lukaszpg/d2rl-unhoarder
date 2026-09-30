@@ -6,7 +6,7 @@
 #include <thread>
 
 int main() {
-    namespace L = SoE::LootFilter::TooltipCompatLifetime;
+    namespace L = UnHoarder::TooltipCompatLifetime;
 
     auto state=std::make_shared<L::State>();
     std::atomic_bool entered{},release{},finished{};

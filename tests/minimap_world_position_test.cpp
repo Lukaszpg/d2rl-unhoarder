@@ -1,7 +1,7 @@
 #include "../src/minimap_world_position.hpp"
 #include <array>
 #include <cassert>
-using namespace SoE::LootFilter::MinimapWorldPosition;
+using namespace UnHoarder::MinimapWorldPosition;
 int main() {
     std::array<std::uint8_t,0x28> path{};
     path[0x10]=0x34;path[0x11]=0x12;

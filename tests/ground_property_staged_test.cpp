@@ -1,7 +1,7 @@
 #include "../src/filter_rule_engine.hpp"
 #include <cassert>
 #include <vector>
-using namespace SoE::LootFilter::RuleEngine;
+using namespace UnHoarder::RuleEngine;
 struct Rule { bool schema2{true}; std::uint32_t code{}; Conditions conditions{}; bool show{}; };
 int main() {
     Rule show{};show.conditions.codes={123};show.conditions.qualities={3,6};

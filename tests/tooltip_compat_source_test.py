@@ -36,5 +36,7 @@ assert "quiescence barrier" in hdr
 assert "quiescence barrier" in docs
 assert "callThrough == Yes" in docs
 assert "Result::Unsupported" in docs
+assert "provider plugin ID `unhoarder`" in docs
+assert '"unhoarder",' in docs
 assert "length>=out.size()" in src
 print("tooltip compatibility v1 source contract: ok")

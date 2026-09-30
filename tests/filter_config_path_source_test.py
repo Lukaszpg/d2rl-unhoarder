@@ -1,18 +1,21 @@
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
-s = (root / "src/plugin.cpp").read_text()
-readme = (root / "README.md").read_text()
+s = (root / "src/plugin.cpp").read_text(encoding="utf-8")
+readme = (root / "README.md").read_text(encoding="utf-8")
 
-canonical = 'const auto canonical=directory/L"filter.json";'
-previous = 'const auto previousProduction=directory/L"loot-filter.json";'
-probe = 'const auto legacyDevelopmentConfig=directory/L"loot-filter-probe.json";'
-assert canonical in s
-assert previous in s
-assert probe in s
-assert s.index(canonical) < s.index(previous) < s.index(probe)
-assert 'using=loot-filter.json rename-to=filter.json' in s
-assert 'using=loot-filter-probe.json rename-to=filter.json' in s
-assert '- config: `filter.json`' in readme
-assert 'New configurations should use `filter.json`.' in readme
-print('1.0.0 filter.json canonical path and migration fallbacks contract ok')
+start = s.index("bool ResolveFilterConfigPath() noexcept")
+end = s.index("std::string PathUtf8(", start)
+resolver = s[start:end]
+
+assert "Context->pluginConfigPath" in resolver
+assert "std::filesystem::path(Context->pluginConfigPath).parent_path()" in resolver
+assert 'FilterConfigPath=configDirectory/L"filter.json";' in resolver
+assert "GetModuleFileNameW" not in resolver
+assert 'L"loot-filter.json"' not in resolver
+assert 'L"loot-filter-probe.json"' not in resolver
+
+assert r"d2rloader\\config" in readme
+assert "- config: `d2rloader/config/filter.json`" in readme
+assert "no longer reads filter JSON files from the `plugins` directory" in readme
+print("filter.json resolves from D2RLoader mod config directory")

@@ -19,7 +19,7 @@
 #include <string_view>
 #include <vector>
 
-namespace SoE::LootFilter::MinimapOverlayRenderer {
+namespace UnHoarder::MinimapOverlayRenderer {
 namespace {
 using Microsoft::WRL::ComPtr;
 
@@ -804,4 +804,4 @@ const char* ActiveBackendName() noexcept {
     return "none";
 }
 
-} // namespace SoE::LootFilter::MinimapOverlayRenderer
+} // namespace UnHoarder::MinimapOverlayRenderer
