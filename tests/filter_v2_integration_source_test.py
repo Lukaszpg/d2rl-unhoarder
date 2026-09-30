@@ -14,9 +14,7 @@ assert 'if (rule.conditions.quantity.enabled) fresh->usesQuantity=true;' in s
 assert 'unsupported-ground-condition:' in s
 assert 'GroundRuleItem(code,unit,rules.get(),id)' in s
 assert 'CachedGroundRuleItem(verifiedCode,verifiedClassId,' in s
-assert 'rowItem.classId=append.classId;' in s
-assert 'rowItem.quantityKnown=append.quantityKnown;' in s
-assert 'ObserveGroundSoundIdentity(unitId,code,true,nativeUnit,classId);' in s
+assert 'ObserveGroundSoundIdentity(header[2],OriginalGetItemCode(unit),unit,header[1]);' in s
 assert 'ResolveGroundRule(snapshot.get(),' in s
 guard=s[s.index('PickupGuard::Decision QualifyGroundPickup('):s.index('void __fastcall HookNativeActionDispatch(')]
 assert 'ResolveGroundRule(rules.get(),ruleItem,resolvedRule)' in guard

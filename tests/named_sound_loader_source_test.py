@@ -13,7 +13,7 @@ checks={
  'new unknown bytes refuse':'refused=native-fingerprint-mismatch' in s,
  'sound only enabled after last check':s.index('SoundLoaderBase.store(base,std::memory_order_release);')>s.index('if(!pageOk) {'),
  'retains quantity 131':'GroundQuantityBridgeLoader131' in s,
- 'retains hidden hover':'GroundVisibility::SuppressHiddenHover(' in s and 'return true; // ONLY this fully verified hidden-hover row is not drawn' in s,
+ 'retains show-hide ground suppression':'GroundVisibility::ConcealBulkVisuals(' in s and 'if (!concealGroundVisuals && next)' in s,
 }
 for k,v in checks.items(): print(('PASS' if v else 'FAIL')+' '+k)
 assert all(checks.values())

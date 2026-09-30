@@ -17,10 +17,4 @@ int main(){
     assert(!Append("Divine Orb (12)",3,out.data(),out.size(),n));
     assert(!Append("Divine Orb",65536,out.data(),out.size(),n));
     assert(!Append("Divine Orb",33,out.data(),8,n));
-    assert(BuildHover("\xEE\x81\xBE" "=Divine Orb",{},false,0,3,out.data(),out.size()));
-    assert(std::string_view(out.data())=="\xEE\x81\xBE" "=3x Divine Orb");
-    assert(BuildHover("\xEE\x81\xBE" "=Divine Orb", "CUSTOM",true,'1',12,out.data(),out.size()));
-    assert(std::string_view(out.data())=="\xEE\x81\xBE" "=" "\xEE\x81\xBE" "1" "12x CUSTOM" "\xEE\x81\xBE" "0");
-    assert(!BuildHover("\xEE\x81\xBE" "=Divine Orb",{},false,0,1,out.data(),out.size()));
-    assert(!BuildHover("\xEE\x81\xBE" "=3x Divine Orb",{},false,0,3,out.data(),out.size()));
 }

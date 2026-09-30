@@ -2,7 +2,7 @@
 
 **Author:** MindH1ve
 
-Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847 / Sanctuary of Exile.
+Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847. Sanctuary of Exile is not required.
 
 ## Installation
 
@@ -80,6 +80,23 @@ cmake -S . -B build `
   -DUNHOARDER_PLUGINSDK_SOURCE_DIR="D:/path/to/PluginSDK"
 ```
 
+## Plugin compatibility
+
+Plugins that share UnHoarder's native ground-tooltip render hooks can opt into
+the **UnHoarder Tooltip Compatibility API v1** instead of installing a second
+hook on the same entry point. The contract uses D2RLoader
+`DiagnosticsService` for owner discovery and `PluginCommunicationService`
+for a versioned middleware table; there is no DLL import or foreign detour
+decoding.
+
+V1 intentionally covers only the shared label painter (`0x1FA8E0`) and glyph
+renderer (`0x658510`). Other native-hook collisions retain UnHoarder's
+fail-closed behavior.
+
+See [docs/tooltip-compat.md](docs/tooltip-compat.md) and copy
+[interop/unhoarder_tooltip_compat_v1.hpp](interop/unhoarder_tooltip_compat_v1.hpp)
+into a compatible plugin.
+
 ## Canonical JSON structure
 
 Schema 3 mirrors Path of Exile's ordered Show/Hide block model. Every element of `rules` contains exactly one `show` or `hide` wrapper. Matching normally stops at that block; `"continue": true` applies the block and continues to later rules, allowing actions to compose and later values to override earlier ones.
@@ -128,7 +145,7 @@ The filter intentionally does not expose hidden unidentified affixes or unique i
 
 A valid JSON file activates the filter automatically. Saving the JSON triggers an atomic live reload after the file is stable; **Ctrl+Shift+F9** remains as the manual reload shortcut. Invalid JSON keeps the previous valid ruleset active.
 
-Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection.
+Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection. These core features run through UnHoarder's own qualified D2RLoader-managed native hooks and do not require a SoE DLL or SoE-specific callback/export API.
 
 Legacy reverse-engineering capture hotkeys and startup probe dumps are not part of the production runtime anymore. Operational logs are limited to configuration, compatibility/readiness, reloads, and actionable failures.
 

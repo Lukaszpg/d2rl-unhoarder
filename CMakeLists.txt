@@ -191,6 +191,9 @@ if(UNHOARDER_BUILD_TESTS)
             "${CMAKE_CURRENT_SOURCE_DIR}"
             "${CMAKE_CURRENT_SOURCE_DIR}/src"
         )
+        target_link_libraries("${test_name}" PRIVATE
+            D2RLPlugin::D2RLPlugin
+        )
         if(MSVC)
             target_compile_options("${test_name}" PRIVATE /W4 /permissive- /utf-8 /EHsc /WX- /UNDEBUG)
         else()

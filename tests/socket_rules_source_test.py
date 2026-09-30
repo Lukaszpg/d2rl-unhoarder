@@ -16,9 +16,6 @@ assert 'if(!known) break;' in s
 assert 'NextNativeProperty(table->rules,item)' in s
 assert 'if(c.sockets.enabled && !item.socketsKnown)' in h
 assert 'if(c.sockets.enabled && !item.socketsKnown) return MatchState::Unknown;' in h
-assert 'NativeRowLiveLatestLabel.socketsKnown=item.socketsKnown;' in s
-assert 'rowItem.socketsKnown=append.socketsKnown;' in s
-assert 'candidate.socketsKnown=label.socketsKnown;' in s
 assert 'scalarOut->socketsKnown=candidate.socketsKnown;' in s
 assert 'item.socketsKnown=scalarSnapshot->socketsKnown;' in s
 assert 'scalars.socketsKnown,scalars.sockets,' in s
