@@ -2,9 +2,9 @@
 #include <cassert>
 #include <vector>
 using namespace UnHoarder;
-struct TestRule { bool schema2{}; std::uint32_t code{}; RuleEngine::Conditions conditions{}; bool show{true}; int marker{}; };
+struct TestRule { bool usesConditions{}; std::uint32_t code{}; RuleEngine::Conditions conditions{}; bool show{true}; int marker{}; };
 int main() {
-    auto r=[](int m,bool show) { TestRule rule{}; rule.schema2=true;rule.marker=m;rule.show=show;return rule; };
+    auto r=[](int m,bool show) { TestRule rule{}; rule.usesConditions=true;rule.marker=m;rule.show=show;return rule; };
     // Excel `name` is resolved to base code at reload; the runtime item
     // class ID must not enter the match, even if unknown or different.
     auto specific=r(1,true); specific.conditions.codes={123}; specific.conditions.baseCodes={123,124};
