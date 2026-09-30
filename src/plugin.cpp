@@ -310,7 +310,8 @@ struct VerifiedGroundIdentity {
 std::array<VerifiedGroundIdentity,IdentitySlots> GroundIdentities{};
 std::mutex GroundIdentityMutex;
 
-void Emit(const char* message) noexcept;
+void LogInfo(const char* message) noexcept;
+void LogWarn(const char* message) noexcept;
 void CodeText(std::uint32_t code, char (&out)[5]) noexcept;
 bool PrintableItemCode(std::uint32_t code) noexcept;
 
@@ -725,11 +726,11 @@ bool InstallStandaloneAutomapProjection() noexcept {
     GetLocalDataContext=nullptr;
     GetLocalPlayer=nullptr;
     if(!Context || !Base || !ImageSize) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context hooks=0 mapSenseDependency=0");
+        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context hooks=0 mapSenseDependency=0");
         return false;
     }
     if(GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")!=nullptr) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
+        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
         return false;
     }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
@@ -740,7 +741,7 @@ bool InstallStandaloneAutomapProjection() noexcept {
        !check(GetLocalDataContextRva,ExpectedGetLocalDataContext) ||
        !check(GetLocalPlayerRva,ExpectedGetLocalPlayer) ||
        !check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=native-contract-fingerprint hooks=0");
+        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=native-contract-fingerprint hooks=0");
         return false;
     }
     ProjectClientToAutomap=reinterpret_cast<ProjectClientToAutomapFn>(Base+ProjectClientToAutomapRva);
@@ -750,20 +751,24 @@ bool InstallStandaloneAutomapProjection() noexcept {
             static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()),
             HookAutomapRenderUnit,&OriginalAutomapRenderUnit) || !OriginalAutomapRenderUnit) {
         ProjectClientToAutomap=nullptr;GetLocalDataContext=nullptr;GetLocalPlayer=nullptr;
-        Emit("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-registration hooks=0");
+        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-registration hooks=0");
         return false;
     }
     AutomapProjectionHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_MINIMAP_PROJECTION_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0xD76E0 project=D2R+0xD4910 worldPosition=qualified-static-path renderer=standalone mapSenseDependency=0");
+    LogInfo("LOOT_MINIMAP_PROJECTION_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0xD76E0 project=D2R+0xD4910 worldPosition=qualified-static-path renderer=standalone mapSenseDependency=0");
     return true;
 }
 
-void __cdecl LogMinimapRendererDiagnostic(const char* message) noexcept { Emit(message); }
+void __cdecl LogMinimapRendererDiagnostic(
+    MinimapOverlayRenderer::LogLevel level,const char* message) noexcept {
+    if (level==MinimapOverlayRenderer::LogLevel::Warning) LogWarn(message);
+    else LogInfo(message);
+}
 
 bool ConfigureNativeAutomapVisibilityGate() noexcept {
     MinimapOverlayRenderer::SetAutomapVisibilityTable(nullptr);
     if(!Context || !Base) {
-        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context drawing=0");
+        LogWarn("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context drawing=0");
         return false;
     }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
@@ -773,12 +778,12 @@ bool ConfigureNativeAutomapVisibilityGate() noexcept {
     if(!check(NativeUiOpenStateWitnessRva,ExpectedNativeUiOpenStateWitness) ||
        !check(NativeUiCloseStateWitnessRva,ExpectedNativeUiCloseStateWitness) ||
        !check(NativeUiToggleStateWitnessRva,ExpectedNativeUiToggleStateWitness)) {
-        Emit("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=" UNHOARDER_VERSION_STRING " reason=ui-state-fingerprint drawing=0");
+        LogWarn("LOOT_MINIMAP_AUTOMAP_GATE_REFUSED version=" UNHOARDER_VERSION_STRING " reason=ui-state-fingerprint drawing=0");
         return false;
     }
     MinimapOverlayRenderer::SetAutomapVisibilityTable(
         reinterpret_cast<const volatile std::uint8_t*>(Base+NativeUiStateTableRva));
-    Emit("LOOT_MINIMAP_AUTOMAP_GATE_READY version=" UNHOARDER_VERSION_STRING " table=D2R+0x2A2ADA0 automapState=10 readOnly=1");
+    LogInfo("LOOT_MINIMAP_AUTOMAP_GATE_READY version=" UNHOARDER_VERSION_STRING " table=D2R+0x2A2ADA0 automapState=10 readOnly=1");
     return true;
 }
 
@@ -787,7 +792,7 @@ bool InitializeMinimapMarkerRenderer() noexcept {
     if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             reinterpret_cast<LPCWSTR>(&InitializeMinimapMarkerRenderer),&self) || !self) {
-        Emit("LOOT_MINIMAP_RENDERER_REFUSED version=" UNHOARDER_VERSION_STRING " backend=none reason=self-module-unresolved");
+        LogWarn("LOOT_MINIMAP_RENDERER_REFUSED version=" UNHOARDER_VERSION_STRING " backend=none reason=self-module-unresolved");
         return false;
     }
     if(!ConfigureNativeAutomapVisibilityGate()) return false;
@@ -1151,7 +1156,7 @@ void RegisterInWorldLifecycle() noexcept {
         !D2RL::HasLifecycleServiceField(service,
             D2RL::LifecycleServiceRequiredSize) ||
         !service->registerGameplayEventListener) {
-        Emit("LOOT_GAME_LIFECYCLE_UNAVAILABLE per-game-refresh-disabled=1");
+        LogWarn("LOOT_GAME_LIFECYCLE_UNAVAILABLE per-game-refresh-disabled=1");
         return;
     }
     const D2RL::Lifecycle::GameplayEventListener listener{
@@ -1163,9 +1168,9 @@ void RegisterInWorldLifecycle() noexcept {
             &InWorldJoinedListener) == D2RL::Lifecycle::Result::Success &&
         InWorldJoinedListener != D2RL::Lifecycle::InvalidHandle) {
         InWorldLifecycle = service;
-        Emit("LOOT_GAME_LIFECYCLE_READY per-game-refresh=1");
+        LogInfo("LOOT_GAME_LIFECYCLE_READY per-game-refresh=1");
     } else {
-        Emit("LOOT_GAME_LIFECYCLE_REFUSED per-game-refresh-disabled=1");
+        LogWarn("LOOT_GAME_LIFECYCLE_REFUSED per-game-refresh-disabled=1");
     }
 }
 
@@ -1182,45 +1187,14 @@ constexpr D2RL::PluginInfo Info{
              D2RL::PluginFlags::ModScopedOnly,
 };
 
-// Native hooks do not write files or emit verbose sampling logs.
-void Emit(const char* message) noexcept {
-    if (!Context || !message) return;
+// Logging severity is explicit at every call site. Production code must not
+// infer visibility or severity from message text.
+void LogInfo(const char* message) noexcept {
+    if (Context && message) Context->LogInfo(message);
+}
 
-    // Production logging only: startup, refusal, compatibility, and reload state.
-    const bool warning =
-        std::strstr(message,"LOOT_RULES_REFUSED") ||
-        std::strstr(message,"LOOT_FILTER_REFUSED") ||
-        std::strstr(message,"LOOT_FILTER_INACTIVE") ||
-        std::strstr(message,"LOOT_FILTER_AUTO_INACTIVE") ||
-        std::strstr(message,"LOOT_GLYPH_B_REFUSED") ||
-        std::strstr(message,"LOOT_PICKUP_GUARD_REFUSED") ||
-        std::strstr(message,"LOOT_PICKUP_GUARD_INACTIVE") ||
-        std::strstr(message,"LOOT_GAME_LIFECYCLE_UNAVAILABLE") ||
-        std::strstr(message,"LOOT_GAME_LIFECYCLE_REFUSED") ||
-        std::strstr(message,"LOOT_SOUND_REFUSED") ||
-        std::strstr(message,"LOOT_SOUND_QUALIFY refused=") ||
-        std::strstr(message,"LOOT_MINIMAP_RENDERER_REFUSED") ||
-        std::strstr(message,"LOOT_TOOLTIP_COMPAT_REFUSED");
-    if (warning) {
-        Context->LogWarn(message);
-        return;
-    }
-
-    const bool operational =
-        std::strstr(message,"LOOT_FILTER_READY") ||
-        std::strstr(message,"LOOT_RULES_LOADED") ||
-        std::strstr(message,"LOOT_RULES_PATH") ||
-        std::strstr(message,"LOOT_FILTER_AUTO_ACTIVE") ||
-        std::strstr(message,"LOOT_RELOAD_") ||
-        std::strstr(message,"LOOT_PICKUP_GUARD_READY") ||
-        std::strstr(message,"LOOT_SOUND_QUALIFY matched=") ||
-        std::strstr(message,"LOOT_SOUND_ARMED") ||
-        std::strstr(message,"LOOT_MINIMAP_PROJECTION_READY") ||
-        std::strstr(message,"LOOT_MINIMAP_AUTOMAP_GATE_READY") ||
-        std::strstr(message,"LOOT_MINIMAP_RENDERER_READY") ||
-        std::strstr(message,"LOOT_TOOLTIP_COMPAT_READY") ||
-        std::strstr(message,"LOOT_TOOLTIP_COMPAT_CHAINED");
-    if (operational) Context->LogInfo(message);
+void LogWarn(const char* message) noexcept {
+    if (Context && message) Context->LogWarn(message);
 }
 
 void CodeText(std::uint32_t code, char (&out)[5]) noexcept {
@@ -1634,19 +1608,19 @@ bool ParseFilterRgba(std::string_view value, std::array<float,4>& result) noexce
 // Invalid edits NEVER replace the last successfully loaded snapshot.
 bool ReloadFilterRules() {
     if (FilterConfigPath.empty()) {
-        Emit("LOOT_RULES_REFUSED path-unavailable");
+        LogWarn("LOOT_RULES_REFUSED path-unavailable");
         return false;
     }
     try {
         std::error_code error;
         const auto length = std::filesystem::file_size(FilterConfigPath, error);
         if (error || length == 0 || length > MaximumFilterFileBytes) {
-            Emit("LOOT_RULES_REFUSED config-missing-empty-or-over-4MiB last-valid-rules-preserved=1");
+            LogWarn("LOOT_RULES_REFUSED config-missing-empty-or-over-4MiB last-valid-rules-preserved=1");
             return false;
         }
         std::ifstream file(FilterConfigPath, std::ios::binary);
         if (!file) {
-            Emit("LOOT_RULES_REFUSED config-open-failed last-valid-rules-preserved=1");
+            LogWarn("LOOT_RULES_REFUSED config-open-failed last-valid-rules-preserved=1");
             return false;
         }
         auto config = nlohmann::json::parse(file);
@@ -1656,12 +1630,12 @@ bool ReloadFilterRules() {
              config["version"].get<int>() != 2 &&
              config["version"].get<int>() != 3) ||
             !config.contains("rules") || !config["rules"].is_array()) {
-            Emit("LOOT_RULES_REFUSED required-schema={version:1|2|3,rules:array} last-valid-rules-preserved=1");
+            LogWarn("LOOT_RULES_REFUSED required-schema={version:1|2|3,rules:array} last-valid-rules-preserved=1");
             return false;
         }
         const auto& entries = config["rules"];
         if (entries.size() > MaximumFilterRules) {
-            Emit("LOOT_RULES_REFUSED over-4096-rules last-valid-rules-preserved=1");
+            LogWarn("LOOT_RULES_REFUSED over-4096-rules last-valid-rules-preserved=1");
             return false;
         }
         auto fresh = std::make_shared<FilterRuleTable>();
@@ -1677,7 +1651,7 @@ bool ReloadFilterRules() {
                 char message[220]{};
                 std::snprintf(message,sizeof(message),
                     "LOOT_RULES_REFUSED entry=%zu rule-must-be-object last-valid-rules-preserved=1",line);
-                Emit(message);return false;
+                LogWarn(message);return false;
             }
 
             // Schema 3 mirrors PoE block structure: each ordered array entry
@@ -1695,7 +1669,7 @@ bool ReloadFilterRules() {
                     char message[300]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu schema3-requires-exactly-one-wrapper={show:object}|{hide:object} last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 wrapperShow=hasShow;
                 block=&entry[hasShow?"show":"hide"];
@@ -1728,7 +1702,7 @@ bool ReloadFilterRules() {
                     fresh->schema==3 ?
                     "LOOT_RULES_REFUSED entry=%zu invalid-show-hide-block fields={ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?} last-valid-rules-preserved=1" :
                     "LOOT_RULES_REFUSED entry=%zu requires-code/conditions-and-action(show|name|tooltip|dropSound|minimapIcon) last-valid-rules-preserved=1",line);
-                Emit(message);return false;
+                LogWarn(message);return false;
             }
 
             // v3 is intentionally strict: colors belong only inside tooltip.
@@ -1738,7 +1712,7 @@ bool ReloadFilterRules() {
                 char message[280]{};
                 std::snprintf(message,sizeof(message),
                     "LOOT_RULES_REFUSED entry=%zu schema3-flat-colors-unsupported use-tooltip-object last-valid-rules-preserved=1",line);
-                Emit(message);return false;
+                LogWarn(message);return false;
             }
             if (block->contains("tooltip")) {
                 const auto& tooltip=(*block)["tooltip"];
@@ -1746,7 +1720,7 @@ bool ReloadFilterRules() {
                     char message[260]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu tooltip-cannot-be-mixed-with-flat-backgroundColor-or-textColor last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 if (tooltip.empty() || tooltip.size()>2U ||
                     (tooltip.contains("backgroundColor") && !tooltip["backgroundColor"].is_string()) ||
@@ -1755,11 +1729,11 @@ bool ReloadFilterRules() {
                     char message[300]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-tooltip expected={backgroundColor?:RGBA(...),textColor?:RGBA(...)} at-least-one-required last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 for (auto key=tooltip.begin();key!=tooltip.end();++key) {
                     if (key.key()!="backgroundColor" && key.key()!="textColor") {
-                        Emit("LOOT_RULES_REFUSED invalid-tooltip unexpected-field last-valid-rules-preserved=1");
+                        LogWarn("LOOT_RULES_REFUSED invalid-tooltip unexpected-field last-valid-rules-preserved=1");
                         return false;
                     }
                 }
@@ -1771,7 +1745,7 @@ bool ReloadFilterRules() {
                        key.key()!="name" && key.key()!="tooltip" &&
                        key.key()!="textColor" && key.key()!="backgroundColor" &&
                        key.key()!="dropSound" && key.key()!="minimapIcon") {
-                        Emit("LOOT_RULES_REFUSED unexpected-v2-action-or-field last-valid-rules-preserved=1");
+                        LogWarn("LOOT_RULES_REFUSED unexpected-v2-action-or-field last-valid-rules-preserved=1");
                         return false;
                     }
                 }
@@ -1780,7 +1754,7 @@ bool ReloadFilterRules() {
                     if(key.key()!="ruleName" && key.key()!="conditions" && key.key()!="continue" &&
                        key.key()!="name" && key.key()!="tooltip" &&
                        key.key()!="dropSound" && key.key()!="minimapIcon") {
-                        Emit("LOOT_RULES_REFUSED unexpected-v3-block-field last-valid-rules-preserved=1");
+                        LogWarn("LOOT_RULES_REFUSED unexpected-v3-block-field last-valid-rules-preserved=1");
                         return false;
                     }
                 }
@@ -1798,7 +1772,7 @@ bool ReloadFilterRules() {
                 char message[200]{};
                 std::snprintf(message,sizeof(message),
                     "LOOT_RULES_REFUSED entry=%zu code-must-be-1..4-printable-ASCII-bytes-with-nonspace-content last-valid-rules-preserved=1",line);
-                Emit(message);return false;
+                LogWarn(message);return false;
             }
             std::size_t lines = 1;
             std::size_t currentLine = 0;
@@ -1817,14 +1791,14 @@ bool ReloadFilterRules() {
                 char message[240]{};
                 std::snprintf(message,sizeof(message),
                     "LOOT_RULES_REFUSED entry=%zu name-must-be-1..79-ASCII-bytes-max-3-nonempty-lines-55-chars-per-line last-valid-rules-preserved=1",line);
-                Emit(message);return false;
+                LogWarn(message);return false;
             }
             const auto codeValue = PackFilterCode(code);
             if (fresh->schema==1 && !seen.insert(codeValue).second) {
                 char message[200]{};
                 std::snprintf(message,sizeof(message),
                     "LOOT_RULES_REFUSED entry=%zu duplicate-code last-valid-rules-preserved=1",line);
-                Emit(message);return false;
+                LogWarn(message);return false;
             }
 
             FilterNameRule rule{};
@@ -1845,7 +1819,7 @@ bool ReloadFilterRules() {
                         std::snprintf(message,sizeof(message),
                             "LOOT_RULES_REFUSED entry=%zu %s last-valid-rules-preserved=1",
                             line,failure.c_str());
-                        Emit(message);return false;
+                        LogWarn(message);return false;
                     }
                 }
                 if (rule.conditions.quantity.enabled) fresh->usesQuantity=true;
@@ -1879,7 +1853,7 @@ bool ReloadFilterRules() {
                     char message[320]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-tooltip-backgroundColor expected=RGBA(r,g,b,a) r/g/b=0..255 a=0..1 last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 rule.hasBackground=true;++fresh->backgroundRules;
             }
@@ -1889,7 +1863,7 @@ bool ReloadFilterRules() {
                     char message[320]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-tooltip-textColor expected=RGBA(r,g,b,a) r/g/b=0..255 a=0..1 last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 rule.hasTextColor=true;++fresh->textColorRules;
             }
@@ -1904,7 +1878,7 @@ bool ReloadFilterRules() {
                     char message[280]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-dropSound expected=1..63-sounds.txt-row-name-ASCII last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 std::memcpy(rule.dropSound.data(),sound.c_str(),sound.size()+1);
                 rule.hasDropSound=true;++fresh->soundRules;
@@ -1922,12 +1896,12 @@ bool ReloadFilterRules() {
                     char message[360]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-minimapIcon required={shape:string,borderColor:RGBA(...),fillColor:RGBA(...),size?:integer-px} last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 for(auto key=icon.begin();key!=icon.end();++key) {
                     if(key.key()!="shape" && key.key()!="borderColor" &&
                        key.key()!="fillColor" && key.key()!="size") {
-                        Emit("LOOT_RULES_REFUSED invalid-minimapIcon unexpected-field last-valid-rules-preserved=1");
+                        LogWarn("LOOT_RULES_REFUSED invalid-minimapIcon unexpected-field last-valid-rules-preserved=1");
                         return false;
                     }
                 }
@@ -1940,7 +1914,7 @@ bool ReloadFilterRules() {
                     char message[260]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-minimapIcon-shape expected=circle|diamond|triangle|star last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 if(!ParseFilterRgba(icon["borderColor"].get<std::string>(),
                        rule.minimapBorderColor) ||
@@ -1949,7 +1923,7 @@ bool ReloadFilterRules() {
                     char message[300]{};
                     std::snprintf(message,sizeof(message),
                         "LOOT_RULES_REFUSED entry=%zu invalid-minimapIcon-color expected=RGBA(r,g,b,a) r/g/b=0..255 a=0..1 last-valid-rules-preserved=1",line);
-                    Emit(message);return false;
+                    LogWarn(message);return false;
                 }
                 if(hasSize) {
                     const auto requestedSize=icon["size"].get<std::int64_t>();
@@ -1958,7 +1932,7 @@ bool ReloadFilterRules() {
                         char message[300]{};
                         std::snprintf(message,sizeof(message),
                             "LOOT_RULES_REFUSED entry=%zu invalid-minimapIcon-size expected=integer-px clamped-to-12..40 last-valid-rules-preserved=1",line);
-                        Emit(message);return false;
+                        LogWarn(message);return false;
                     }
                 }
                 rule.hasMinimapIcon=true;++fresh->minimapIconRules;
@@ -1974,10 +1948,10 @@ bool ReloadFilterRules() {
                 "LOOT_BASENAME_TABLES_READY weapons=%zu armor=%zu distinctNames=%zu source=weapons.txt+armor.txt mode=literal-name-to-code",
                 baseNames.catalog.weaponRows,baseNames.catalog.armorRows,
                 baseNames.catalog.byName.size());
-            Emit(message);
+            LogInfo(message);
             const auto path=std::string("LOOT_BASENAME_TABLES_PATH '")+
                 PathUtf8(baseNames.excel)+"'";
-            Emit(path.c_str());
+            LogInfo(path.c_str());
         }
         if(itemTypes.loaded) {
             fresh->itemTypesExcelPath=itemTypes.excel;
@@ -1987,10 +1961,10 @@ bool ReloadFilterRules() {
                 itemTypes.catalog.typeRows,itemTypes.catalog.weaponRows,
                 itemTypes.catalog.armorRows,itemTypes.catalog.miscRows,
                 itemTypes.catalog.itemCodesByType.size());
-            Emit(message);
+            LogInfo(message);
             const auto path=std::string("LOOT_ITEMTYPE_TABLES_PATH '")+
                 PathUtf8(itemTypes.excel)+"'";
-            Emit(path.c_str());
+            LogInfo(path.c_str());
         }
         fresh->generation = FilterGeneration.fetch_add(1,std::memory_order_acq_rel)+1;
         const std::shared_ptr<const FilterRuleTable> published=fresh;
@@ -2006,15 +1980,15 @@ bool ReloadFilterRules() {
             fresh->usesQuality?1U:0U,fresh->usesItemLevel?1U:0U,
             fresh->usesSockets?1U:0U,fresh->usesEthereal?1U:0U,
             fresh->usesIdentified?1U:0U,fresh->usesItemType?1U:0U);
-        Emit(message);
+        LogInfo(message);
         return true;
     } catch (const std::exception& e) {
         const std::string detail = std::string("LOOT_RULES_REFUSED invalid-json-or-config: ") +
             e.what() + " last-valid-rules-preserved=1";
-        Emit(detail.substr(0,350).c_str());
+        LogWarn(detail.substr(0,350).c_str());
         return false;
     } catch (...) {
-        Emit("LOOT_RULES_REFUSED parse-allocation-failure last-valid-rules-preserved=1");
+        LogWarn("LOOT_RULES_REFUSED parse-allocation-failure last-valid-rules-preserved=1");
         return false;
     }
 }
@@ -2144,7 +2118,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
 
 void ArmInnerNameWriter() noexcept {
     if (InnerNameHookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_GEOMETRY_HOOK_READY already-installed=1");
+        LogInfo("LOOT_GEOMETRY_HOOK_READY already-installed=1");
         return;
     }
     if (!Context || !D2RL::GetBuildName(Context) ||
@@ -2152,7 +2126,7 @@ void ArmInnerNameWriter() noexcept {
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !OriginalLabelFormatter || !OriginalGetItemCode ||
         !HookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_GEOMETRY_REFUSED formatter-arm and item-code hook required on build 93847");
+        LogWarn("LOOT_GEOMETRY_REFUSED formatter-arm and item-code hook required on build 93847");
         return;
     }
     std::array<std::uint8_t,5> call{};
@@ -2161,18 +2135,18 @@ void ArmInnerNameWriter() noexcept {
         !Context->CheckExpectedBytes(InnerNameWriterRva,
             ExpectedInnerNameWriter.data(),
             static_cast<std::uint32_t>(ExpectedInnerNameWriter.size()))) {
-        Emit("LOOT_GEOMETRY_REFUSED inner-name-callsite-or-prolog-fingerprint-mismatch; no-fallback-write");
+        LogWarn("LOOT_GEOMETRY_REFUSED inner-name-callsite-or-prolog-fingerprint-mismatch; no-fallback-write");
         return;
     }
     if (!Context->InstallInlineHook(InnerNameWriterRva,
             ExpectedInnerNameWriter.data(),
             static_cast<std::uint32_t>(ExpectedInnerNameWriter.size()),
             HookInnerNameWriter,&OriginalInnerNameWriter) || !OriginalInnerNameWriter) {
-        Emit("LOOT_GEOMETRY_REFUSED loader-hook-registration-failed; no-fallback-write");
+        LogWarn("LOOT_GEOMETRY_REFUSED loader-hook-registration-failed; no-fallback-write");
         return;
     }
     InnerNameHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_GEOMETRY_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0xCBEB0 onlyCallerReturnRva=0x1FAA1D innerSize=0x80 textOffset=+0x04 geometryRecalculatedByNativeFormatter=1 mode=off");
+    LogInfo("LOOT_GEOMETRY_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0xCBEB0 onlyCallerReturnRva=0x1FAA1D innerSize=0x80 textOffset=+0x04 geometryRecalculatedByNativeFormatter=1 mode=off");
 }
 
 // Record identity at the only point with a verified native item pointer.
@@ -2627,7 +2601,7 @@ const D2RL::PluginCommunicationService* ResolveTooltipCommunication() noexcept {
 void PublishTooltipCompatService() noexcept {
     const auto* communication=ResolveTooltipCommunication();
     if (!communication || !communication->publishService) {
-        Emit("LOOT_TOOLTIP_COMPAT_REFUSED reason=plugin-communication-unavailable");
+        LogWarn("LOOT_TOOLTIP_COMPAT_REFUSED reason=plugin-communication-unavailable");
         return;
     }
     const D2RL::PluginCommunication::PublishServiceRequest request{
@@ -2640,9 +2614,9 @@ void PublishTooltipCompatService() noexcept {
     };
     const auto result=communication->publishService(Context,&request);
     if (result==D2RL::PluginCommunication::Result::Success)
-        Emit("LOOT_TOOLTIP_COMPAT_READY version=" UNHOARDER_VERSION_STRING " service=unhoarder-tooltip-compat abi=1 hooks=0x1FA8E0,0x658510 discovery=DiagnosticsService");
+        LogInfo("LOOT_TOOLTIP_COMPAT_READY version=" UNHOARDER_VERSION_STRING " service=unhoarder-tooltip-compat abi=1 hooks=0x1FA8E0,0x658510 discovery=DiagnosticsService");
     else
-        Emit("LOOT_TOOLTIP_COMPAT_REFUSED reason=publish-service-failed");
+        LogWarn("LOOT_TOOLTIP_COMPAT_REFUSED reason=publish-service-failed");
 }
 
 bool DiagnoseTrackedTooltipOwner(
@@ -2754,7 +2728,7 @@ bool TryAttachForeignSharedLabelPaint(
     std::snprintf(line,sizeof(line),
         "LOOT_TOOLTIP_COMPAT_CHAINED point=shared-label-paint rva=0x1FA8E0 host=%s mode=foreign-host",
         owner.data());
-    Emit(line);
+    LogInfo(line);
     return true;
 }
 
@@ -2794,7 +2768,7 @@ bool TryAttachForeignGlyphRenderer(
     std::snprintf(line,sizeof(line),
         "LOOT_TOOLTIP_COMPAT_CHAINED point=glyph-renderer rva=0x658510 host=%s mode=foreign-host",
         owner.data());
-    Emit(line);
+    LogInfo(line);
     return true;
 }
 
@@ -3011,7 +2985,7 @@ std::uint64_t __fastcall HookCorrectedGlyphB(
 void ArmCorrectedGlyphB() noexcept {
     if (CorrectedGlyphBInstalled.load(std::memory_order_acquire)) {
         CorrectedGlyphBArmed.store(true,std::memory_order_release);
-        Emit("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
+        LogInfo("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
         return;
     }
     const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
@@ -3020,7 +2994,7 @@ void ArmCorrectedGlyphB() noexcept {
         !InnerNameHookInstalled.load(std::memory_order_acquire) ||
         !BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules) {
-        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-required-filter-hook-missing hooks=0");
+        LogWarn("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-required-filter-hook-missing hooks=0");
         return;
     }
     constexpr std::array<std::uint8_t,5> nativeCall{0xE8,0x90,0xFF,0xD4,0xFF};
@@ -3039,7 +3013,7 @@ void ArmCorrectedGlyphB() noexcept {
         !ReadSafe(CorrectedGlyphBRva+0x32,ptr.data(),ptr.size()) ||
         ptr!=r9Consumer ||
         !ReadSafe(0x908525,prep.data(),prep.size()) || prep!=colorPointerPrep) {
-        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=callsite-or-R9-fingerprint-mismatch hooks=0");
+        LogWarn("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=callsite-or-R9-fingerprint-mismatch hooks=0");
         return;
     }
     if (!Context->CheckExpectedBytes(CorrectedGlyphBRva,nativeEntry.data(),
@@ -3047,20 +3021,20 @@ void ArmCorrectedGlyphB() noexcept {
         if (TryAttachForeignGlyphRenderer(
                 nativeEntry.data(),static_cast<std::uint32_t>(nativeEntry.size())))
             return;
-        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-owned-without-unhoarder-tooltip-compat hooks=0");
+        LogWarn("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=entry-owned-without-unhoarder-tooltip-compat hooks=0");
         return;
     }
     if (!Context->InstallInlineHook(CorrectedGlyphBRva,nativeEntry.data(),
         static_cast<std::uint32_t>(nativeEntry.size()),HookCorrectedGlyphB,
         &OriginalCorrectedGlyphB) || !OriginalCorrectedGlyphB) {
-        Emit("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed hooks=0");
+        LogWarn("LOOT_GLYPH_B_REFUSED version=" UNHOARDER_VERSION_STRING " reason=loader-hook-install-failed hooks=0");
         return;
     }
     GlyphRendererCompatRoute.store(
         TooltipCompatRoute::NativeOwner,std::memory_order_release);
     CorrectedGlyphBInstalled.store(true,std::memory_order_release);
     CorrectedGlyphBArmed.store(true,std::memory_order_release);
-    Emit("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 compatHost=1 recordWrites=0 itemWrites=0");
+    LogInfo("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " target=D2R+0x658510 caller=D2R+0x90857B ABI=RCX-glyph,XMM1-float,XMM2-float,R9-float4-pointer onlyB=1 hookA=0 compatHost=1 recordWrites=0 itemWrites=0");
 }
 
 void EnsureSharedLabelPaintHook() noexcept;
@@ -3071,7 +3045,7 @@ void SyncFilterTextColorState() noexcept {
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !snapshot || !snapshot->textColorRules) {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
-        Emit("LOOT_TEXT_COLOR_RULES_DISABLED reason=filter-off-or-no-textColor-rules");
+        LogInfo("LOOT_TEXT_COLOR_RULES_DISABLED reason=filter-off-or-no-textColor-rules");
         return;
     }
     // Even a text-only rule needs the verified shared painter to identify
@@ -3080,7 +3054,7 @@ void SyncFilterTextColorState() noexcept {
         EnsureSharedLabelPaintHook();
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire)) {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
-        Emit("LOOT_TEXT_COLOR_RULES_REFUSED reason=shared-paint-hook-missing");
+        LogWarn("LOOT_TEXT_COLOR_RULES_REFUSED reason=shared-paint-hook-missing");
         return;
     }
     ArmCorrectedGlyphB();
@@ -3089,7 +3063,7 @@ void SyncFilterTextColorState() noexcept {
         std::snprintf(message,sizeof(message),
             "LOOT_TEXT_COLOR_RULES_ARMED version=" UNHOARDER_VERSION_STRING " generation=%llu textColorRules=%zu source=runtime-json glyphB=only ABI=RCX,XMM1,XMM2,R9-pointer itemWrites=0",
             static_cast<unsigned long long>(snapshot->generation),snapshot->textColorRules);
-        Emit(message);
+        LogInfo(message);
     }
 }
 
@@ -3109,7 +3083,7 @@ void EnsureSharedLabelPaintHook() noexcept {
         groundBytes!=groundCall ||
         !ReadSafe(0x1519E41,neighborBytes.data(),neighborBytes.size()) ||
         neighborBytes!=neighborCall) {
-        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED build-or-callsite-fingerprint-mismatch; no-hook=1");
+        LogWarn("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED build-or-callsite-fingerprint-mismatch; no-hook=1");
         return;
     }
     if (!Context->CheckExpectedBytes(0x1FA8E0,expected.data(),
@@ -3117,19 +3091,19 @@ void EnsureSharedLabelPaintHook() noexcept {
         if (TryAttachForeignSharedLabelPaint(
                 expected.data(),static_cast<std::uint32_t>(expected.size())))
             return;
-        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED entry-owned-without-unhoarder-tooltip-compat; no-hook=1");
+        LogWarn("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED entry-owned-without-unhoarder-tooltip-compat; no-hook=1");
         return;
     }
     if (!Context->InstallInlineHook(0x1FA8E0,expected.data(),
         static_cast<std::uint32_t>(expected.size()),HookSharedLabelPaint,
         &OriginalSharedLabelPaint) || !OriginalSharedLabelPaint) {
-        Emit("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED loader-install-failed; no-fallback=1");
+        LogWarn("LOOT_SHARED_LABEL_PAINT_HOOK_REFUSED loader-install-failed; no-fallback=1");
         return;
     }
     SharedLabelPaintCompatRoute.store(
         TooltipCompatRoute::NativeOwner,std::memory_order_release);
     BackgroundPaintHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1 compatHost=1");
+    LogInfo("LOOT_SHARED_LABEL_PAINT_HOOK_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA8E0 returnSites=D2R+0x1517AF6,D2R+0x1519E46 nativeRGBA-qualified argument-override original-forwarded-once=1 compatHost=1");
 }
 
 // Fingerprint the proven label-color route before allowing any argument
@@ -3168,7 +3142,7 @@ void SyncFilterBackgroundState() noexcept {
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !snapshot || !snapshot->backgroundRules) {
         BackgroundTintArmed.store(false,std::memory_order_release);
-        Emit("LOOT_BACKGROUND_RULES_DISABLED reason=filter-off-or-no-background-rules");
+        LogInfo("LOOT_BACKGROUND_RULES_DISABLED reason=filter-off-or-no-background-rules");
         return;
     }
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire))
@@ -3176,7 +3150,7 @@ void SyncFilterBackgroundState() noexcept {
     if (!BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
         !VerifyBackgroundColorRoute()) {
         BackgroundTintArmed.store(false,std::memory_order_release);
-        Emit("LOOT_BACKGROUND_RULES_REFUSED native-paint-hook-or-fingerprint-mismatch names-remain-active=1");
+        LogWarn("LOOT_BACKGROUND_RULES_REFUSED native-paint-hook-or-fingerprint-mismatch names-remain-active=1");
         return;
     }
     BackgroundTintArmed.store(true,std::memory_order_release);
@@ -3184,7 +3158,7 @@ void SyncFilterBackgroundState() noexcept {
     std::snprintf(message,sizeof(message),
         "LOOT_BACKGROUND_RULES_ARMED version=" UNHOARDER_VERSION_STRING " generation=%llu coloredRules=%zu source=runtime-json paint=argument-forward-only recordWrites=0 itemWrites=0",
         static_cast<unsigned long long>(snapshot->generation),snapshot->backgroundRules);
-    Emit(message);
+    LogInfo(message);
 }
 
 
@@ -3209,7 +3183,7 @@ void SyncFilterVisibilityState() noexcept {
         !VerifyBackgroundColorRoute() ||
         !CorrectedGlyphBInstalled.load(std::memory_order_acquire) ||
         !CorrectedGlyphBArmed.load(std::memory_order_acquire)) {
-        Emit("LOOT_VISIBILITY_REFUSED native-painter-or-glyph-unavailable show:false-fails-open=1");
+        LogWarn("LOOT_VISIBILITY_REFUSED native-painter-or-glyph-unavailable show:false-fails-open=1");
         return;
     }
     HideGroundArmed.store(true,std::memory_order_release);
@@ -3217,7 +3191,7 @@ void SyncFilterVisibilityState() noexcept {
     std::snprintf(message,sizeof(message),
         "LOOT_VISIBILITY_READY version=" UNHOARDER_VERSION_STRING " hiddenRules=%zu source=JSON-show:false bulk-ground-native-painter-skip native-painter-forwarded=0-for-qualified-hidden-only key-state-independent=1 hover-native-path=qualified-hidden-row-skip pickup-state-writes=0",
         rules->hiddenRules);
-    Emit(message);
+    LogInfo(message);
 }
 
 
@@ -3257,7 +3231,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
     SoundLoaderBase.store(0,std::memory_order_release);
     const auto mod=GetModuleHandleW(L"D2RLoader.exe");
     if(!mod) {
-        if(verbose)Emit("LOOT_SOUND_QUALIFY refused=no-D2RLoader-image");
+        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=no-D2RLoader-image");
         return false;
     }
     const auto base=reinterpret_cast<std::uintptr_t>(mod);
@@ -3284,10 +3258,10 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
             peOk?unsigned(nt.OptionalHeader.SizeOfImage):0U,
             SoundLoaderIdentity::Name(layout),
             layout==SoundLoaderIdentity::Layout::Unknown?"disabled":"pending-byte-qualification");
-        Emit(line);
+        LogInfo(line);
     }
     if(layout==SoundLoaderIdentity::Layout::Unknown) {
-        if(verbose)Emit("LOOT_SOUND_QUALIFY refused=unrecognized-loader-image-pair audio-disabled=1");
+        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=unrecognized-loader-image-pair audio-disabled=1");
         return false;
     }
     struct Witness {std::uint32_t offset;std::initializer_list<std::uint8_t> bytes;};
@@ -3317,7 +3291,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
                 "readOk=%u exact=%u layout=%s",
                 witness.offset,readOk?1U:0U,exact?1U:0U,
                 SoundLoaderIdentity::Name(layout));
-            Emit(line);
+            LogInfo(line);
         }
         if(!exact) {
             if(verbose) {
@@ -3325,7 +3299,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
                 std::snprintf(line,sizeof(line),
                     "LOOT_SOUND_QUALIFY refused=native-fingerprint-mismatch rva=0x%X",
                     witness.offset);
-                Emit(line);
+                LogWarn(line);
                 char actual[3*16+1]{},expected[3*16+1]{};
                 std::size_t i=0;
                 for(const auto ch:witness.bytes) {
@@ -3339,7 +3313,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
                     "LOOT_COMPAT_SOUND_BYTES rva=0x%X readOk=%u "
                     "expected=[%s] found=[%s] nativeSoundCalls=disabled",
                     witness.offset,readOk?1U:0U,expected,actual);
-                Emit(detail);
+                LogInfo(detail);
             }
             return false;
         }
@@ -3360,20 +3334,20 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
         if(edge.at>nt.OptionalHeader.SizeOfImage-5 ||
            !SoundMemoryRead(base+edge.at,bytes.data(),bytes.size()) ||
            bytes[0]!=0xE8U) {
-            if(verbose)Emit("LOOT_SOUND_QUALIFY refused=call-chain-unreadable audio-disabled=1");
+            if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=call-chain-unreadable audio-disabled=1");
             return false;
         }
         std::memcpy(&displacement,bytes.data()+1,sizeof(displacement));
         const auto actual=static_cast<std::int64_t>(edge.at)+5+displacement;
         if(actual!=static_cast<std::int64_t>(edge.target)) {
-            if(verbose)Emit("LOOT_SOUND_QUALIFY refused=call-chain-target-mismatch audio-disabled=1");
+            if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=call-chain-target-mismatch audio-disabled=1");
             return false;
         }
     }
     char marker[10]{};
     if(!SoundMemoryRead(base+0x1CDFBB8U,marker,sizeof(marker)) ||
        std::memcmp(marker,"soundplay",sizeof(marker))!=0) {
-        if(verbose)Emit("LOOT_SOUND_QUALIFY refused=soundplay-registration-name-mismatch");
+        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=soundplay-registration-name-mismatch");
         return false;
     }
     MEMORY_BASIC_INFORMATION mbi{};
@@ -3386,7 +3360,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
          (mbi.Protect & 0xffU)==PAGE_EXECUTE_READWRITE ||
          (mbi.Protect & 0xffU)==PAGE_EXECUTE_WRITECOPY);
     if(!pageOk) {
-        if(verbose)Emit("LOOT_SOUND_QUALIFY refused=player-page-not-executable audio-disabled=1");
+        if(verbose)LogWarn("LOOT_SOUND_QUALIFY refused=player-page-not-executable audio-disabled=1");
         return false;
     }
     // Only publish the native backend after the entire live contract matches.
@@ -3399,7 +3373,7 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
             "witnesses=%zu callChain=3 registration=exact executePage=1 "
             "nameBased=1 gameThreadRequired=1 rowIndexNotUsed=1",
             SoundLoaderIdentity::Name(layout),matched);
-        Emit(msg);
+        LogInfo(msg);
     }
     return true;
 }
@@ -3626,7 +3600,7 @@ void __cdecl PollSoundInventoryOnUiThread(
             "LOOT_SOUND_PICKUP_REARM version=" UNHOARDER_VERSION_STRING " cleared=%u lastUnitId=%u "
             "source=public-inventory-and-cursor-snapshot no-native-hooks=1",
             results.cleared,results.lastUnitId);
-        Emit(line);
+        LogInfo(line);
     }
     finish();
 }
@@ -3659,7 +3633,7 @@ void StartSoundInventoryObserver() noexcept {
         !D2RL::HasInventoryServiceField(inventory,
             D2RL::InventoryServiceRequiredSize) ||
         !inventory->getLocalPlayer || !inventory->forEachInventoryItem) {
-        Emit("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=public-inventory-service-missing "
+        LogWarn("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=public-inventory-service-missing "
              "sounds-continue=1 same-id-redrop=not-rearmed");
         return;
     }
@@ -3675,7 +3649,7 @@ void StartSoundInventoryObserver() noexcept {
     } catch (const std::exception&) {
         SoundInventory=nullptr;
         SoundInventoryItems=nullptr;
-        Emit("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=worker-create-failed "
+        LogWarn("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=worker-create-failed "
              "sounds-continue=1 same-id-redrop=not-rearmed");
         return;
     }
@@ -3685,7 +3659,7 @@ void StartSoundInventoryObserver() noexcept {
         "intervalMs=150 includesCursor=%u nativeHooksAdded=0 inventoryWrites=0 "
         "audio=first-observed-after-pickup minimapPickupLifecycle=shared-read-only",
         SoundInventoryItems ? 1U:0U);
-    Emit(line);
+    LogInfo(line);
 }
 
 void ArmNewGroundSound() noexcept {
@@ -3702,13 +3676,13 @@ void ArmNewGroundSound() noexcept {
             FormatterHookInstalled.load(std::memory_order_acquire)?1U:0U,
             ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules?1U:0U,
             rules?rules->soundRules:0);
-        Emit(guard);
+        LogInfo(guard);
     }
     if(!Context || !SoundThreads || !SoundThreads->runOnGameThread ||
        !FormatterHookInstalled.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
        !rules || !rules->soundRules || !QualifyNamedSoundBackend(true)) {
-        Emit("LOOT_SOUND_REFUSED reason=needs-filter-arm-sound-rules-ThreadService-and-qualified-native-soundplay");
+        LogWarn("LOOT_SOUND_REFUSED reason=needs-filter-arm-sound-rules-ThreadService-and-qualified-native-soundplay");
         return;
     }
     {
@@ -3722,7 +3696,7 @@ void ArmNewGroundSound() noexcept {
     std::snprintf(message,sizeof(message),
         "LOOT_SOUND_ARMED version=" UNHOARDER_VERSION_STRING " mode=session-unit-id-first-observed source=qualified-ground-label soundRules=%zu baselineMs=%llu no-visibility-replay=1 same-id-redrop=rearm-on-inventory-observation no-item-writes=1 note=not-native-drop-event",
         rules->soundRules,static_cast<unsigned long long>(SoundBaselineMs));
-    Emit(message);
+    LogInfo(message);
 }
 
 // The automatic activation path is defined before the native formatter
@@ -3736,7 +3710,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     const auto rules=std::atomic_load_explicit(&PublishedFilterRules,
         std::memory_order_acquire);
     if (!rules) {
-        Emit("LOOT_FILTER_AUTO_INACTIVE reason=no-valid-json");
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=no-valid-json");
         return false;
     }
     if (rules->rules.empty()) {
@@ -3746,25 +3720,25 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         CorrectedGlyphBArmed.store(false,std::memory_order_release);
         SoundArmed.store(false,std::memory_order_release);
         SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);
-        Emit("LOOT_FILTER_AUTO_INACTIVE reason=valid-json-empty-rules");
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=valid-json-empty-rules");
         return false;
     }
     if (!Context || !OriginalGetItemCode ||
         !HookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_FILTER_AUTO_INACTIVE reason=item-code-reader-unavailable");
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=item-code-reader-unavailable");
         return false;
     }
     if (!FormatterHookInstalled.load(std::memory_order_acquire))
         ArmLabelFormatter();
     if (!FormatterHookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_FILTER_AUTO_INACTIVE reason=ground-label-formatter-unavailable");
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=ground-label-formatter-unavailable");
         return false;
     }
     if (!InnerNameHookInstalled.load(std::memory_order_acquire))
         ArmInnerNameWriter();
     if (!InnerNameHookInstalled.load(std::memory_order_acquire) ||
         !OriginalInnerNameWriter) {
-        Emit("LOOT_FILTER_AUTO_INACTIVE reason=ground-name-writer-unavailable");
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=ground-name-writer-unavailable");
         return false;
     }
     // Preserve the per-game observed-item sound registry across an in-session
@@ -3785,7 +3759,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     if (preserveSoundHistory) {
         SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);
         SoundArmed.store(true,std::memory_order_release);
-        Emit("LOOT_RELOAD_SOUND retained-seen-ids=1 previous-queued-cancelled=1");
+        LogInfo("LOOT_RELOAD_SOUND retained-seen-ids=1 previous-queued-cancelled=1");
     } else if (rules->soundRules) ArmNewGroundSound();
     else if (!automatic) SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);
     const auto nameRules=static_cast<std::size_t>(std::count_if(
@@ -3800,7 +3774,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         CorrectedGlyphBArmed.load(std::memory_order_acquire)?1U:0U,
         SoundArmed.load(std::memory_order_acquire)?1U:0U);
     FilterLiveReloadAvailable.store(true,std::memory_order_release);
-    Emit(message);
+    LogInfo(message);
     return true;
 }
 
@@ -3821,7 +3795,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
             "LOOT_RELOAD_REFUSED trigger=%s reason=requires-previously-active-filter "
             "previous-rules-preserved=1 action=restart-with-valid-json",
             trigger);
-        Emit(message);
+        LogWarn(message);
         return false;
     }
     if (!ReloadFilterRules()) {
@@ -3830,7 +3804,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
             "LOOT_RELOAD_REFUSED trigger=%s reason=invalid-new-json-or-excel "
             "previousGeneration=%llu previous-rules-preserved=1",
             trigger,static_cast<unsigned long long>(previous->generation));
-        Emit(message);
+        LogWarn(message);
         return false;
     }
     const auto current=std::atomic_load_explicit(&PublishedFilterRules,
@@ -3852,7 +3826,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
             "LOOT_RELOAD_REFUSED trigger=%s reason=reactivation-unavailable "
             "previousGeneration=%llu previous-rules-restored=1",
             trigger,static_cast<unsigned long long>(previous->generation));
-        Emit(message);
+        LogWarn(message);
         return false;
     }
     char message[340]{};
@@ -3866,7 +3840,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         current?current->schema:0U,current?current->rules.size():0U,
         current?current->hiddenRules:0U,current?current->backgroundRules:0U,
         current?current->textColorRules:0U,current?current->soundRules:0U);
-    Emit(message);
+    LogInfo(message);
     return true;
 }
 
@@ -3880,7 +3854,7 @@ void RebaselineSoundAtGameJoin() noexcept {
         SoundSeenRegistry.Clear();
         SoundArmMs.store(GetTickCount64(),std::memory_order_release);
     }
-    Emit("LOOT_SOUND_GAME_BASELINE_RESET auto=1 previously-observed-items-baselined-for-1500ms=1");
+    LogInfo("LOOT_SOUND_GAME_BASELINE_RESET auto=1 previously-observed-items-baselined-for-1500ms=1");
 }
 
 // The producer passes six ABI arguments, including two stack arguments.
@@ -3908,13 +3882,13 @@ std::uint8_t __fastcall HookLabelFormatter(
 
 void ArmLabelFormatter() noexcept {
     if (FormatterHookInstalled.load(std::memory_order_acquire)) {
-        Emit("LOOT_FORMATTER_OBSERVER_READY already-installed=1");
+        LogInfo("LOOT_FORMATTER_OBSERVER_READY already-installed=1");
         return;
     }
     const char* build = Context ? D2RL::GetBuildName(Context) : nullptr;
     if (!Context || !build || std::string_view(build) != "93847" ||
         !Base || !ImageSize) {
-        Emit("LOOT_FORMATTER_REFUSED unexpected-build-or-uninitialized-image");
+        LogWarn("LOOT_FORMATTER_REFUSED unexpected-build-or-uninitialized-image");
         return;
     }
     std::array<std::uint8_t,5> call{};
@@ -3926,7 +3900,7 @@ void ArmLabelFormatter() noexcept {
         !Context->CheckExpectedBytes(LabelFormatterRva,
             ExpectedLabelFormatter.data(),
             static_cast<std::uint32_t>(ExpectedLabelFormatter.size()))) {
-        Emit("LOOT_FORMATTER_REFUSED callsite-or-formatter-fingerprint-mismatch-or-owned-hook; no-fallback-write");
+        LogWarn("LOOT_FORMATTER_REFUSED callsite-or-formatter-fingerprint-mismatch-or-owned-hook; no-fallback-write");
         return;
     }
     if (!Context->InstallInlineHook(LabelFormatterRva,
@@ -3934,11 +3908,11 @@ void ArmLabelFormatter() noexcept {
             static_cast<std::uint32_t>(ExpectedLabelFormatter.size()),
             HookLabelFormatter,&OriginalLabelFormatter) ||
         !OriginalLabelFormatter) {
-        Emit("LOOT_FORMATTER_REFUSED loader-hook-registration-failed; no-fallback-write");
+        LogWarn("LOOT_FORMATTER_REFUSED loader-hook-registration-failed; no-fallback-write");
         return;
     }
     FormatterHookInstalled.store(true,std::memory_order_release);
-    Emit("LOOT_FORMATTER_OBSERVER_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=none nativeCodeWrites=loader-managed-hook-only");
+    LogInfo("LOOT_FORMATTER_OBSERVER_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=none nativeCodeWrites=loader-managed-hook-only");
 }
 
 // Build-93847 native pickup guard. The only intercepted action is native
@@ -4037,7 +4011,7 @@ void InstallNativePickupGuard() noexcept {
     if(!Context || !Base || !ImageSize ||
        !D2RL::GetBuildName(Context) ||
        std::string_view(D2RL::GetBuildName(Context))!="93847"){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=wrong-build-or-image forward-only=1");
+        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=wrong-build-or-image forward-only=1");
         return;
     }
 
@@ -4049,7 +4023,7 @@ void InstallNativePickupGuard() noexcept {
        nt.Signature!=IMAGE_NT_SIGNATURE ||
        nt.FileHeader.TimeDateStamp!=0x6AB3782C ||
        nt.OptionalHeader.SizeOfImage!=ImageSize){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=PE-timestamp-or-image-size-mismatch forward-only=1");
+        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=PE-timestamp-or-image-size-mismatch forward-only=1");
         return;
     }
 
@@ -4062,7 +4036,7 @@ void InstallNativePickupGuard() noexcept {
     }};
     for(const auto callRva:dispatchWitnesses){
         if(!NativeCallMatches(callRva,NativeActionDispatchRva)){
-            Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-callsite-witness-mismatch forward-only=1");
+            LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-callsite-witness-mismatch forward-only=1");
             return;
         }
     }
@@ -4070,7 +4044,7 @@ void InstallNativePickupGuard() noexcept {
     if(!NativeCallMatches(0xFACB9,NativeItemLookupRva) ||
        !Context->CheckExpectedBytes(NativeItemLookupRva,
             lookupEntry.data(),static_cast<std::uint32_t>(lookupEntry.size()))){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=item-lookup-witness-mismatch forward-only=1");
+        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=item-lookup-witness-mismatch forward-only=1");
         return;
     }
 
@@ -4087,7 +4061,7 @@ void InstallNativePickupGuard() noexcept {
        !Context->CheckExpectedBytes(NativeActionDispatchRva,
             dispatchEntry.data(),
             static_cast<std::uint32_t>(dispatchEntry.size()))){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-entry-unqualified forward-only=1");
+        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-entry-unqualified forward-only=1");
         return;
     }
 
@@ -4095,12 +4069,12 @@ void InstallNativePickupGuard() noexcept {
             dispatchEntry.data(),static_cast<std::uint32_t>(dispatchEntry.size()),
             HookNativeActionDispatch,&OriginalNativeActionDispatch) ||
        !OriginalNativeActionDispatch){
-        Emit("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-hook-registration-failed forward-only=1");
+        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-hook-registration-failed forward-only=1");
         return;
     }
 
     NativePickupGuardQualified.store(true,std::memory_order_release);
-    Emit("LOOT_PICKUP_GUARD_READY version=" UNHOARDER_VERSION_STRING " action=22 type=4 mode=3 "
+    LogInfo("LOOT_PICKUP_GUARD_READY version=" UNHOARDER_VERSION_STRING " action=22 type=4 mode=3 "
          "freshLookup=D2R+0x9A5D0 rule=show:false failOpen=1 stateWrites=0");
 }
 
@@ -4123,7 +4097,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
         if(!FilterConfigPath.empty() && now-lastRuleFileCheck>=200) {
             lastRuleFileCheck=now;
             if(ruleFileWatcher.Observe(ReadFilterFileStamp(FilterConfigPath),now,650)) {
-                Emit("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=stable-file-change settleMs=650");
+                LogInfo("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=stable-file-change settleMs=650");
                 (void)TryLiveFilterReload("stable-file-change");
             }
 
@@ -4151,7 +4125,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
                 const bool typesChanged=watchItemTypes && itemTypesTableWatcher.Observe(
                     ReadFilterFileStamp(excel/L"itemtypes.txt"),now,650);
                 if(weaponsChanged || armorChanged || miscChanged || typesChanged) {
-                    Emit("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=stable-excel-change settleMs=650");
+                    LogInfo("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=stable-excel-change settleMs=650");
                     (void)TryLiveFilterReload("stable-excel-change");
                 }
             }
@@ -4169,7 +4143,7 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
             (GetAsyncKeyState(VK_SHIFT)&0x8000)!=0 &&
             (GetAsyncKeyState(VK_F9)&0x8000)!=0;
         if(reloadChord && !lastReloadChord) {
-            Emit("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=Ctrl+Shift+F9");
+            LogInfo("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING " trigger=Ctrl+Shift+F9");
             (void)TryLiveFilterReload("Ctrl+Shift+F9");
             ruleFileWatcher.Resync(ReadFilterFileStamp(FilterConfigPath));
         }
@@ -4183,7 +4157,7 @@ void RuntimeWorkerStart() noexcept {
             RuntimeWorkerLoop(stop);
         });
     } catch(const std::exception&) {
-        Emit("LOOT_FILTER_INACTIVE runtime-worker-create-failed=1 liveReload=0");
+        LogWarn("LOOT_FILTER_INACTIVE runtime-worker-create-failed=1 liveReload=0");
     }
 }
 void RuntimeWorkerStop() noexcept {
@@ -4249,7 +4223,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
             peOk?unsigned(nt.FileHeader.TimeDateStamp):0U,
             peOk?unsigned(nt.OptionalHeader.SizeOfImage):0U,
             SoundThreads?1U:0U);
-        Emit(line);
+        LogInfo(line);
         ResetMinimapTracking();
     }
 
@@ -4285,8 +4259,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         // or legacy plugin-directory configs are silently selected.
         (void)ReloadFilterRules();
         const auto path=std::string("LOOT_RULES_PATH '")+FilterPathUtf8()+"'";
-        Emit(path.c_str());
-    } else Emit("LOOT_RULES_WARNING could-not-resolve-mod-config-directory");
+        LogInfo(path.c_str());
+    } else LogWarn("LOOT_RULES_WARNING could-not-resolve-mod-config-directory");
     if (!DetermineImageSize()) {
         context->LogError("LOOT_FILTER_REFUSED invalid main D2R PE image");
         return false;
@@ -4296,7 +4270,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     std::snprintf(msg, sizeof(msg),
         "LOOT_FILTER_READY version=" UNHOARDER_VERSION_STRING " build=%s expectedBuild=93847 config=automatic",
         build ? build : "unknown");
-    Emit(msg);
+    LogInfo(msg);
     if (!build || std::string_view(build) != "93847") {
         context->LogWarn("LOOT_FILTER_INACTIVE unexpected build, no native hook");
         return true;
@@ -4320,7 +4294,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     if (std::atomic_load_explicit(&PublishedFilterRules,
             std::memory_order_acquire))
         (void)ActivateConfiguredFilter(true);
-    else Emit("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
+    else LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
     RegisterInWorldLifecycle();
     StartSoundInventoryObserver();
     InstallNativePickupGuard();
