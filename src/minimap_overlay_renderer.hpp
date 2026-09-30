@@ -51,21 +51,6 @@ struct MarkerFrame final {
     std::uint64_t sequence{};
 };
 
-struct Diagnostics final {
-    std::uint64_t presentCalls{};
-    std::uint64_t directQueueCaptures{};
-    std::uint64_t rendererInitAttempts{};
-    std::uint64_t rendererInitFailures{};
-    std::uint64_t renderedFrames{};
-    std::uint64_t publishedFrames{};
-    std::uint64_t drawnMarkers{};
-    std::uint64_t automapSuppressedFrames{};
-    std::uint32_t lastInitFailureStage{};
-    bool hooksInstalled{};
-    bool commandQueueReady{};
-    bool rendererInitialized{};
-};
-
 using LogCallback = void(__cdecl*)(const char* message) noexcept;
 
 void SetDllModule(HMODULE module) noexcept;
@@ -85,7 +70,6 @@ void Shutdown() noexcept;
 void Publish(const MarkerFrame& frame) noexcept;
 void Clear() noexcept;
 
-[[nodiscard]] Diagnostics GetDiagnostics() noexcept;
 [[nodiscard]] const char* ActiveBackendName() noexcept;
 
 } // namespace UnHoarder::MinimapOverlayRenderer
