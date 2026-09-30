@@ -2183,9 +2183,9 @@ std::uint64_t __fastcall HookInnerNameWriter(
     GeometryObserved.fetch_add(1, std::memory_order_relaxed);
     const char* replacement = configuredName;
     std::size_t replacementBytes = configuredBytes;
-    // This native writer is the Alt-visible ground label, unlike the SoE V2
-    // hidden-hover relay above. Both take the current quantity from the same
-    // borrowed TYPE_ITEM and add the prefix before native text measurement.
+    // This native writer owns the qualified Alt-visible ground label. It takes
+    // the current quantity from the borrowed TYPE_ITEM and adds the prefix
+    // before native text measurement.
     std::array<char,InnerNameBufferBytes> countedName{};
     {
         const auto currentName=std::string_view(original.data(),
