@@ -683,7 +683,7 @@ HRESULT STDMETHODCALLTYPE HookResizeBuffers(
     }
     HooksInstalled = true;
     ActiveBackend.store(Backend::StandaloneD3D12, std::memory_order_release);
-    Log("LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0 poc=0");
+    Log("LOOT_MINIMAP_RENDERER_READY version=" UNHOARDER_VERSION_STRING " backend=standalone-d3d12 presentHook=1 queueHook=1 resizeHook=1 markerRules=json-shape-border-fill-size sizePx=json-default12-range12..40-clamped automapGate=native-ui-state-10 mapSenseDependency=0");
     return true;
 }
 
