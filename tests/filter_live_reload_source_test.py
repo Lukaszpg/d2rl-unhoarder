@@ -11,7 +11,9 @@ assert 'ruleFileWatcher.Resync(ReadFilterFileStamp(FilterConfigPath));' in s
 assert 'if (!ReloadFilterRules()) {' in s
 assert 'LOOT_RELOAD_REFUSED trigger=%s reason=invalid-new-json-or-excel' in s
 assert 'LOOT_RELOAD_OK version=" UNHOARDER_VERSION_STRING "' in s
-assert 'NativeRowBgLiveEpoch' not in s
+assert 'NativeRowBgLiveEpoch' in s
+assert 'ResetNativeRowLiveSession();' in s
+assert 'EnableAutomaticNativeHover();' in s
 assert 'GroundIdentities.fill({}); // no old styled-name/paint identity survives' in s
 assert 'LOOT_RELOAD_SOUND retained-seen-ids=1' in s
 assert 'SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);' in s
