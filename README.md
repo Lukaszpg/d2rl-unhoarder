@@ -24,19 +24,20 @@ Standalone D2RLoader plugin providing a production JSON loot filter for Diablo I
 
 In order to build a filter, head to [UnHoarder Builder](https://lukaszpg.github.io/unhoarder-builder/) site. Upload the required text files of the mod you're using (or vanilla if you're not using any huge overhaul mods) to enable autocomplete. Build your filter and then click `Download filter.json` at the top.
 
-The `filter.json` file has to be placed in the same `plugins` folder as `unhoarder.dll`.
+Place `filter.json` in `<D2R_installation_directory>\\mods\\<your_mod_name>\\d2rloader\\config`.
 
 ## Identity
 
 - product: **UnHoarder**
 - CMake target: `unhoarder`
 - DLL: `unhoarder.dll`
-- D2RLoader plugin id: `loot-filter` *(kept for runtime/interoperability compatibility)*
-- config: `filter.json`
+- D2RLoader plugin id: `unhoarder`
+- log: `unhoarder.log`
+- config: `d2rloader/config/filter.json`
 
 The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start if that old production DLL (or the older probe DLL) is already loaded, preventing two versions from competing for the same native hooks.
 
-The canonical runtime configuration is `filter.json`. If it is absent, the plugin can still read `loot-filter.json` (v0.2.76) or the older `loot-filter-probe.json` beside the DLL as migration fallbacks. New configurations should use `filter.json`.
+The runtime configuration is `<mod>/d2rloader/config/filter.json`. UnHoarder no longer reads filter JSON files from the `plugins` directory.
 
 ## Building from source
 
@@ -66,7 +67,7 @@ Copy it to your mod's D2RLoader plugin directory, for example:
 <Diablo II Resurrected>/mods/<mod>/d2rloader/plugins/unhoarder.dll
 ```
 
-Place `filter.json` beside the DLL.
+Place `filter.json` in the same mod's `d2rloader/config` directory.
 
 ### PluginSDK source
 
