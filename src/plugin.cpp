@@ -3522,7 +3522,7 @@ bool DiagnoseTrackedTooltipOwner(
     return exactEntryHook;
 }
 
-bool __cdecl OnCompatibleInWorldLabel(
+void __cdecl OnCompatibleInWorldLabel(
     const InWorldCompat::Event* event, void*) noexcept {
     if (!event || event->structSize < sizeof(InWorldCompat::Event)
         || event->unitType != 4 || !event->nativeUnit || !event->source
