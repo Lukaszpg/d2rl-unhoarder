@@ -2,7 +2,7 @@
 #include <cassert>
 #include <vector>
 using namespace UnHoarder::RuleEngine;
-struct Rule {bool schema2{true};std::uint32_t code{};Conditions conditions{};bool show{true};};
+struct Rule {bool usesConditions{true};std::uint32_t code{};Conditions conditions{};bool show{true};};
 int main() {
   Rule divo{};divo.conditions.codes={123};divo.show=true;
   Rule exo{};exo.conditions.codes={124,125};exo.show=true;
