@@ -22,6 +22,7 @@ for term in (
     "TooltipCompatLifetime::InvocationGuard",
     "TooltipCompatLifetime::WaitForQuiescence",
     "TooltipCompatRegistrationActiveOnThisThread",
+    "QuiesceOwnedTooltipCompatSubscribers",
 ):
     assert term in src, term
 
@@ -35,4 +36,5 @@ assert "quiescence barrier" in hdr
 assert "quiescence barrier" in docs
 assert "callThrough == Yes" in docs
 assert "Result::Unsupported" in docs
+assert "length>=out.size()" in src
 print("tooltip compatibility v1 source contract: ok")
