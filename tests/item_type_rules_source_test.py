@@ -22,4 +22,4 @@ assert 'std::atomic_store_explicit(&PublishedFilterRules,published,' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s
 assert '(c.itemLevel.enabled && !item.itemLevelKnown)' in r
-print('1.0.0 itemType reload-only hierarchy, lazy matching and pickup regressions: ok')
+print('itemType reload-only hierarchy, lazy matching and pickup regressions: ok')
