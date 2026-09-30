@@ -7,7 +7,7 @@ assert 'config["version"].get<int>() != 2' in s
 assert 'ParseV2Conditions((*block)["conditions"],rule.conditions,' in s
 assert 'std::atomic_store_explicit(&PublishedFilterRules,published,' in s
 assert 'ResolveGroundRule(' in s and 'RuleEngine::ResolveMatchingRulesFailOpen' in s
-assert 'if (rule.schema2 ? rule.conditions.Matches(item)' in h
+assert 'if (rule.usesConditions ? rule.conditions.Matches(item)' in h
 assert 'seen.insert(codeValue)' in s and 'fresh->schema==1' in s
 assert 'rule.show=fresh->schema==3 ? wrapperShow :' in s
 assert 'if (rule.conditions.quantity.enabled) fresh->usesQuantity=true;' in s
