@@ -18,4 +18,4 @@ for key in ('VK_F6','VK_F7','VK_F8','VK_F10','VK_F11','VK_F12'):
 for prefix in ('LOOT_WORLD_PROBE','LOOT_LATENCY_','LOOT_SOCKET_PROBE_','LOOT_ETHEREAL_PROBE_','LOOT_IDENTIFIED_PROBE_','LOOT_IMAGE_DUMP_','LOOT_PICKUP_TRACE_'):
     assert f'std::strstr(message,"{prefix}")' not in s,prefix
 assert 'loot-filter-probe.dll' not in s and 'loot-filter-probe.dll' not in rc
-print('1.0.0 product identity, author and diagnostic cleanup contract ok')
+print('product identity, author and diagnostic cleanup contract ok')
