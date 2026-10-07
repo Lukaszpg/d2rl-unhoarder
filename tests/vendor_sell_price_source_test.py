@@ -88,7 +88,7 @@ assert "observedMs=entry.observedMs" in src
 assert "scalarOut->sellPriceKnown=sellPriceFresh" in src
 assert "now-candidate.sellPriceObservedMs<=VendorSellPriceCacheTtlMs" in src
 assert "scalars.sellPriceKnown,scalars.sellPrice" in src
-assert "scalarOut->sellPriceKnown=candidate.sellPriceKnown" in src
+assert "scalarOut->sellPriceKnown=sellPriceFresh" in src
 assert "NativeRowLiveLatestLabel.sellPriceKnown=item.sellPriceKnown" in src
 assert "candidate.sellPriceKnown=label.sellPriceKnown" in src
 assert "rowItem.sellPriceKnown=append.sellPriceKnown" in src
