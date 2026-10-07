@@ -23,7 +23,8 @@ assert 'if(!PickupGuard::GroundMode(header[3]))' in s
 assert 'scalarOut->identifiedKnown=candidate.identifiedKnown;' in s
 assert 'item.identifiedKnown=scalarSnapshot->identifiedKnown;' in s
 assert 'scalars.identifiedKnown,scalars.identified,' in s
-assert 'scalars.sellPriceKnown,scalars.sellPrice};' in s
+assert 'scalars.sellPriceKnown,scalars.sellPrice,' in s
+assert 'scalars.sellPriceObservedMs};' in s
 assert 'if(c.identifiedEnabled && !item.identifiedKnown)' in r
 assert 'if(c.identifiedEnabled && !item.identifiedKnown) return MatchState::Unknown;' in r
 assert 'item.identified!=c.identifiedExpected) return MatchState::NoMatch;' in r
