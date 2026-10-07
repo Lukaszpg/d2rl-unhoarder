@@ -34,6 +34,9 @@ for needle in (
     assert needle in src
 
 # Exact witnesses still fail closed before native pricing is enabled.
+assert "using VendorSellPriceTransactionFn=std::int32_t(__fastcall*)" in src
+assert "std::int32_t nativePrice{};" in src
+assert "nativePrice==std::numeric_limits<std::int32_t>::max()" in src
 assert "VendorSellPriceTransactionThunkExpected" in src
 assert "VendorSellPriceTransactionImplementationExpected" in src
 assert "VendorSellPriceWitnessTransactionArgExpected" in src
