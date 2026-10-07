@@ -1395,7 +1395,7 @@ constexpr std::uintptr_t VendorSellPriceWitnessTransactionArgRva=0x10D50E;
 constexpr std::uintptr_t VendorSellPriceWitnessVendorArgRva=0x10D519;
 constexpr std::uintptr_t VendorSellPriceWitnessTransactionCallRva=0x10D523;
 
-using VendorSellPriceTransactionFn=std::int64_t(__fastcall*)(
+using VendorSellPriceTransactionFn=std::int32_t(__fastcall*)(
     void*,void*,std::int32_t,void*,std::int32_t,std::int32_t) noexcept;
 using VendorSellPriceDifficultyFn=std::uint8_t(__fastcall*)() noexcept;
 
@@ -1579,7 +1579,7 @@ bool ReadNativeVendorSellPrice(const void* nativeUnit,
        playerType!=0U)
         return false;
 
-    std::int64_t nativePrice{};
+    std::int32_t nativePrice{};
     __try {
         nativePrice=VendorSellPriceTransactionFnPtr(
             player,const_cast<void*>(nativeUnit),
@@ -1592,8 +1592,11 @@ bool ReadNativeVendorSellPrice(const void* nativeUnit,
             LogWarn("LOOT_SELL_PRICE_DISABLED reason=native-call-fault failClosed=1 retry=next-game");
         return false;
     }
+    // The native transaction routine uses INT_MAX as its invalid
+    // player/item-data sentinel. Never turn a transient lifetime race into an
+    // artificial "extremely valuable" item; unknown must remain fail-open.
     if(nativePrice<0 ||
-       nativePrice>std::numeric_limits<std::int32_t>::max())
+       nativePrice==std::numeric_limits<std::int32_t>::max())
         return false;
 
     price=static_cast<std::uint32_t>(nativePrice);
