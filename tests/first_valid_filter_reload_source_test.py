@@ -9,6 +9,7 @@ assert "action=restart-with-valid-json" not in src
 assert "QueueFirstFilterActivation" in src
 assert "ActivateFirstFilterOnGameThread" in src
 assert "FirstFilterActivationPending" in src
+assert "FirstFilterActivationRetryRequested" in src
 
 # Parsing remains on the worker, but first native hook activation is dispatched
 # through D2RLoader's game-thread service.
@@ -17,6 +18,7 @@ queue = src[src.index("bool QueueFirstFilterActivation"):
 assert "ReloadFilterRules()" in queue
 assert "runOnGameThread" in queue
 assert "ActivateConfiguredFilter(false)" not in queue
+assert "latest-file-will-be-retried=1" in queue
 
 callback = src[src.index("void __cdecl ActivateFirstFilterOnGameThread"):
                src.index("bool QueueFirstFilterActivation")]
@@ -39,5 +41,11 @@ assert "LogReloadSuccess(trigger,previous,current,false)" in reload
 # The first-activation request owns the exact parsed immutable candidate and
 # refuses stale/superseded publication before arming hooks.
 assert "current!=request->candidate" in callback
+
+worker = src[src.index("void RuntimeWorkerLoop"):
+             src.index("void RuntimeWorkerStart")]
+assert "FirstFilterActivationRetryRequested.load" in worker
+assert "!FirstFilterActivationPending.load" in worker
+assert 'TryLiveFilterReload("deferred-first-activation")' in worker
 
 print("first valid filter live activation contract: ok")
