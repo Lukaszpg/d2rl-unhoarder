@@ -42,6 +42,7 @@ struct Item {
     // Hidden affix contributions are never inferred by UnHoarder.
     bool sellPriceKnown{};
     std::uint32_t sellPrice{};
+    std::uint64_t sellPriceObservedMs{};
 };
 struct Conditions {
     std::vector<std::uint32_t> codes;       // OR among entries
