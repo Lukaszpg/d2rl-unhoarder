@@ -147,7 +147,7 @@ Schema 3 mirrors Path of Exile's ordered Show/Hide block model. Every element of
 
 `code`, `baseName`, `itemType`, `quantity`, `rarity`, `itemLevel`, `sockets`, `ethereal`, `identified`, and `sellPrice` are currently supported. Numeric conditions accept `eq`, `gt`, `gte`, `lt`, and `lte`.
 
-`sellPrice` is the native vendor sell value in gold, using the same fixed Malah/513 SELL semantics as PD2/BH `PRICE`/`SELLPRICE`. It is evaluated lazily and kept in a short-lived ground-item cache; pickup/inventory observation invalidates the entry immediately. Inferior/normal/superior and magic/rare items are supported. For **unidentified magic/rare**, D2R's native transaction calculator excludes affix and bonus-stat price contributions, so `sellPrice` is the visible/base-state value only. After identification, the same condition sees the full affix-aware native sell value.
+`sellPrice` is the native vendor sell value in gold. It is evaluated lazily and kept in a short-lived ground-item cache; pickup/inventory observation invalidates the entry immediately. Inferior/normal/superior and magic/rare items are supported. For **unidentified magic/rare**, D2R's native transaction calculator excludes affix and bonus-stat price contributions, so `sellPrice` is the visible/base-state value only. After identification, the same condition sees the full affix-aware native sell value.
 
 The filter intentionally does not expose hidden unidentified affixes or unique identity. An unidentified magic/rare `sellPrice` is therefore a conservative lower bound: a high base-value item stays high-value, while an item below a threshold may rise above it after identification.
 
