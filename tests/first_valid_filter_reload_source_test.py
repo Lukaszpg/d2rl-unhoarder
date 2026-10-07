@@ -42,8 +42,9 @@ assert "LogReloadSuccess(trigger,previous,current,false)" in reload
 # refuses stale/superseded publication before arming hooks.
 assert "current!=request->candidate" in callback
 
-worker = src[src.index("void RuntimeWorkerLoop"):
-             src.index("void RuntimeWorkerStart")]
+worker_start = src.index("void RuntimeWorkerLoop")
+worker_end = src.index("void RuntimeWorkerStart", worker_start)
+worker = src[worker_start:worker_end]
 assert "FirstFilterActivationRetryRequested.load" in worker
 assert "!FirstFilterActivationPending.load" in worker
 assert 'TryLiveFilterReload("deferred-first-activation")' in worker
