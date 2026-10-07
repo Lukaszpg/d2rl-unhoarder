@@ -4778,6 +4778,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
 }
 
 std::atomic_bool FirstFilterActivationPending{};
+std::atomic_bool FirstFilterActivationRetryRequested{};
 
 struct FirstFilterActivationRequest final {
     std::shared_ptr<const FilterRuleTable> previous{};
@@ -4858,7 +4859,9 @@ bool QueueFirstFilterActivation(const char* trigger,
         return false;
     }
     if(FirstFilterActivationPending.exchange(true,std::memory_order_acq_rel)) {
-        LogWarn("LOOT_RELOAD_DEFERRED reason=first-activation-already-pending");
+        FirstFilterActivationRetryRequested.store(true,std::memory_order_release);
+        LogInfo("LOOT_RELOAD_DEFERRED reason=first-activation-already-pending "
+            "latest-file-will-be-retried=1");
         return false;
     }
 
@@ -5217,6 +5220,18 @@ void RuntimeWorkerLoop(std::stop_token stop) noexcept {
         if(stop.stop_requested()) break;
         const auto now=GetTickCount64();
 
+        // A file change can arrive while the first game-thread activation is
+        // queued. Coalesce it and re-read the latest file after that activation
+        // completes instead of losing the watcher's settled change event.
+        if(FirstFilterActivationRetryRequested.load(std::memory_order_acquire) &&
+           !FirstFilterActivationPending.load(std::memory_order_acquire)) {
+            FirstFilterActivationRetryRequested.store(false,std::memory_order_release);
+            LogInfo("LOOT_RELOAD_REQUEST version=" UNHOARDER_VERSION_STRING
+                " trigger=deferred-first-activation");
+            (void)TryLiveFilterReload("deferred-first-activation");
+            ruleFileWatcher.Resync(ReadFilterFileStamp(FilterConfigPath));
+        }
+
         // Automatic JSON/table reload runs only on this worker; native item
         // and renderer callbacks never perform filesystem or parser work.
         if(!FilterConfigPath.empty() && now-lastRuleFileCheck>=200) {
@@ -5323,6 +5338,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     SoundRegistryEpoch.store(1);
     SoundPickupPollPending.store(false);
     FirstFilterActivationPending.store(false,std::memory_order_relaxed);
+    FirstFilterActivationRetryRequested.store(false,std::memory_order_relaxed);
     SoundInventory=nullptr;
     SoundInventoryItems=nullptr;
     SoundThreads=nullptr;
@@ -5426,6 +5442,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     RuntimeWorkerStop();
     FirstFilterActivationPending.store(false,std::memory_order_release);
+    FirstFilterActivationRetryRequested.store(false,std::memory_order_release);
     DetachForeignTooltipCompatRoutes();
     AutomapProjectionArmed.store(false,std::memory_order_release);
     MinimapOverlayRenderer::Shutdown();
