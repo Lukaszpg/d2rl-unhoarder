@@ -4777,25 +4777,166 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     return true;
 }
 
-// Only this worker-owned entrypoint requests a live reload. Successful JSON
-// parsing publishes one immutable table; errors leave the previous table
-// unchanged. The filter must have been activated at initial startup so we
-// never install a first set of native rendering hooks on the polling worker.
+std::atomic_bool FirstFilterActivationPending{};
+
+struct FirstFilterActivationRequest final {
+    std::shared_ptr<const FilterRuleTable> previous{};
+    std::shared_ptr<const FilterRuleTable> candidate{};
+    std::array<char,64> trigger{};
+};
+
+void LogReloadSuccess(const char* trigger,
+    const std::shared_ptr<const FilterRuleTable>& previous,
+    const std::shared_ptr<const FilterRuleTable>& current,
+    bool firstActivation) noexcept {
+    char message[380]{};
+    std::snprintf(message,sizeof(message),
+        "LOOT_RELOAD_OK version=" UNHOARDER_VERSION_STRING " trigger=%s previousGeneration=%llu "
+        "generation=%llu schema=%u rules=%zu hiddenRules=%zu "
+        "backgroundRules=%zu textColorRules=%zu soundRules=%zu "
+        "firstActivation=%u pickupCallerPolicy=none",
+        trigger?trigger:"unknown",
+        static_cast<unsigned long long>(previous?previous->generation:0),
+        static_cast<unsigned long long>(current?current->generation:0),
+        current?current->schema:0U,current?current->rules.size():0U,
+        current?current->hiddenRules:0U,current?current->backgroundRules:0U,
+        current?current->textColorRules:0U,current?current->soundRules:0U,
+        firstActivation?1U:0U);
+    LogInfo(message);
+}
+
+void __cdecl ActivateFirstFilterOnGameThread(
+    const D2RL::PluginContext* logger,void* requestArg) noexcept {
+    std::unique_ptr<FirstFilterActivationRequest> request(
+        static_cast<FirstFilterActivationRequest*>(requestArg));
+    const auto finish=[]() noexcept {
+        FirstFilterActivationPending.store(false,std::memory_order_release);
+    };
+    if(!request || !logger || logger!=Context) {
+        finish();
+        return;
+    }
+
+    const auto current=PublishedFilterRules.load(std::memory_order_acquire);
+    if(!current || current!=request->candidate) {
+        finish();
+        return;
+    }
+
+    {
+        std::lock_guard lock(GroundIdentityMutex);
+        GroundIdentities.fill({});
+    }
+
+    if(!ActivateConfiguredFilter(false)) {
+        // Parsing succeeded, but a required native backend could not be armed.
+        // Restore the exact pre-attempt snapshot; any partially installed
+        // observer hooks remain forward-only while Rules mode stays inactive.
+        PublishedFilterRules.store(request->previous,std::memory_order_release);
+        FilterLiveReloadAvailable.store(false,std::memory_order_release);
+        char message[300]{};
+        std::snprintf(message,sizeof(message),
+            "LOOT_RELOAD_REFUSED trigger=%s reason=first-activation-unavailable "
+            "previousGeneration=%llu previous-rules-restored=1 retry=on-next-file-change",
+            request->trigger.data(),
+            static_cast<unsigned long long>(
+                request->previous?request->previous->generation:0));
+        LogWarn(message);
+        finish();
+        return;
+    }
+
+    LogReloadSuccess(request->trigger.data(),request->previous,current,true);
+    finish();
+}
+
+bool QueueFirstFilterActivation(const char* trigger,
+    const std::shared_ptr<const FilterRuleTable>& previous) noexcept {
+    if(!Context || !SoundThreads || !SoundThreads->runOnGameThread) {
+        LogWarn("LOOT_RELOAD_REFUSED reason=first-activation-game-thread-unavailable "
+            "previous-rules-preserved=1");
+        return false;
+    }
+    if(FirstFilterActivationPending.exchange(true,std::memory_order_acq_rel)) {
+        LogWarn("LOOT_RELOAD_DEFERRED reason=first-activation-already-pending");
+        return false;
+    }
+
+    if(!ReloadFilterRules()) {
+        FirstFilterActivationPending.store(false,std::memory_order_release);
+        char message[270]{};
+        std::snprintf(message,sizeof(message),
+            "LOOT_RELOAD_REFUSED trigger=%s reason=invalid-new-json-or-excel "
+            "previousGeneration=%llu previous-rules-preserved=1",
+            trigger,static_cast<unsigned long long>(
+                previous?previous->generation:0));
+        LogWarn(message);
+        return false;
+    }
+
+    const auto current=PublishedFilterRules.load(std::memory_order_acquire);
+    if(!current || current->rules.empty()) {
+        FirstFilterActivationPending.store(false,std::memory_order_release);
+        LogWarn("LOOT_RELOAD_REFUSED reason=valid-json-empty-rules "
+            "first-activation-not-required=1");
+        return false;
+    }
+
+    auto* request=new(std::nothrow) FirstFilterActivationRequest{};
+    if(!request) {
+        PublishedFilterRules.store(previous,std::memory_order_release);
+        FirstFilterActivationPending.store(false,std::memory_order_release);
+        LogWarn("LOOT_RELOAD_REFUSED reason=first-activation-allocation-failed "
+            "previous-rules-restored=1");
+        return false;
+    }
+    request->previous=previous;
+    request->candidate=current;
+    std::snprintf(request->trigger.data(),request->trigger.size(),"%s",
+        trigger?trigger:"unknown");
+
+    // Parsing/file I/O stays on the worker; only first native hook activation
+    // is dispatched through D2RLoader's qualified game-thread service.
+    const auto dispatch=SoundThreads->runOnGameThread(
+        Context,&ActivateFirstFilterOnGameThread,request);
+    if(dispatch!=D2RL::Threads::Result::Success) {
+        delete request;
+        PublishedFilterRules.store(previous,std::memory_order_release);
+        FirstFilterActivationPending.store(false,std::memory_order_release);
+        LogWarn("LOOT_RELOAD_REFUSED reason=first-activation-dispatch-failed "
+            "previous-rules-restored=1");
+        return false;
+    }
+    return true;
+}
+
+// The worker owns filesystem observation and JSON parsing. If startup had no
+// active filter, a newly valid file may be parsed here, but first native hook
+// installation is always dispatched to the game thread. Once active, reloads
+// keep the existing already-armed path and preserve the previous snapshot on
+// any validation or reactivation failure.
 bool TryLiveFilterReload(const char* trigger) noexcept {
     const auto previous=PublishedFilterRules.load(std::memory_order_acquire);
-    if (!Context || !previous ||
-        !FilterLiveReloadAvailable.load(std::memory_order_acquire) ||
-        !HookInstalled.load(std::memory_order_acquire) ||
-        !FormatterHookInstalled.load(std::memory_order_acquire) ||
-        !InnerNameHookInstalled.load(std::memory_order_acquire)) {
-        char message[260]{};
+    if(!Context || !HookInstalled.load(std::memory_order_acquire)) {
+        LogWarn("LOOT_RELOAD_REFUSED reason=runtime-not-ready previous-rules-preserved=1");
+        return false;
+    }
+
+    if(!FilterLiveReloadAvailable.load(std::memory_order_acquire))
+        return QueueFirstFilterActivation(trigger,previous);
+
+    if(!previous ||
+       !FormatterHookInstalled.load(std::memory_order_acquire) ||
+       !InnerNameHookInstalled.load(std::memory_order_acquire)) {
+        char message[280]{};
         std::snprintf(message,sizeof(message),
-            "LOOT_RELOAD_REFUSED trigger=%s reason=requires-previously-active-filter "
-            "previous-rules-preserved=1 action=restart-with-valid-json",
+            "LOOT_RELOAD_REFUSED trigger=%s reason=active-filter-backend-unavailable "
+            "previous-rules-preserved=1",
             trigger);
         LogWarn(message);
         return false;
     }
+
     if (!ReloadFilterRules()) {
         char message[260]{};
         std::snprintf(message,sizeof(message),
@@ -4825,18 +4966,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
         LogWarn(message);
         return false;
     }
-    char message[340]{};
-    std::snprintf(message,sizeof(message),
-        "LOOT_RELOAD_OK version=" UNHOARDER_VERSION_STRING " trigger=%s previousGeneration=%llu "
-        "generation=%llu schema=%u rules=%zu hiddenRules=%zu "
-        "backgroundRules=%zu textColorRules=%zu soundRules=%zu "
-        "pickupCallerPolicy=none",
-        trigger,static_cast<unsigned long long>(previous->generation),
-        static_cast<unsigned long long>(current?current->generation:0),
-        current?current->schema:0U,current?current->rules.size():0U,
-        current?current->hiddenRules:0U,current?current->backgroundRules:0U,
-        current?current->textColorRules:0U,current?current->soundRules:0U);
-    LogInfo(message);
+    LogReloadSuccess(trigger,previous,current,false);
     return true;
 }
 
@@ -5192,6 +5322,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     SoundSeenRegistry.Clear();
     SoundRegistryEpoch.store(1);
     SoundPickupPollPending.store(false);
+    FirstFilterActivationPending.store(false,std::memory_order_relaxed);
     SoundInventory=nullptr;
     SoundInventoryItems=nullptr;
     SoundThreads=nullptr;
@@ -5294,6 +5425,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     RuntimeWorkerStop();
+    FirstFilterActivationPending.store(false,std::memory_order_release);
     DetachForeignTooltipCompatRoutes();
     AutomapProjectionArmed.store(false,std::memory_order_release);
     MinimapOverlayRenderer::Shutdown();
