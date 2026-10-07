@@ -83,6 +83,10 @@ assert "StoreVendorSellPrice" in src
 assert "VendorSellPriceCacheTtlMs=1000" in src
 assert "now-entry.observedMs<=VendorSellPriceCacheTtlMs" in src
 assert "entry.nativeUnit==reinterpret_cast<std::uintptr_t>(nativeUnit)" in src
+assert "sellPriceObservedMs" in rules
+assert "observedMs=entry.observedMs" in src
+assert "scalarOut->sellPriceKnown=sellPriceFresh" in src
+assert "now-candidate.sellPriceObservedMs<=VendorSellPriceCacheTtlMs" in src
 assert "scalars.sellPriceKnown,scalars.sellPrice" in src
 assert "scalarOut->sellPriceKnown=candidate.sellPriceKnown" in src
 assert "NativeRowLiveLatestLabel.sellPriceKnown=item.sellPriceKnown" in src
