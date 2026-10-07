@@ -43,6 +43,20 @@ int main() {
     assert(RuleEngine::FirstMatch(rules,item));
     item.quantity=5;assert(!RuleEngine::FirstMatch(rules,item));
     item.quantityKnown=false;assert(!RuleEngine::FirstMatch(rules,item));
+    // sellPrice is a normal numeric predicate but unknown native value must
+    // remain unresolved/fail-open until the staged reader supplies it.
+    auto priceRule=r(13,true);priceRule.conditions.codes={123};
+    priceRule.conditions.sellPrice.enabled=true;
+    priceRule.conditions.sellPrice.hasMin=true;
+    priceRule.conditions.sellPrice.min=30000;
+    rules={priceRule};item.code=123;item.sellPriceKnown=false;
+    assert(RuleEngine::EvaluateRuleFailOpen(rules[0],item)==RuleEngine::MatchState::Unknown);
+    assert(RuleEngine::NextNativeProperty(rules,item)==RuleEngine::NextProperty::SellPrice);
+    item.sellPriceKnown=true;item.sellPrice=29999;
+    assert(RuleEngine::EvaluateRuleFailOpen(rules[0],item)==RuleEngine::MatchState::NoMatch);
+    item.sellPrice=30000;
+    assert(RuleEngine::EvaluateRuleFailOpen(rules[0],item)==RuleEngine::MatchState::Match);
+
     TestRule legacy{};legacy.code=123;legacy.marker=4;legacy.show=false;
     rules={legacy};item.code=123;assert(RuleEngine::FirstMatch(rules,item)->marker==4);
     item.code=124;assert(!RuleEngine::FirstMatch(rules,item));

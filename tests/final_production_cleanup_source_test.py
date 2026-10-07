@@ -17,6 +17,10 @@ orphaned = [
     "src/world_probe_upstream_calls.hpp",
     "tests/automap_projection_probe_policy_test.cpp",
     "tests/minimap_world_position_probe_policy_test.cpp",
+    "tools/ghidra/QualifyVendorSellPrice.py",
+    "tools/ghidra/README.md",
+    "tests/vendor_price_ghidra_script_source_test.py",
+    "tests/vendor_price_probe_source_test.py",
 ]
 for path in orphaned:
     assert not (root / path).exists(), path

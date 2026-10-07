@@ -20,7 +20,7 @@ assert 'if(next==RuleEngine::NextProperty::Ethereal)' in s
 assert 'if(!fields.etherealKnown)' in s
 assert 'item.etherealKnown=true;' in s
 assert 'item.ethereal=fields.ethereal;' in s
-assert 'for(unsigned propertyGroup=0;propertyGroup<4 && table;++propertyGroup)' in s
+assert 'for(unsigned propertyGroup=0;propertyGroup<5 && table;++propertyGroup)' in s
 assert 'if(c.etherealEnabled && !item.etherealKnown)' in r
 assert 'if(c.etherealEnabled && !item.etherealKnown) return MatchState::Unknown;' in r
 assert 'item.ethereal!=c.etherealExpected) return MatchState::NoMatch;' in r

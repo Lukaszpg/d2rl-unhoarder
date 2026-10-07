@@ -3,8 +3,9 @@ p=Path(__file__).resolve().parents[1]
 s=(p/'src/plugin.cpp').read_text()
 h=(p/'src/filter_rule_engine.hpp').read_text()
 assert '.version = UNHOARDER_VERSION_STRING' in s
-assert 'key=="itemLevel" || key=="quantity" || key=="sockets"' in s
-assert 'socket?dest.sockets:dest.quantity' in s
+assert 'key=="itemLevel" || key=="quantity" || key=="sockets" ||' in s
+assert 'key=="sellPrice"' in s
+assert 'socket?dest.sockets:(sellPrice?dest.sellPrice:dest.quantity)' in s
 assert 'sockets-requires-integer-0..15' in s
 assert 'if (rule.conditions.sockets.enabled) fresh->usesSockets=true;' in s
 assert 'ReadNativeGroundSockets(nativeUnit,header[2],' in s
