@@ -151,7 +151,7 @@ The filter intentionally does not expose hidden unidentified affixes or unique i
 
 ## Runtime behavior
 
-A valid JSON file activates the filter automatically. Saving the JSON triggers an atomic live reload after the file is stable; **Ctrl+Shift+F9** remains as the manual reload shortcut. Invalid JSON keeps the previous valid ruleset active.
+A valid JSON file activates the filter automatically. Saving the JSON triggers an atomic live reload after the file is stable; **Ctrl+Shift+F9** remains as the manual reload shortcut. Invalid JSON keeps the previous valid ruleset active. If startup begins with a missing or invalid filter, correcting the file in the same game session activates the first valid ruleset automatically; no restart is required.
 
 Production functionality includes ground label text/background styling, custom names, stack quantity display, drop sounds, Show/Hide visibility, qualified pickup suppression for hidden items, and JSON-driven automap icons using D2R's native automap projection. These core features run through UnHoarder's own qualified D2RLoader-managed native hooks and have no mod-specific callback/export dependency.
 
