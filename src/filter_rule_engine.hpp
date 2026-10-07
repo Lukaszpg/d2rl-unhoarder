@@ -37,6 +37,12 @@ struct Item {
     bool ethereal{};
     bool identifiedKnown{};
     bool identified{};
+    // Native vendor sell value. Unidentified magic/rare use D2R's native
+    // base/visible value; identified items use the full affix-aware value.
+    // Hidden affix contributions are never inferred by UnHoarder.
+    bool sellPriceKnown{};
+    std::uint32_t sellPrice{};
+    std::uint64_t sellPriceObservedMs{};
 };
 struct Conditions {
     std::vector<std::uint32_t> codes;       // OR among entries
@@ -44,10 +50,11 @@ struct Conditions {
     std::vector<std::uint32_t> typeCodes;   // from ItemTypes hierarchy -> item code, OR
     NumberTest quantity;
     // Known-value matching: unknown is NEVER treated as zero/false. The
-    // active parser enables quality/itemLevel/sockets/ethereal/identified.
+    // active parser enables quality/itemLevel/sockets/ethereal/identified/sellPrice.
     std::vector<std::uint32_t> qualities;
     NumberTest itemLevel;
     NumberTest sockets;
+    NumberTest sellPrice;
     bool etherealEnabled{}, etherealExpected{};
     bool identifiedEnabled{}, identifiedExpected{};
     bool superiorEnabled{}, superiorExpected{};
@@ -82,6 +89,9 @@ struct Conditions {
             return false;
         if (sockets.enabled &&
             (!item.socketsKnown || !sockets.Matches(item.sockets)))
+            return false;
+        if (sellPrice.enabled &&
+            (!item.sellPriceKnown || !sellPrice.Matches(item.sellPrice)))
             return false;
         if (etherealEnabled &&
             (!item.etherealKnown || item.ethereal!=etherealExpected))
@@ -148,6 +158,8 @@ inline MatchState EvaluateConditionsFailOpen(const Conditions& c,
        !c.itemLevel.Matches(item.itemLevel)) return MatchState::NoMatch;
     if(c.sockets.enabled && item.socketsKnown &&
        !c.sockets.Matches(item.sockets)) return MatchState::NoMatch;
+    if(c.sellPrice.enabled && item.sellPriceKnown &&
+       !c.sellPrice.Matches(item.sellPrice)) return MatchState::NoMatch;
     if(c.etherealEnabled && item.etherealKnown &&
        item.ethereal!=c.etherealExpected) return MatchState::NoMatch;
     if(c.identifiedEnabled && item.identifiedKnown &&
@@ -162,6 +174,7 @@ inline MatchState EvaluateConditionsFailOpen(const Conditions& c,
         return MatchState::Unknown;
     if(c.itemLevel.enabled && !item.itemLevelKnown) return MatchState::Unknown;
     if(c.sockets.enabled && !item.socketsKnown) return MatchState::Unknown;
+    if(c.sellPrice.enabled && !item.sellPriceKnown) return MatchState::Unknown;
     if(c.etherealEnabled && !item.etherealKnown) return MatchState::Unknown;
     if(c.identifiedEnabled && !item.identifiedKnown) return MatchState::Unknown;
     return MatchState::Match;
@@ -234,6 +247,8 @@ bool NeedsNativeQualityLevel(const std::vector<Rule>& rules,
            !c.itemLevel.Matches(item.itemLevel)) continue;
         if(c.sockets.enabled && item.socketsKnown &&
            !c.sockets.Matches(item.sockets)) continue;
+        if(c.sellPrice.enabled && item.sellPriceKnown &&
+           !c.sellPrice.Matches(item.sellPrice)) continue;
         if(c.etherealEnabled && item.etherealKnown &&
            item.ethereal!=c.etherealExpected) continue;
         if(c.identifiedEnabled && item.identifiedKnown &&
@@ -250,7 +265,9 @@ bool NeedsNativeQualityLevel(const std::vector<Rule>& rules,
 // Inspect ordered rules in order, choosing only the first missing property
 // that could affect the decision. Reader groups execute lazily in rule
 // order without forcing property work for a preceding code-only match.
-enum class NextProperty : std::uint8_t { None, QualityLevel, Sockets, Ethereal, Identified };
+enum class NextProperty : std::uint8_t {
+    None, QualityLevel, Sockets, Ethereal, Identified, SellPrice
+};
 template<class Rule>
 NextProperty NextNativeProperty(const std::vector<Rule>& rules,
     const Item& item) noexcept {
@@ -275,6 +292,8 @@ NextProperty NextNativeProperty(const std::vector<Rule>& rules,
            !c.itemLevel.Matches(item.itemLevel)) continue;
         if(c.sockets.enabled && item.socketsKnown &&
            !c.sockets.Matches(item.sockets)) continue;
+        if(c.sellPrice.enabled && item.sellPriceKnown &&
+           !c.sellPrice.Matches(item.sellPrice)) continue;
         if(c.etherealEnabled && item.etherealKnown &&
            item.ethereal!=c.etherealExpected) continue;
         if(c.identifiedEnabled && item.identifiedKnown &&
@@ -291,6 +310,8 @@ NextProperty NextNativeProperty(const std::vector<Rule>& rules,
             return NextProperty::Ethereal;
         if(c.identifiedEnabled && !item.identifiedKnown)
             return NextProperty::Identified;
+        if(c.sellPrice.enabled && !item.sellPriceKnown)
+            return NextProperty::SellPrice;
         if(c.Matches(item) && !Continues(rule)) return NextProperty::None;
         // A matching Continue block deliberately falls through so a later
         // block can request another property.

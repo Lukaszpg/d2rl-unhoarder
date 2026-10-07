@@ -172,6 +172,7 @@ struct FilterRuleTable {
     bool usesSockets{};
     bool usesEthereal{};
     bool usesIdentified{};
+    bool usesSellPrice{};
     bool usesItemType{};
     std::uint64_t generation{};
     std::size_t backgroundRules{};
@@ -317,6 +318,9 @@ struct VerifiedGroundIdentity {
     bool ethereal{};
     bool identifiedKnown{};
     bool identified{};
+    bool sellPriceKnown{};
+    std::uint32_t sellPrice{};
+    ULONGLONG sellPriceObservedMs{};
 };
 std::array<VerifiedGroundIdentity,IdentitySlots> GroundIdentities{};
 std::mutex GroundIdentityMutex;
@@ -1049,6 +1053,11 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
     return true;
 }
 
+bool ReadNativeVendorSellPrice(const void* nativeUnit,
+    std::uint32_t expectedId,std::uint32_t expectedClassId,std::uint32_t code,
+    GroundPropertyLive::Purpose purpose,std::uint32_t& price,
+    RuleEngine::Item* itemSnapshot=nullptr) noexcept;
+
 RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
     const FilterRuleTable* table,std::uint32_t expectedId=0,
     GroundPropertyLive::Purpose purpose=
@@ -1077,7 +1086,7 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
     // Read only the first native property needed by the current ordered rule,
     // then re-evaluate. Unknown native values stop property-dependent matching
     // so a later broad Hide cannot turn an unreadable item into a false match.
-    for(unsigned propertyGroup=0;propertyGroup<4 && table;++propertyGroup) {
+    for(unsigned propertyGroup=0;propertyGroup<5 && table;++propertyGroup) {
         const auto next=RuleEngine::NextNativeProperty(table->rules,item);
         if(next==RuleEngine::NextProperty::None) break;
 
@@ -1118,6 +1127,16 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
             item.socketsKnown=known;
             if(known) item.sockets=count;
             if(!known) break;
+            continue;
+        }
+
+        if(next==RuleEngine::NextProperty::SellPrice) {
+            std::uint32_t sellPrice{};
+            if(!ReadNativeVendorSellPrice(nativeUnit,header[2],header[1],
+                    item.code,purpose,sellPrice,&item))
+                break;
+            item.sellPriceKnown=true;
+            item.sellPrice=sellPrice;
             continue;
         }
 
@@ -1165,6 +1184,11 @@ RuleEngine::Item CachedGroundRuleItem(std::uint32_t code,
         if(table->usesIdentified) {
             item.identifiedKnown=scalarSnapshot->identifiedKnown;
             item.identified=scalarSnapshot->identified;
+        }
+        if(table->usesSellPrice) {
+            item.sellPriceKnown=scalarSnapshot->sellPriceKnown;
+            item.sellPrice=scalarSnapshot->sellPrice;
+            item.sellPriceObservedMs=scalarSnapshot->sellPriceObservedMs;
         }
     }
     return item;
@@ -1243,6 +1267,9 @@ void ObserveNativeRowLiveLabel(std::int32_t type,
 void ObserveNativeRowLiveReplacement(std::uint32_t classId,
     std::uint32_t unitId,std::uint32_t rawCode,
     std::string_view source,std::string_view rendered) noexcept;
+void QualifyVendorSellPrice() noexcept;
+void ResetVendorSellPriceSession() noexcept;
+void RefreshVendorSellPriceForGame() noexcept;
 
 void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
     const D2RL::Lifecycle::GameplayEvent* event, void*) noexcept {
@@ -1253,6 +1280,7 @@ void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
         std::string_view(MinimapOverlayRenderer::ActiveBackendName())=="none")
         (void)InitializeMinimapMarkerRenderer();
     QualifyGroundQuantityReader();
+    RefreshVendorSellPriceForGame();
     (void)TryAttachInWorldLabelCompat();
     if (!PublishedFilterRules.load(std::memory_order_acquire) && !FilterConfigPath.empty() &&
         ReloadFilterRules())
@@ -1346,6 +1374,345 @@ bool ReadSafe(std::uintptr_t rva, void* output, std::size_t count) noexcept {
         return false;
     std::memcpy(output, reinterpret_cast<const void*>(address), count);
     return true;
+}
+
+
+// Build-93847 native vendor sell-price backend. This mirrors PD2/BH SELLPRICE:
+// calculate against Malah (NPC id 513) using current difficulty and quest
+// flags. Exact call-route fingerprints fail closed before the backend arms.
+constexpr std::int32_t VendorSellPriceMalahNpcId=513;
+constexpr std::int32_t VendorSellPriceTransaction=1;
+constexpr std::size_t VendorSellPriceCacheCapacity=512;
+constexpr ULONGLONG VendorSellPriceCacheTtlMs=1000;
+
+constexpr std::uintptr_t VendorSellPriceTransactionThunkRva=0x36F0B0;
+constexpr std::uintptr_t VendorSellPriceTransactionImplementationRva=0x36F0C0;
+constexpr std::uintptr_t VendorSellPriceDifficultyGetterRva=0x8AF40;
+constexpr std::uintptr_t VendorSellPriceQuestFlagsSlotRva=0x2A48778;
+constexpr std::uintptr_t VendorSellPriceWitnessQuestLoadRva=0x10D4F0;
+constexpr std::uintptr_t VendorSellPriceWitnessDifficultyCallRva=0x10D4F7;
+constexpr std::uintptr_t VendorSellPriceWitnessDataContextCallRva=0x10D4FF;
+constexpr std::uintptr_t VendorSellPriceWitnessLocalPlayerCallRva=0x10D506;
+constexpr std::uintptr_t VendorSellPriceWitnessTransactionArgRva=0x10D50E;
+constexpr std::uintptr_t VendorSellPriceWitnessVendorArgRva=0x10D519;
+constexpr std::uintptr_t VendorSellPriceWitnessTransactionCallRva=0x10D523;
+
+using VendorSellPriceTransactionFn=std::int32_t(__fastcall*)(
+    void*,void*,std::int32_t,void*,std::int32_t,std::int32_t) noexcept;
+using VendorSellPriceDifficultyFn=std::uint8_t(__fastcall*)() noexcept;
+
+VendorSellPriceTransactionFn VendorSellPriceTransactionFnPtr{};
+VendorSellPriceDifficultyFn VendorSellPriceGetDifficulty{};
+GetLocalDataContextFn VendorSellPriceGetLocalDataContext{};
+GetLocalPlayerFn VendorSellPriceGetLocalPlayer{};
+std::atomic_bool VendorSellPriceQualified{};
+std::atomic_bool VendorSellPriceCallFaultLogged{};
+std::atomic_bool VendorSellPriceRequalifyNextGame{};
+
+struct VendorSellPriceCacheEntry final {
+    std::uint32_t unitId{},classId{},code{},price{};
+    std::uintptr_t nativeUnit{};
+    ULONGLONG observedMs{};
+    bool valid{};
+};
+std::array<VendorSellPriceCacheEntry,VendorSellPriceCacheCapacity>
+    VendorSellPriceCache{};
+std::mutex VendorSellPriceCacheMutex;
+
+constexpr std::array<std::uint8_t,5> VendorSellPriceTransactionThunkExpected{{
+    0xE9,0x0B,0x00,0x00,0x00
+}};
+constexpr std::array<std::uint8_t,32> VendorSellPriceTransactionImplementationExpected{{
+    0x4C,0x89,0x4C,0x24,0x20,0x44,0x89,0x44,
+    0x24,0x18,0x48,0x89,0x54,0x24,0x10,0x48,
+    0x89,0x4C,0x24,0x08,0x55,0x57,0x41,0x55,
+    0x48,0x8D,0x6C,0x24,0xC9,0x48,0x81,0xEC
+}};
+constexpr std::array<std::uint8_t,3> VendorSellPriceWitnessQuestLoadPrefix{{
+    0x48,0x8B,0x3D
+}};
+constexpr std::array<std::uint8_t,8> VendorSellPriceWitnessTransactionArgExpected{{
+    0xC7,0x44,0x24,0x28,0x01,0x00,0x00,0x00
+}};
+constexpr std::array<std::uint8_t,4> VendorSellPriceWitnessVendorArgExpected{{
+    0x89,0x6C,0x24,0x20
+}};
+
+std::uintptr_t ResolveVendorSellPriceRelativeCall(std::uintptr_t callRva) noexcept {
+    std::array<std::uint8_t,5> call{};
+    if(!ReadSafe(callRva,call.data(),call.size()) || call[0]!=0xE8) return 0;
+    std::int32_t displacement{};
+    std::memcpy(&displacement,call.data()+1,sizeof(displacement));
+    const auto targetRva=static_cast<std::int64_t>(callRva)+5+
+        static_cast<std::int64_t>(displacement);
+    if(targetRva<0 || static_cast<std::uint64_t>(targetRva)>=ImageSize) return 0;
+    return Base+static_cast<std::uintptr_t>(targetRva);
+}
+
+std::uintptr_t ResolveVendorSellPriceRipTarget(std::uintptr_t instructionRva,
+    std::size_t displacementOffset,std::size_t instructionSize) noexcept {
+    std::int32_t displacement{};
+    if(!ReadSafe(instructionRva+displacementOffset,
+            &displacement,sizeof(displacement))) return 0;
+    const auto targetRva=static_cast<std::int64_t>(instructionRva)+
+        static_cast<std::int64_t>(instructionSize)+
+        static_cast<std::int64_t>(displacement);
+    if(targetRva<0 || static_cast<std::uint64_t>(targetRva)>=ImageSize) return 0;
+    return Base+static_cast<std::uintptr_t>(targetRva);
+}
+
+void ResetVendorSellPriceSession() noexcept {
+    VendorSellPriceCallFaultLogged.store(false,std::memory_order_release);
+    std::lock_guard lock(VendorSellPriceCacheMutex);
+    VendorSellPriceCache.fill({});
+}
+
+void ForgetVendorSellPriceItem(std::uint32_t unitId) noexcept {
+    if(!unitId) return;
+    // Pickup/inventory lifecycle invalidation is correctness-critical: a
+    // carried item may be identified, repaired or otherwise changed before
+    // being dropped again with the same runtime ID. The cache is tiny and
+    // lookup/store never hold this lock across a native call.
+    std::lock_guard lock(VendorSellPriceCacheMutex);
+    for(auto& entry:VendorSellPriceCache)
+        if(entry.valid && entry.unitId==unitId) entry={};
+}
+
+bool TryGetCachedVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
+    std::uint32_t code,const void* nativeUnit,std::uint32_t& price,
+    ULONGLONG& observedMs) noexcept {
+    if(!VendorSellPriceCacheMutex.try_lock()) return false;
+    const auto& entry=VendorSellPriceCache[
+        static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()];
+    const auto now=GetTickCount64();
+    const bool hit=entry.valid && entry.unitId==unitId &&
+        entry.classId==classId && entry.code==code &&
+        entry.nativeUnit==reinterpret_cast<std::uintptr_t>(nativeUnit) &&
+        now>=entry.observedMs && now-entry.observedMs<=VendorSellPriceCacheTtlMs;
+    if(hit) {
+        price=entry.price;
+        observedMs=entry.observedMs;
+    }
+    VendorSellPriceCacheMutex.unlock();
+    return hit;
+}
+
+void StoreVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
+    std::uint32_t code,const void* nativeUnit,std::uint32_t price,
+    ULONGLONG observedMs) noexcept {
+    if(!VendorSellPriceCacheMutex.try_lock()) return;
+    VendorSellPriceCache[
+        static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()]=
+        {unitId,classId,code,price,reinterpret_cast<std::uintptr_t>(nativeUnit),
+            observedMs,true};
+    VendorSellPriceCacheMutex.unlock();
+}
+
+bool VendorSellPriceSafeQuality(
+    const GroundPropertyLive::Scalars& properties) noexcept {
+    if(!properties.qualityKnown) return false;
+    // The native transaction calculator gates magic/rare affix and bonus-stat
+    // price contributions behind IFLAG_IDENTIFIED. Calling it while an item is
+    // unidentified therefore returns its visible/base-state vendor value, not
+    // a value derived from hidden affixes. Once identified, the same call
+    // naturally returns the full affix-aware sell value.
+    return properties.quality==1U || properties.quality==2U ||
+        properties.quality==3U || properties.quality==4U ||
+        properties.quality==6U;
+}
+
+bool VendorSellPriceContext(void*& player,std::uint8_t& difficulty,
+    void*& questFlags) noexcept {
+    player=nullptr;
+    difficulty=0xffU;
+    questFlags=nullptr;
+    if(!VendorSellPriceQualified.load(std::memory_order_acquire) ||
+       !VendorSellPriceGetLocalDataContext || !VendorSellPriceGetLocalPlayer ||
+       !VendorSellPriceGetDifficulty) return false;
+    __try {
+        const auto dataContext=VendorSellPriceGetLocalDataContext();
+        if(dataContext<0 || dataContext>=8) return false;
+        player=VendorSellPriceGetLocalPlayer(dataContext);
+        difficulty=VendorSellPriceGetDifficulty();
+        if(!player || difficulty>2U) return false;
+        if(!ReadSafe(VendorSellPriceQuestFlagsSlotRva,
+                &questFlags,sizeof(questFlags)) || !questFlags) return false;
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        player=nullptr;
+        difficulty=0xffU;
+        questFlags=nullptr;
+        return false;
+    }
+}
+
+bool ReadNativeVendorSellPrice(const void* nativeUnit,
+    std::uint32_t expectedId,std::uint32_t expectedClassId,std::uint32_t code,
+    GroundPropertyLive::Purpose purpose,std::uint32_t& price,
+    RuleEngine::Item* itemSnapshot) noexcept {
+    price=0;
+    if(!nativeUnit || !expectedId || !code ||
+       !VendorSellPriceQualified.load(std::memory_order_acquire))
+        return false;
+
+    ULONGLONG observedMs{};
+    if(TryGetCachedVendorSellPrice(
+            expectedId,expectedClassId,code,nativeUnit,price,observedMs)) {
+        if(itemSnapshot) itemSnapshot->sellPriceObservedMs=observedMs;
+        return true;
+    }
+
+    // Read quality/identified state before pricing. For magic/rare the native
+    // calculator itself excludes affix/bonus-stat contributions until the
+    // item is identified, so an unidentified value is a safe base/visible
+    // lower-bound rather than a hidden-affix signal.
+    const auto properties=ReadNativeGroundQualityLevel(nativeUnit,
+        expectedId,expectedClassId,purpose,nullptr,false,true);
+    if(itemSnapshot) {
+        itemSnapshot->qualityKnown=properties.qualityKnown;
+        itemSnapshot->quality=properties.quality;
+        itemSnapshot->itemLevelKnown=properties.itemLevelKnown;
+        itemSnapshot->itemLevel=properties.itemLevel;
+        itemSnapshot->identifiedKnown=properties.identifiedKnown;
+        itemSnapshot->identified=properties.identified;
+    }
+    if(!VendorSellPriceSafeQuality(properties)) return false;
+
+    void* player{};
+    void* questFlags{};
+    std::uint8_t difficulty=0xffU;
+    if(!VendorSellPriceContext(player,difficulty,questFlags)) return false;
+
+    std::uint32_t playerType=0xffffffffU;
+    SIZE_T copied{};
+    if(!ReadProcessMemory(GetCurrentProcess(),player,&playerType,
+            sizeof(playerType),&copied) || copied!=sizeof(playerType) ||
+       playerType!=0U)
+        return false;
+
+    std::int32_t nativePrice{};
+    __try {
+        nativePrice=VendorSellPriceTransactionFnPtr(
+            player,const_cast<void*>(nativeUnit),
+            static_cast<std::int32_t>(difficulty),questFlags,
+            VendorSellPriceMalahNpcId,VendorSellPriceTransaction);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        VendorSellPriceQualified.store(false,std::memory_order_release);
+        VendorSellPriceRequalifyNextGame.store(true,std::memory_order_release);
+        if(!VendorSellPriceCallFaultLogged.exchange(true,std::memory_order_acq_rel))
+            LogWarn("LOOT_SELL_PRICE_DISABLED reason=native-call-fault failClosed=1 retry=next-game");
+        return false;
+    }
+    // The native transaction routine uses INT_MAX as its invalid
+    // player/item-data sentinel. Never turn a transient lifetime race into an
+    // artificial "extremely valuable" item; unknown must remain fail-open.
+    if(nativePrice<0 ||
+       nativePrice==std::numeric_limits<std::int32_t>::max())
+        return false;
+
+    price=static_cast<std::uint32_t>(nativePrice);
+    observedMs=GetTickCount64();
+    if(itemSnapshot) itemSnapshot->sellPriceObservedMs=observedMs;
+    StoreVendorSellPrice(expectedId,expectedClassId,code,nativeUnit,price,
+        observedMs);
+    return true;
+}
+
+void QualifyVendorSellPrice() noexcept {
+    VendorSellPriceQualified.store(false,std::memory_order_release);
+    VendorSellPriceRequalifyNextGame.store(false,std::memory_order_release);
+    ResetVendorSellPriceSession();
+
+    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
+    if(!Context || !build || std::string_view(build)!="93847" ||
+       !Base || !ImageSize) {
+        LogWarn("LOOT_SELL_PRICE_REFUSED reason=unexpected-build-or-image");
+        return;
+    }
+
+    const bool fingerprintsOk=
+        Context->CheckExpectedBytes(GetLocalDataContextRva,
+            ExpectedGetLocalDataContext.data(),
+            static_cast<std::uint32_t>(ExpectedGetLocalDataContext.size())) &&
+        Context->CheckExpectedBytes(GetLocalPlayerRva,
+            ExpectedGetLocalPlayer.data(),
+            static_cast<std::uint32_t>(ExpectedGetLocalPlayer.size())) &&
+        Context->CheckExpectedBytes(VendorSellPriceTransactionThunkRva,
+            VendorSellPriceTransactionThunkExpected.data(),
+            static_cast<std::uint32_t>(
+                VendorSellPriceTransactionThunkExpected.size())) &&
+        Context->CheckExpectedBytes(VendorSellPriceTransactionImplementationRva,
+            VendorSellPriceTransactionImplementationExpected.data(),
+            static_cast<std::uint32_t>(
+                VendorSellPriceTransactionImplementationExpected.size())) &&
+        Context->CheckExpectedBytes(VendorSellPriceWitnessQuestLoadRva,
+            VendorSellPriceWitnessQuestLoadPrefix.data(),
+            static_cast<std::uint32_t>(
+                VendorSellPriceWitnessQuestLoadPrefix.size())) &&
+        Context->CheckExpectedBytes(VendorSellPriceWitnessTransactionArgRva,
+            VendorSellPriceWitnessTransactionArgExpected.data(),
+            static_cast<std::uint32_t>(
+                VendorSellPriceWitnessTransactionArgExpected.size())) &&
+        Context->CheckExpectedBytes(VendorSellPriceWitnessVendorArgRva,
+            VendorSellPriceWitnessVendorArgExpected.data(),
+            static_cast<std::uint32_t>(
+                VendorSellPriceWitnessVendorArgExpected.size()));
+    if(!fingerprintsOk) {
+        LogWarn("LOOT_SELL_PRICE_REFUSED reason=93847-sell-route-fingerprint");
+        return;
+    }
+
+    const auto questSlotAddress=ResolveVendorSellPriceRipTarget(
+        VendorSellPriceWitnessQuestLoadRva,3U,7U);
+    const auto difficultyAddress=ResolveVendorSellPriceRelativeCall(
+        VendorSellPriceWitnessDifficultyCallRva);
+    const auto dataContextAddress=ResolveVendorSellPriceRelativeCall(
+        VendorSellPriceWitnessDataContextCallRva);
+    const auto localPlayerAddress=ResolveVendorSellPriceRelativeCall(
+        VendorSellPriceWitnessLocalPlayerCallRva);
+    const auto transactionThunkAddress=ResolveVendorSellPriceRelativeCall(
+        VendorSellPriceWitnessTransactionCallRva);
+
+    if(questSlotAddress!=Base+VendorSellPriceQuestFlagsSlotRva ||
+       difficultyAddress!=Base+VendorSellPriceDifficultyGetterRva ||
+       dataContextAddress!=Base+GetLocalDataContextRva ||
+       localPlayerAddress!=Base+GetLocalPlayerRva ||
+       transactionThunkAddress!=Base+VendorSellPriceTransactionThunkRva) {
+        LogWarn("LOOT_SELL_PRICE_REFUSED reason=93847-sell-route-target-mismatch");
+        return;
+    }
+
+    // Build 93847 addresses are immutable for the process lifetime. Publish
+    // them only once so in-flight label callbacks cannot race a pointer
+    // rewrite during per-game requalification.
+    if(!VendorSellPriceTransactionFnPtr) {
+        VendorSellPriceTransactionFnPtr=
+            reinterpret_cast<VendorSellPriceTransactionFn>(
+                Base+VendorSellPriceTransactionThunkRva);
+        VendorSellPriceGetDifficulty=
+            reinterpret_cast<VendorSellPriceDifficultyFn>(
+                Base+VendorSellPriceDifficultyGetterRva);
+        VendorSellPriceGetLocalDataContext=
+            reinterpret_cast<GetLocalDataContextFn>(
+                Base+GetLocalDataContextRva);
+        VendorSellPriceGetLocalPlayer=
+            reinterpret_cast<GetLocalPlayerFn>(
+                Base+GetLocalPlayerRva);
+    }
+    VendorSellPriceRequalifyNextGame.store(false,std::memory_order_release);
+    VendorSellPriceQualified.store(true,std::memory_order_release);
+
+    LogInfo("LOOT_SELL_PRICE_READY version=" UNHOARDER_VERSION_STRING
+        " build=93847 vendor=Malah/513 transaction=sell "
+        "unidentifiedMagicRare=base-only cacheTtlMs=1000");
+}
+
+void RefreshVendorSellPriceForGame() noexcept {
+    if(VendorSellPriceRequalifyNextGame.exchange(
+            false,std::memory_order_acq_rel))
+        QualifyVendorSellPrice();
+    else
+        ResetVendorSellPriceSession();
 }
 
 // Qualified native hover-row renderer for build 93847. This function is shared
@@ -1470,6 +1837,8 @@ struct NativeRowLiveLabel final {
     bool ethereal{};
     bool identifiedKnown{};
     bool identified{};
+    bool sellPriceKnown{};
+    std::uint32_t sellPrice{};
     std::int64_t qpc{};
     bool scopeMatches{};
     // Original V1 source proves item/event association; the V2 replacement
@@ -1507,7 +1876,7 @@ void ObserveNativeRowLiveLabel(std::int32_t type,
     NativeRowLiveLatestLabel.code=CanonicalItemCode(rawCode);
     if(nativeUnit && (rules->usesQuality || rules->usesItemLevel ||
                       rules->usesSockets || rules->usesEthereal ||
-                      rules->usesIdentified)) {
+                      rules->usesIdentified || rules->usesSellPrice)) {
         const auto item=GroundRuleItem(rawCode,nativeUnit,rules.get(),unitId,
             GroundPropertyLive::Purpose::VerifiedLabel);
         NativeRowLiveLatestLabel.qualityKnown=item.qualityKnown;
@@ -1520,6 +1889,8 @@ void ObserveNativeRowLiveLabel(std::int32_t type,
         NativeRowLiveLatestLabel.ethereal=item.ethereal;
         NativeRowLiveLatestLabel.identifiedKnown=item.identifiedKnown;
         NativeRowLiveLatestLabel.identified=item.identified;
+        NativeRowLiveLatestLabel.sellPriceKnown=item.sellPriceKnown;
+        NativeRowLiveLatestLabel.sellPrice=item.sellPrice;
     }
     if(rules->usesQuantity && nativeUnit &&
        GroundQuantityReader.load(std::memory_order_acquire)) {
@@ -1588,6 +1959,8 @@ struct NativeRowLiveAppend final {
     bool ethereal{};
     bool identifiedKnown{};
     bool identified{};
+    bool sellPriceKnown{};
+    std::uint32_t sellPrice{};
     std::array<std::uint8_t,NativeRowLabelMaxBytes> source{},display{};
     bool qualified{};
 };
@@ -1870,6 +2243,8 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     rowItem.ethereal=append.ethereal;
     rowItem.identifiedKnown=append.identifiedKnown;
     rowItem.identified=append.identified;
+    rowItem.sellPriceKnown=append.sellPriceKnown;
+    rowItem.sellPrice=append.sellPrice;
     GroundRuleDecision resolvedRule{};
     const auto* rule=ResolveGroundRule(rules.get(),rowItem,resolvedRule) ?
         &resolvedRule : nullptr;
@@ -2033,6 +2408,8 @@ void __fastcall HookNativeRowAppend(void* component,const void* text,
         candidate.ethereal=label.ethereal;
         candidate.identifiedKnown=label.identifiedKnown;
         candidate.identified=label.identified;
+        candidate.sellPriceKnown=label.sellPriceKnown;
+        candidate.sellPrice=label.sellPrice;
         candidate.sourceLength=label.sourceLength;
         candidate.source=label.source;
         candidate.displayLength=label.displayLength;
@@ -2370,22 +2747,27 @@ bool ParseV2Conditions(const nlohmann::json& value,
             }
             dest.etherealEnabled=true;
             dest.etherealExpected=it.value().get<bool>();
-        } else if(key=="itemLevel" || key=="quantity" || key=="sockets") {
+        } else if(key=="itemLevel" || key=="quantity" || key=="sockets" ||
+                  key=="sellPrice") {
             const bool level=key=="itemLevel";
             const bool socket=key=="sockets";
+            const bool sellPrice=key=="sellPrice";
             if(!it.value().is_object() || it.value().empty()) {
                 error=key+"-requires-comparison-object";return false;
             }
-            auto& numberTest=level?dest.itemLevel:(socket?dest.sockets:dest.quantity);
+            auto& numberTest=level?dest.itemLevel:
+                (socket?dest.sockets:(sellPrice?dest.sellPrice:dest.quantity));
             numberTest.enabled=true;
             for(auto q=it.value().begin();q!=it.value().end();++q) {
                 std::uint32_t number{};
                 if(!natural(q.value(),number) ||
                    (level ? (number<1 || number>99) :
-                    (socket ? number>15U : number>65535U))) {
+                    (socket ? number>15U :
+                     (!sellPrice && number>65535U)))) {
                     error=level?"itemLevel-requires-integer-1..99":
                         (socket?"sockets-requires-integer-0..15":
-                            "quantity-requires-integer-0..65535");return false;
+                         (sellPrice?"sellPrice-requires-integer-0..4294967295":
+                            "quantity-requires-integer-0..65535"));return false;
                 }
                 if(q.key()=="eq") {
                     if(numberTest.hasEq) return false;
@@ -2677,6 +3059,7 @@ bool ReloadFilterRules() {
                 if (rule.conditions.sockets.enabled) fresh->usesSockets=true;
                 if (rule.conditions.etherealEnabled) fresh->usesEthereal=true;
                 if (rule.conditions.identifiedEnabled) fresh->usesIdentified=true;
+                if (rule.conditions.sellPrice.enabled) fresh->usesSellPrice=true;
                 if (!rule.conditions.typeCodes.empty()) fresh->usesItemType=true;
             }
 
@@ -2821,13 +3204,14 @@ bool ReloadFilterRules() {
         ClearMinimapProjectionIconStyles();
         char message[560]{};
         std::snprintf(message,sizeof(message),
-            "LOOT_RULES_LOADED version=" UNHOARDER_VERSION_STRING " schema=%u generation=%llu rules=%zu backgroundRules=%zu textColorRules=%zu soundRules=%zu minimapIconRules=%zu hiddenRules=%zu syntax=schema3:{show|hide:{ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?}} tooltip{backgroundColor,textColor}+RGBA(r,g,b,a) minimapShapes=circle|diamond|triangle|star minimapSizePx=default12,clamped12..40 maxNameBytes=%zu propertyQuality=%u propertyIlvl=%u propertySockets=%u propertyEthereal=%u propertyIdentified=%u propertyItemType=%u reload=atomic nativeItemWrites=0",
+            "LOOT_RULES_LOADED version=" UNHOARDER_VERSION_STRING " schema=%u generation=%llu rules=%zu backgroundRules=%zu textColorRules=%zu soundRules=%zu minimapIconRules=%zu hiddenRules=%zu syntax=schema3:{show|hide:{ruleName?,conditions?,continue?,name?,tooltip?,dropSound?,minimapIcon?}} tooltip{backgroundColor,textColor}+RGBA(r,g,b,a) minimapShapes=circle|diamond|triangle|star minimapSizePx=default12,clamped12..40 maxNameBytes=%zu propertyQuality=%u propertyIlvl=%u propertySockets=%u propertyEthereal=%u propertyIdentified=%u propertySellPrice=%u propertyItemType=%u reload=atomic nativeItemWrites=0",
             fresh->schema,static_cast<unsigned long long>(fresh->generation),
             fresh->rules.size(),fresh->backgroundRules,fresh->textColorRules,
             fresh->soundRules,fresh->minimapIconRules,fresh->hiddenRules,MaximumFilterNameBytes,
             fresh->usesQuality?1U:0U,fresh->usesItemLevel?1U:0U,
             fresh->usesSockets?1U:0U,fresh->usesEthereal?1U:0U,
-            fresh->usesIdentified?1U:0U,fresh->usesItemType?1U:0U);
+            fresh->usesIdentified?1U:0U,fresh->usesSellPrice?1U:0U,
+            fresh->usesItemType?1U:0U);
         LogInfo(message);
         return true;
     } catch (const std::exception& e) {
@@ -3068,7 +3452,9 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
             scalars.itemLevelKnown,scalars.itemLevel,
             scalars.socketsKnown,scalars.sockets,
             scalars.etherealKnown,scalars.ethereal,
-            scalars.identifiedKnown,scalars.identified};
+            scalars.identifiedKnown,scalars.identified,
+            scalars.sellPriceKnown,scalars.sellPrice,
+            scalars.sellPriceObservedMs};
     }
     GroundIdentityMutex.unlock();
 }
@@ -3104,6 +3490,12 @@ bool GetGroundIdentity(std::uint32_t id, std::string_view visibleName,
                 scalarOut->ethereal=candidate.ethereal;
                 scalarOut->identifiedKnown=candidate.identifiedKnown;
                 scalarOut->identified=candidate.identified;
+                const bool sellPriceFresh=candidate.sellPriceKnown &&
+                    candidate.sellPriceObservedMs && now>=candidate.sellPriceObservedMs &&
+                    now-candidate.sellPriceObservedMs<=VendorSellPriceCacheTtlMs;
+                scalarOut->sellPriceKnown=sellPriceFresh;
+                scalarOut->sellPrice=candidate.sellPrice;
+                scalarOut->sellPriceObservedMs=candidate.sellPriceObservedMs;
             }
             found=true;
         }
@@ -4545,6 +4937,7 @@ D2RL::Inventory::IterationAction __cdecl OnSoundInventoryItem(
         item->container == D2RL::Items::ItemContainer::Ground)
         return D2RL::Inventory::IterationAction::Continue;
     ForgetMinimapProjectionItem(item->runtimeId);
+    ForgetVendorSellPriceItem(item->runtimeId);
     ForgetCarriedSoundItem(item->runtimeId,
         *static_cast<PickupPollResults*>(userData));
     return D2RL::Inventory::IterationAction::Continue;
@@ -4557,9 +4950,12 @@ void __cdecl PollSoundInventoryOnUiThread(
     const auto finish=[]() noexcept {
         SoundPickupPollPending.store(false,std::memory_order_release);
     };
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+    const bool sellPriceLifecycle=rules && rules->usesSellPrice;
     if (!context ||
         (!SoundArmed.load(std::memory_order_acquire) &&
-         !AutomapProjectionHookInstalled.load(std::memory_order_acquire)) ||
+         !AutomapProjectionHookInstalled.load(std::memory_order_acquire) &&
+         !sellPriceLifecycle) ||
         !SoundInventory || !SoundInventory->getLocalPlayer ||
         !SoundInventory->forEachInventoryItem) {
         finish();
@@ -4599,6 +4995,7 @@ void __cdecl PollSoundInventoryOnUiThread(
                 info.structSize >= D2RL::Items::ItemInfoRequiredSize &&
                 info.container == D2RL::Items::ItemContainer::Cursor)
                 { ForgetMinimapProjectionItem(info.runtimeId);
+                  ForgetVendorSellPriceItem(info.runtimeId);
                   ForgetCarriedSoundItem(info.runtimeId,results); }
         }
     }
@@ -4617,9 +5014,12 @@ void PollSoundInventoryLoop(std::stop_token stop) noexcept {
     while (!stop.stop_requested()) {
         std::this_thread::sleep_for(SoundPickupPollInterval);
         if (stop.stop_requested()) break;
+        const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+        const bool sellPriceLifecycle=rules && rules->usesSellPrice;
         if (!Context ||
             (!SoundArmed.load(std::memory_order_acquire) &&
-             !AutomapProjectionHookInstalled.load(std::memory_order_acquire)) ||
+             !AutomapProjectionHookInstalled.load(std::memory_order_acquire) &&
+             !sellPriceLifecycle) ||
             !SoundInventory || !SoundThreads || !SoundThreads->runOnUiThread)
             continue;
         if (SoundPickupPollPending.exchange(true,std::memory_order_acq_rel))
@@ -5118,9 +5518,12 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
 
 void __fastcall HookNativeActionDispatch(std::uint32_t action,void* player,
     std::uint32_t type,std::uint32_t id) noexcept {
-    if(action==PickupGuard::PickupAction && type==PickupGuard::ItemUnitType &&
+    const bool pickup=action==PickupGuard::PickupAction &&
+        type==PickupGuard::ItemUnitType;
+    if(pickup &&
        QualifyGroundPickup(action,player,type,id)==PickupGuard::Decision::Blocked)
         return;
+    if(pickup) ForgetVendorSellPriceItem(id);
     OriginalNativeActionDispatch(action,player,type,id);
 }
 
@@ -5426,6 +5829,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     HookInstalled.store(true, std::memory_order_release);
     PublishTooltipCompatService();
     (void)InstallStandaloneAutomapProjection();
+    QualifyVendorSellPrice();
     // Reuse the qualified native filter pipeline automatically once the
     // complete JSON ruleset is published and the item-code reader is ready.
     if (PublishedFilterRules.load(std::memory_order_acquire))
@@ -5451,6 +5855,9 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
     NativePickupGuardQualified.store(false,std::memory_order_release);
     GroundQuantityReader.store(nullptr,std::memory_order_release);
     (void)GroundQuantityCompatLease.Reset();
+    VendorSellPriceQualified.store(false,std::memory_order_release);
+    VendorSellPriceRequalifyNextGame.store(false,std::memory_order_release);
+    ResetVendorSellPriceSession();
     HideGroundArmed.store(false,std::memory_order_release);
     ResetNativeRowLiveSession();
     ResetNativeRowFontColor();
