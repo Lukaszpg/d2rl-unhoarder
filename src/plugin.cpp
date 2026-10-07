@@ -320,6 +320,7 @@ struct VerifiedGroundIdentity {
     bool identified{};
     bool sellPriceKnown{};
     std::uint32_t sellPrice{};
+    ULONGLONG sellPriceObservedMs{};
 };
 std::array<VerifiedGroundIdentity,IdentitySlots> GroundIdentities{};
 std::mutex GroundIdentityMutex;
@@ -1187,6 +1188,7 @@ RuleEngine::Item CachedGroundRuleItem(std::uint32_t code,
         if(table->usesSellPrice) {
             item.sellPriceKnown=scalarSnapshot->sellPriceKnown;
             item.sellPrice=scalarSnapshot->sellPrice;
+            item.sellPriceObservedMs=scalarSnapshot->sellPriceObservedMs;
         }
     }
     return item;
@@ -1477,7 +1479,8 @@ void ForgetVendorSellPriceItem(std::uint32_t unitId) noexcept {
 }
 
 bool TryGetCachedVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
-    std::uint32_t code,const void* nativeUnit,std::uint32_t& price) noexcept {
+    std::uint32_t code,const void* nativeUnit,std::uint32_t& price,
+    ULONGLONG& observedMs) noexcept {
     if(!VendorSellPriceCacheMutex.try_lock()) return false;
     const auto& entry=VendorSellPriceCache[
         static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()];
@@ -1486,18 +1489,22 @@ bool TryGetCachedVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
         entry.classId==classId && entry.code==code &&
         entry.nativeUnit==reinterpret_cast<std::uintptr_t>(nativeUnit) &&
         now>=entry.observedMs && now-entry.observedMs<=VendorSellPriceCacheTtlMs;
-    if(hit) price=entry.price;
+    if(hit) {
+        price=entry.price;
+        observedMs=entry.observedMs;
+    }
     VendorSellPriceCacheMutex.unlock();
     return hit;
 }
 
 void StoreVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
-    std::uint32_t code,const void* nativeUnit,std::uint32_t price) noexcept {
+    std::uint32_t code,const void* nativeUnit,std::uint32_t price,
+    ULONGLONG observedMs) noexcept {
     if(!VendorSellPriceCacheMutex.try_lock()) return;
     VendorSellPriceCache[
         static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()]=
         {unitId,classId,code,price,reinterpret_cast<std::uintptr_t>(nativeUnit),
-            GetTickCount64(),true};
+            observedMs,true};
     VendorSellPriceCacheMutex.unlock();
 }
 
@@ -1548,8 +1555,12 @@ bool ReadNativeVendorSellPrice(const void* nativeUnit,
        !VendorSellPriceQualified.load(std::memory_order_acquire))
         return false;
 
+    ULONGLONG observedMs{};
     if(TryGetCachedVendorSellPrice(
-            expectedId,expectedClassId,code,nativeUnit,price)) return true;
+            expectedId,expectedClassId,code,nativeUnit,price,observedMs)) {
+        if(itemSnapshot) itemSnapshot->sellPriceObservedMs=observedMs;
+        return true;
+    }
 
     // Read quality/identified state before pricing. For magic/rare the native
     // calculator itself excludes affix/bonus-stat contributions until the
@@ -1600,7 +1611,10 @@ bool ReadNativeVendorSellPrice(const void* nativeUnit,
         return false;
 
     price=static_cast<std::uint32_t>(nativePrice);
-    StoreVendorSellPrice(expectedId,expectedClassId,code,nativeUnit,price);
+    observedMs=GetTickCount64();
+    if(itemSnapshot) itemSnapshot->sellPriceObservedMs=observedMs;
+    StoreVendorSellPrice(expectedId,expectedClassId,code,nativeUnit,price,
+        observedMs);
     return true;
 }
 
@@ -3439,7 +3453,8 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
             scalars.socketsKnown,scalars.sockets,
             scalars.etherealKnown,scalars.ethereal,
             scalars.identifiedKnown,scalars.identified,
-            scalars.sellPriceKnown,scalars.sellPrice};
+            scalars.sellPriceKnown,scalars.sellPrice,
+            scalars.sellPriceObservedMs};
     }
     GroundIdentityMutex.unlock();
 }
@@ -3475,8 +3490,12 @@ bool GetGroundIdentity(std::uint32_t id, std::string_view visibleName,
                 scalarOut->ethereal=candidate.ethereal;
                 scalarOut->identifiedKnown=candidate.identifiedKnown;
                 scalarOut->identified=candidate.identified;
-                scalarOut->sellPriceKnown=candidate.sellPriceKnown;
+                const bool sellPriceFresh=candidate.sellPriceKnown &&
+                    candidate.sellPriceObservedMs && now>=candidate.sellPriceObservedMs &&
+                    now-candidate.sellPriceObservedMs<=VendorSellPriceCacheTtlMs;
+                scalarOut->sellPriceKnown=sellPriceFresh;
                 scalarOut->sellPrice=candidate.sellPrice;
+                scalarOut->sellPriceObservedMs=candidate.sellPriceObservedMs;
             }
             found=true;
         }
