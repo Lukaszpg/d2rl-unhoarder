@@ -34,6 +34,7 @@
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
 #include <intrin.h>
+#pragma comment(lib, "Version.lib")
 
 #include <algorithm>
 #include <array>
@@ -45,6 +46,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -65,6 +67,101 @@
 
 namespace UnHoarder {
 namespace {
+
+// Accepted D2RLoader build names. The same game release reports a different
+// build number per storefront (Battle.net = 93847, Steam = 93787). This gate is
+// only a coarse pre-filter: every native hook/read is still independently
+// guarded by CheckExpectedBytes fingerprints, so an incompatible image will
+// still be refused safely.
+constexpr std::string_view SupportedBuilds[] = {
+    "93847", // Battle.net
+    "93787", // Steam
+};
+
+inline bool IsSupportedBuild(const char* build) noexcept {
+    if (!build) return false;
+    const std::string_view name(build);
+    for (const auto supported : SupportedBuilds)
+        if (name == supported) return true;
+    return false;
+}
+
+// Returns the trailing dotted component of a version string such as
+// "3.3.93787" -> "93787". Empty when no digits are present.
+inline std::string TrailingBuildComponent(std::string_view version) {
+    while (!version.empty() && (version.back() == '\0' || version.back() == ' '))
+        version.remove_suffix(1);
+    const auto dot = version.find_last_of('.');
+    if (dot != std::string_view::npos) version.remove_prefix(dot + 1);
+    if (version.empty()) return {};
+    for (const char c : version)
+        if (c < '0' || c > '9') return {};
+    return std::string(version);
+}
+
+// Reads the FileVersion string ("3.3.93787") from the host process image.
+// The numeric VS_FIXEDFILEINFO cannot hold builds > 65535, so use the string.
+inline std::string ReadHostExeBuild() {
+    wchar_t path[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return {};
+    DWORD handle = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path, &handle);
+    if (!size) return {};
+    std::vector<std::uint8_t> data(size);
+    if (!GetFileVersionInfoW(path, 0, size, data.data())) return {};
+    struct LangCodePage { WORD lang; WORD codePage; };
+    LangCodePage* translations = nullptr;
+    UINT translationBytes = 0;
+    if (!VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation",
+            reinterpret_cast<void**>(&translations), &translationBytes) ||
+        !translations || translationBytes < sizeof(LangCodePage)) return {};
+    for (UINT i = 0; i < translationBytes / sizeof(LangCodePage); ++i) {
+        for (const wchar_t* key : {L"FileVersion", L"ProductVersion"}) {
+            wchar_t query[96]{};
+            std::swprintf(query, std::size(query), L"\\StringFileInfo\\%04x%04x\\%s",
+                translations[i].lang, translations[i].codePage, key);
+            wchar_t* value = nullptr;
+            UINT chars = 0;
+            if (!VerQueryValueW(data.data(), query, reinterpret_cast<void**>(&value), &chars) ||
+                !value || !chars) continue;
+            std::string narrow;
+            for (const wchar_t* p = value; *p; ++p)
+                narrow.push_back(*p < 0x80 ? static_cast<char>(*p) : '?');
+            auto build = TrailingBuildComponent(narrow);
+            if (!build.empty()) return build;
+        }
+    }
+    return {};
+}
+
+// D2RLoader 1.3.1 may hand plugins a PluginContext that is smaller than the
+// pinned SDK's sizeof(PluginContext) (so D2RL::GetBuildName returns nullptr),
+// or leave buildName unset on some launch platforms (observed: Steam). Resolve
+// the build defensively: raw buildName -> buildVersion -> D2R.exe FileVersion.
+inline const char* ResolveBuildName(const D2RL::PluginContext* ctx) noexcept {
+    static std::once_flag once;
+    static std::string cached;
+    try {
+        std::call_once(once, [ctx] {
+            auto covers = [ctx](std::size_t offset) {
+                return ctx && ctx->contextSize >= offset + sizeof(const char*);
+            };
+            if (covers(offsetof(D2RL::PluginContext, buildName)) &&
+                ctx->buildName && *ctx->buildName) {
+                cached = ctx->buildName;
+                return;
+            }
+            if (covers(offsetof(D2RL::PluginContext, buildVersion)) && ctx->buildVersion) {
+                cached = TrailingBuildComponent(ctx->buildVersion);
+                if (!cached.empty()) return;
+            }
+            cached = ReadHostExeBuild();
+        });
+    } catch (...) {
+        return nullptr;
+    }
+    return cached.empty() ? nullptr : cached.c_str();
+}
 
 // Qualifies against the 93847 process, not a declaration that this is a label function.
 // D2 item codes occupy four native bytes, but many Excel codes have only
@@ -421,8 +518,8 @@ bool TryAcquireCooperativeGroundQuantityReader(
 void QualifyGroundQuantityReader() noexcept {
     GroundQuantityReader.store(nullptr,std::memory_order_release);
     (void)GroundQuantityCompatLease.Reset();
-    if (!Context || !Context->exeBase || !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context))!="93847") return;
+    if (!Context || !Context->exeBase || !ResolveBuildName(Context) ||
+        !IsSupportedBuild(ResolveBuildName(Context))) return;
     const auto base=static_cast<std::uintptr_t>(Context->exeBase);
     std::array<std::uint8_t,10> entry{};
     SIZE_T copied{};
@@ -950,8 +1047,8 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
     };
     if(reason)*reason="ok";
     if (!nativeUnit || !expectedId || !Context ||
-        !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context))!="93847")
+        !ResolveBuildName(Context) ||
+        !IsSupportedBuild(ResolveBuildName(Context)))
         return fail("unit-or-build-unavailable");
     std::array<std::uint8_t,0x18> before{},after{};
     SIZE_T copied{};
@@ -1023,8 +1120,8 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
     GroundPropertyLive::Purpose purpose,std::uint32_t& sockets) noexcept {
     sockets=0; // meaningful ONLY when the return value is true
     if(!nativeUnit || !expectedId || !Context ||
-       !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") return false;
+       !ResolveBuildName(Context) ||
+       !IsSupportedBuild(ResolveBuildName(Context))) return false;
     const auto getter=GroundQuantityReader.load(std::memory_order_acquire);
     if(!getter) return false; // never interpret missing bridge as zero sockets
     std::array<std::uint32_t,4> before{},after{};
@@ -1623,8 +1720,8 @@ void QualifyVendorSellPrice() noexcept {
     VendorSellPriceRequalifyNextGame.store(false,std::memory_order_release);
     ResetVendorSellPriceSession();
 
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if(!Context || !build || std::string_view(build)!="93847" ||
+    const char* build=Context?ResolveBuildName(Context):nullptr;
+    if(!Context || !IsSupportedBuild(build) ||
        !Base || !ImageSize) {
         LogWarn("LOOT_SELL_PRICE_REFUSED reason=unexpected-build-or-image");
         return;
@@ -2076,8 +2173,8 @@ void ArmNativeRowRuntime() noexcept {
 
         return;
     }
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!Context || !Base || !build || std::string_view(build)!="93847") {
+    const char* build=Context?ResolveBuildName(Context):nullptr;
+    if (!Context || !Base || !IsSupportedBuild(build)) {
         LogWarn("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-base no-hook=1 no-fallback=1");
         return;
     }
@@ -3352,8 +3449,8 @@ void ArmInnerNameWriter() noexcept {
         LogInfo("LOOT_GEOMETRY_HOOK_READY already-installed=1");
         return;
     }
-    if (!Context || !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context)) != "93847" ||
+    if (!Context || !ResolveBuildName(Context) ||
+        !IsSupportedBuild(ResolveBuildName(Context)) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !OriginalLabelFormatter || !OriginalGetItemCode ||
         !HookInstalled.load(std::memory_order_acquire)) {
@@ -3969,8 +4066,8 @@ bool __cdecl OnCompatibleInWorldStyle(
 bool TryAttachInWorldLabelCompat() noexcept {
     if (InWorldCompatLease && InWorldCompatService.load(std::memory_order_acquire))
         return true;
-    if (!Context || !D2RL::GetBuildName(Context)
-        || std::string_view(D2RL::GetBuildName(Context))!="93847") return false;
+    if (!Context || !ResolveBuildName(Context)
+        || !IsSupportedBuild(ResolveBuildName(Context))) return false;
     std::array<char,64> owner{};
     if (!DiagnoseTrackedTooltipOwner(InWorldFormatterRva,
             ExpectedInWorldFormatter.data(),
@@ -4395,8 +4492,8 @@ void ArmCorrectedGlyphB() noexcept {
         LogInfo("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
         return;
     }
-    const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
-    if (!Context || !build || std::string_view(build)!="93847" ||
+    const char* build=Context ? ResolveBuildName(Context) : nullptr;
+    if (!Context || !IsSupportedBuild(build) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !InnerNameHookInstalled.load(std::memory_order_acquire) ||
         !BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
@@ -4475,14 +4572,14 @@ void SyncFilterTextColorState() noexcept {
 
 void EnsureSharedLabelPaintHook() noexcept {
     if (BackgroundPaintHookInstalled.load(std::memory_order_acquire)) return;
-    const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
+    const char* build=Context ? ResolveBuildName(Context) : nullptr;
     constexpr std::array<std::uint8_t,17> expected{{
         0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,
         0x57,0x48,0x83,0xEC,0x40,0x49,0x8B}};
     constexpr std::array<std::uint8_t,5> groundCall{{0xE8,0xEA,0x2D,0xCE,0xFE}};
     constexpr std::array<std::uint8_t,5> neighborCall{{0xE8,0x9A,0x0A,0xCE,0xFE}};
     std::array<std::uint8_t,5> groundBytes{},neighborBytes{};
-    if (!Context || !build || std::string_view(build)!="93847" ||
+    if (!Context || !IsSupportedBuild(build) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !OriginalLabelFormatter ||
         !ReadSafe(0x1517AF1,groundBytes.data(),groundBytes.size()) ||
@@ -5414,8 +5511,8 @@ void ArmLabelFormatter() noexcept {
         LogInfo("LOOT_FORMATTER_OBSERVER_READY already-installed=1");
         return;
     }
-    const char* build = Context ? D2RL::GetBuildName(Context) : nullptr;
-    if (!Context || !build || std::string_view(build) != "93847" ||
+    const char* build = Context ? ResolveBuildName(Context) : nullptr;
+    if (!Context || !IsSupportedBuild(build) ||
         !Base || !ImageSize) {
         LogWarn("LOOT_FORMATTER_REFUSED unexpected-build-or-uninitialized-image");
         return;
@@ -5540,8 +5637,8 @@ bool NativeCallMatches(std::uintptr_t callRva,
 
 void InstallNativePickupGuard() noexcept {
     if(!Context || !Base || !ImageSize ||
-       !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847"){
+       !ResolveBuildName(Context) ||
+       !IsSupportedBuild(ResolveBuildName(Context))){
         LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=wrong-build-or-image forward-only=1");
         return;
     }
@@ -5805,13 +5902,22 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         context->LogError("LOOT_FILTER_REFUSED invalid main D2R PE image");
         return false;
     }
-    const char* build = D2RL::GetBuildName(context);
+    const char* build = ResolveBuildName(context);
+    {
+        char diag[200]{};
+        std::snprintf(diag, sizeof(diag),
+            "LOOT_BUILD_DETECT contextSize=%u sdkContextSize=%u resolved=%s",
+            static_cast<unsigned>(context->contextSize),
+            static_cast<unsigned>(sizeof(D2RL::PluginContext)),
+            build ? build : "unknown");
+        LogInfo(diag);
+    }
     char msg[310]{};
     std::snprintf(msg, sizeof(msg),
-        "LOOT_FILTER_READY version=" UNHOARDER_VERSION_STRING " build=%s expectedBuild=93847 config=automatic",
+        "LOOT_FILTER_READY version=" UNHOARDER_VERSION_STRING " build=%s expectedBuild=93847|93787 config=automatic",
         build ? build : "unknown");
     LogInfo(msg);
-    if (!build || std::string_view(build) != "93847") {
+    if (!IsSupportedBuild(build)) {
         context->LogWarn("LOOT_FILTER_INACTIVE unexpected build, no native hook");
         return true;
     }
