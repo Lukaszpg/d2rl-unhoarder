@@ -6466,9 +6466,10 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 }
 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
-    DetachForeignNativeHookCompat();
     MapsSocket::Shutdown();
     RuntimeWorkerStop();
+    // Stop our own reload/activation work before dropping leased callbacks.
+    DetachForeignNativeHookCompat();
     FirstFilterActivationPending.store(false,std::memory_order_release);
     FirstFilterActivationRetryRequested.store(false,std::memory_order_release);
     DetachForeignTooltipCompatRoutes();
