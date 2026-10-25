@@ -56,6 +56,16 @@ foreach(name pickup_guard_runtime inventory_poll_runtime vendor_price_invalidati
   endif()
   add_test(NAME "${name}" COMMAND "${name}_test")
 endforeach()
+
+# Standalone native-code-free, portable compiled Items row qualification test.
+add_executable(item_code_table_test "${unhoarder_root}/tests/item_code_table_test.cpp")
+target_compile_features(item_code_table_test PRIVATE cxx_std_20)
+target_include_directories(item_code_table_test PRIVATE "${unhoarder_root}/src")
+if(MSVC)
+  target_compile_options(item_code_table_test PRIVATE /W4 /permissive- /utf-8 /EHsc)
+endif()
+add_test(NAME item_code_table COMMAND item_code_table_test)
+
 target_compile_definitions(image_header_work_test PRIVATE UNHOARDER_IMAGE_HEADERS)
 
 
