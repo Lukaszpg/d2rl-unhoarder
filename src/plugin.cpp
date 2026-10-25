@@ -5,6 +5,8 @@
 #include "ground_quantity_label.hpp"
 #include "ground_label_background.hpp"
 #include "native_drop_sound.hpp"
+#include "native_hook_subscribers.hpp"
+#include "../interop/native_item_hook_compat_v1.hpp"
 #include "maps_socket_runtime.hpp"
 #include "controller_ground_label.hpp"
 #include "controller_ground_label_witnesses.hpp"
@@ -78,6 +80,10 @@
 
 namespace UnHoarder {
 namespace {
+namespace NativeHookCompat=D2RLInterop::NativeItemHookCompatV1;
+NativeHookSubscribers::Registry<NativeHookCompat::DropSoundReplacementFn> NativeDropSubscribers{};
+NativeHookSubscribers::Registry<NativeHookCompat::AutomapUnitObserverFn> NativeAutomapSubscribers{};
+
 
 // Under D2RLoader, the in-memory executable image is D2RLoader.exe (unpacked
 // 93847), while ctx->buildVersion / D2R.exe on disk may advance on storefront
@@ -874,6 +880,10 @@ __declspec(noinline) void __fastcall HookAutomapRenderUnit(
     const auto original=OriginalAutomapRenderUnit;
     if(!original) return;
     original(unit,automapContext);
+    NativeAutomapSubscribers.Dispatch([&](auto observer,void* user) noexcept {
+        observer(unit,automapContext,user);
+        return false;
+    });
     if(!AutomapProjectionArmed.load(std::memory_order_acquire) ||
        !automapContext || !unit) return;
     if(!IsLocalPlayerAutomapPass(unit)) {
@@ -4212,6 +4222,39 @@ UnhoarderLabelVisibility::Decision __cdecl QueryLabelCannotHide(
 }
 const UnhoarderLabelVisibility::Service PublishedLabelVisibilityService{
     sizeof(UnhoarderLabelVisibility::Service),UnhoarderLabelVisibility::Version,&QueryLabelCannotHide};
+bool __cdecl RegisterNativeDrop(
+        const D2RL::PluginContext* consumer,NativeHookCompat::DropSoundReplacementFn callback,void* user) noexcept {
+    return NativeDropSubscribers.Register(consumer,callback,user);
+}
+bool __cdecl UnregisterNativeDrop(
+        const D2RL::PluginContext* consumer,NativeHookCompat::DropSoundReplacementFn callback,void* user) noexcept {
+    return NativeDropSubscribers.Unregister(consumer,callback,user);
+}
+bool __cdecl RegisterNativeAutomap(
+        const D2RL::PluginContext* consumer,NativeHookCompat::AutomapUnitObserverFn callback,void* user) noexcept {
+    return NativeAutomapSubscribers.Register(consumer,callback,user);
+}
+bool __cdecl UnregisterNativeAutomap(
+        const D2RL::PluginContext* consumer,NativeHookCompat::AutomapUnitObserverFn callback,void* user) noexcept {
+    return NativeAutomapSubscribers.Unregister(consumer,callback,user);
+}
+const NativeHookCompat::Service PublishedNativeHookService{
+    sizeof(NativeHookCompat::Service),NativeHookCompat::ServiceVersion,
+    NativeHookCompat::DropAudioRva,NativeHookCompat::AutomapUnitRva,
+    &RegisterNativeDrop,&UnregisterNativeDrop,
+    &RegisterNativeAutomap,&UnregisterNativeAutomap};
+void PublishNativeHookService() noexcept {
+    const auto* broker=ResolvePluginCommunication();
+    if(!broker || !broker->publishService)return;
+    const D2RL::PluginCommunication::PublishServiceRequest request{
+        .structSize=D2RL::PluginCommunication::PublishServiceRequestSize,
+        .flags=0,.name=NativeHookCompat::ServiceName,
+        .serviceVersion=NativeHookCompat::ServiceVersion,
+        .tableSize=sizeof(PublishedNativeHookService),
+        .table=&PublishedNativeHookService};
+    if(broker->publishService(Context,&request)==D2RL::PluginCommunication::Result::Success)
+        LogInfo("LOOT_NATIVE_HOOK_SERVICE_READY abi=1 owner-only=1 drop-audio=1 automap=1");
+}
 void PublishGroundVisibilityService() noexcept {
     const auto* service=ResolvePluginCommunication();
     if(!service || !service->publishService) return;
@@ -5238,17 +5281,16 @@ std::atomic_bool NativeDropSoundHookInstalled{};
 
 void __fastcall HookNativeDropPlayer(void* unit) noexcept {
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    if (!SoundArmed.load(std::memory_order_acquire)) {
-        OriginalNativeDropPlayer(unit);
-        return;
-    }
     NativeDropSound::Dispatch(caller>=Base?caller-Base:UINTPTR_MAX,unit,
         [](void* item) noexcept {OriginalNativeDropPlayer(item);},
         [](void* item,NativeDropSound::Snapshot& out) noexcept {
             return SoundMemoryRead(reinterpret_cast<std::uintptr_t>(item),&out,sizeof(out));
         },
         [](void* item,const NativeDropSound::Snapshot& snapshot) noexcept {
-            return TryReplaceNativeDropSound(item,snapshot);
+            if(TryReplaceNativeDropSound(item,snapshot))return true;
+            return NativeDropSubscribers.Dispatch([&](auto replacer,void* user) noexcept {
+                return replacer(item,user);
+            });
         });
 }
 
@@ -6306,6 +6348,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     HookInstalled.store(true, std::memory_order_release);
     PublishTooltipCompatService();
     PublishGroundVisibilityService();
+    PublishNativeHookService();
     (void)InstallStandaloneAutomapProjection();
     QualifyVendorSellPrice();
     // Reuse the qualified native filter pipeline automatically once the
