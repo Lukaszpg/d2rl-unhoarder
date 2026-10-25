@@ -3896,6 +3896,7 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
         return;
     }
     const auto code=CanonicalItemCode(LookupItemCode(header[1]));
+    if(!PrintableItemCode(code)) return;
     const auto table=PublishedFilterRules.load(std::memory_order_acquire);
     if (!table) return;
     RuleEngine::Item scalars{};
@@ -6242,7 +6243,8 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     if(!PickupGuard::GroundMode(header[3]))
         return PickupGuard::Decision::NotGround;
 
-    const auto code=CanonicalItemCode(LookupItemCode(header[1]));
+    const auto codesAtStart=PublishedItemCodes.load(std::memory_order_acquire);
+    const auto code=codesAtStart ? ItemCodeTable::Lookup(*codesAtStart,header[1]) : 0U;
     if(!PrintableItemCode(code))
         return PickupGuard::Decision::InvalidCode;
 
@@ -6256,7 +6258,8 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     std::array<std::uint32_t,4> after{};copied=0;
     if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
        copied!=sizeof(after) || after!=header ||
-       !ItemCodeTableReady() || LookupItemCode(after[1])!=code)
+       codesAtStart!=PublishedItemCodes.load(std::memory_order_acquire) ||
+       !codesAtStart || ItemCodeTable::Lookup(*codesAtStart,after[1])!=code)
         return PickupGuard::Decision::InvalidUnit;
     if(KeyboardAltHeld()) return PickupGuard::Decision::AltOverride;
     if(!KeyboardPickupMode()) return PickupGuard::Decision::NonKeyboardInput;
