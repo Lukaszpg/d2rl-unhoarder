@@ -38,7 +38,7 @@ constexpr uintptr_t Base=0x140000000,LabelFormatterCallRva=0x15171E5,LabelFormat
 #include "label_rule_types.inc"
 std::atomic<std::shared_ptr<const FilterRuleTable>> PublishedFilterRules;
 std::shared_ptr<FilterRuleTable> fixtureTable;
-std::atomic_bool HookInstalled{true},HideGroundArmed{true},ControllerGroundLabelsReady{true};
+std::atomic_bool ItemCodeTableReadyMock{true},HideGroundArmed{true},ControllerGroundLabelsReady{true};
 enum class GeometryMode {Off,Rules};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Rules};
 thread_local ControllerGroundLabel::Scope ControllerGroundScope;
@@ -50,7 +50,11 @@ uint32_t nativeCode=Armor;
 uint32_t CanonicalItemCode(uint32_t v){return v;}
 bool PrintableItemCode(uint32_t v) noexcept {return v==Armor;}
 uint32_t Code(void*){return nativeCode;}
-auto OriginalGetItemCode=&Code;
+std::uint32_t LookupItemCode(std::uint32_t) noexcept {return Code(nullptr);}
+#include "item_code_table.hpp"
+namespace ItemCodeTable=UnHoarder::ItemCodeTable;
+std::atomic<std::shared_ptr<const UnHoarder::ItemCodeTable::Snapshot>> PublishedItemCodes{};
+bool ItemCodeTableReady() noexcept {return ItemCodeTableReadyMock.load();}
 std::atomic<void*> GroundQuantityReader;
 uint32_t GroundStackQuantity(const void*){return 1;}
 unsigned propertyReads{},socketReads{},nativeCalls{},checks{};
@@ -119,7 +123,12 @@ void Reset() {
     propertyReads=socketReads=nativeCalls=0;GroundIdentities={};
     auto* h=reinterpret_cast<uint32_t*>(unitBytes.data());h[0]=4;h[1]=42;h[2]=17;h[3]=3;
     auto* d=data.data();std::memcpy(unitBytes.data()+0x10,&d,8);data[0]=2;data[0x38]=99;
-    recordBytes[0x10]=17;HideGroundArmed=true;HookInstalled=true;ActiveGeometryMode=GeometryMode::Rules;
+    recordBytes[0x10]=17;HideGroundArmed=true;ItemCodeTableReadyMock=true;ActiveGeometryMode=GeometryMode::Rules;
+    {
+        auto c=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();
+        c->codes.resize(43);c->codes[42]=Armor;
+        PublishedItemCodes.store(c);
+    }
     returnAddress=Base+LabelFormatterCallRva+5;
 }
 void Label(){Check(HookLabelFormatter(unitBytes.data(),recordBytes.data()+0x24,recordBytes.data(),0,1,2)==1,"native result preserved");}

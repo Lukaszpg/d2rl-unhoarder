@@ -9,12 +9,15 @@
 #include "native_pickup_guard_policy.hpp"
 #include "native_pickup_profile.hpp"
 #include "loot_performance.hpp"
+#include "item_code_table.hpp"
+namespace ItemCodeTable=UnHoarder::ItemCodeTable;
+std::atomic<std::shared_ptr<const UnHoarder::ItemCodeTable::Snapshot>> PublishedItemCodes{};
 using namespace UnHoarder;
 struct Rules {unsigned hiddenRules=1;};
 std::atomic<std::shared_ptr<const Rules>> PublishedFilterRules{std::make_shared<Rules>()};
 enum class GeometryMode {Rules,Other};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Rules};
-std::atomic_bool HideGroundArmed{true},HookInstalled{true};
+std::atomic_bool HideGroundArmed{true},ItemCodeTableReadyMock{true};
 std::array<uint32_t,4> item{4,11,42,3};
 uint32_t playerStorage{},inputMode{};
 uintptr_t manager=0x12340000,Base{};
@@ -38,7 +41,8 @@ void* __fastcall Lookup(uint32_t id,uint32_t type) noexcept {
     ++lookedUp;return !missing && id==42 && type==4?item.data():nullptr;
 }
 uint32_t Code(void*) noexcept {return badCode?0:0x6d6567;}
-auto OriginalGetItemCode=&Code;
+std::uint32_t LookupItemCode(std::uint32_t) noexcept {return Code(nullptr);}
+bool ItemCodeTableReady() noexcept {return ItemCodeTableReadyMock.load();}
 uint32_t CanonicalItemCode(uint32_t code) noexcept {return code;}
 bool PrintableItemCode(uint32_t code) noexcept {return code!=0;}
 int GroundRuleItem(uint32_t,void*,const Rules*,uint32_t) noexcept {
@@ -60,10 +64,14 @@ void Reset() {
     item={4,11,42,3};playerStorage=0;inputMode=0;manager=0x12340000;
     leftAlt=rightAlt=0;lookedUp=resolved=forwarded=invalidated=keyReads=0;
     missing=badCode=visible=unknown=mutate=failRead=switchMode=lateAlt=false;
-    HideGroundArmed=true;HookInstalled=true;ActiveGeometryMode=GeometryMode::Rules;
+    HideGroundArmed=true;ItemCodeTableReadyMock=true;ActiveGeometryMode=GeometryMode::Rules;
     PublishedFilterRules=std::make_shared<Rules>();NativePickupGuardQualified=true;
     Base=reinterpret_cast<uintptr_t>(&Lookup)-NativeItemLookupRva;
-    OriginalNativeActionDispatch=&Forward;OriginalGetItemCode=&Code;
+    auto itemCodes=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();
+    itemCodes->codes.resize(12);
+    itemCodes->codes[11]=Code(nullptr);
+    PublishedItemCodes.store(itemCodes);
+    OriginalNativeActionDispatch=&Forward;
 }
 void Pickup() {HookNativeActionDispatch(22,&playerStorage,4,42);}
 int main() {
@@ -82,7 +90,7 @@ int main() {
     Reset();HideGroundArmed=false;Pickup();Check(forwarded==1 && lookedUp==0,"inactive filter forwards");
     Reset();PublishedFilterRules=std::make_shared<Rules>(Rules{0});Pickup();Check(forwarded==1 && lookedUp==0,"no hidden rules avoids properties");
     Reset();missing=true;Pickup();Check(forwarded==1,"lookup failure forwards");
-    Reset();badCode=true;Pickup();Check(forwarded==1,"invalid code forwards");
+    Reset();{auto invalid=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();invalid->codes.resize(12);PublishedItemCodes.store(invalid);}Pickup();Check(forwarded==1,"unmapped class ID forwards");
     Reset();failRead=true;Pickup();Check(forwarded==1,"unreadable state forwards");
     for(uint32_t mode:{0u,5u}) {Reset();item[3]=mode;Pickup();Check(forwarded==1,"non-ground/presentation-only mode cannot suppress pickup");}
     Reset();item[2]=43;Pickup();Check(forwarded==1,"lookup identity mismatch forwards");

@@ -56,6 +56,7 @@ foreach(name pickup_guard_runtime inventory_poll_runtime vendor_price_invalidati
   endif()
   add_test(NAME "${name}" COMMAND "${name}_test")
 endforeach()
+
 target_compile_definitions(image_header_work_test PRIVATE UNHOARDER_IMAGE_HEADERS)
 
 
