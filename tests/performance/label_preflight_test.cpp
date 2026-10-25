@@ -13,7 +13,7 @@ using D=UnhoarderLabelVisibility::Decision;
 struct Rule {bool usesConditions{true},continueEvaluation{},show{true};uint32_t code{};RuleEngine::Conditions conditions{};};
 struct FilterRuleTable {std::vector<Rule> rules;};
 std::atomic<std::shared_ptr<const FilterRuleTable>> PublishedFilterRules;
-std::atomic<bool> HookInstalled{true},HideGroundArmed{true};
+std::atomic<bool> ItemCodeReaderReady{true},HideGroundArmed{true};
 enum class GeometryMode {Off,Rules};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Rules};
 constexpr uint32_t Gem=0x00726d67,Armor=0x00706163,Potion=0x00317068;
@@ -36,10 +36,10 @@ uint32_t __fastcall ReadCode(void*) noexcept {
     }
     return nativeCode;
 }
-uint32_t(__fastcall* OriginalGetItemCode)(void*)=&ReadCode;
+uint32_t(__fastcall* NativeGetItemCode)(void*)=&ReadCode;
 #include "label_preflight_runtime.inc"
 static void Check(bool ok,const char* what){++checks;if(!ok){std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);}}
-static void Reset(){nativeHeader={4,42,17,3};nativeCode=Gem;mutation=codeCalls=0;HookInstalled=true;HideGroundArmed=true;ActiveGeometryMode=GeometryMode::Rules;PublishedFilterRules.store(table);}
+static void Reset(){nativeHeader={4,42,17,3};nativeCode=Gem;mutation=codeCalls=0;ItemCodeReaderReady=true;HideGroundArmed=true;ActiveGeometryMode=GeometryMode::Rules;PublishedFilterRules.store(table);}
 int main() {
     Rule unique;unique.conditions.qualities={7};
     Rule hide;hide.show=false;hide.conditions.typeCodes={Armor};hide.conditions.qualities={1,2,3,4,6};hide.conditions.sockets={true,true,false,false,0};
@@ -54,7 +54,7 @@ int main() {
     Reset();nativeHeader[2]=18;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"wrong id refused");
     Reset();nativeHeader[3]=5;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"strict ground mode retained");
     Reset();nativeCode=0;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"invalid code refused");
-    Reset();HookInstalled=false;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"unavailable code reader refused");
+    Reset();ItemCodeReaderReady=false;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"unavailable code reader refused");
     Reset();PublishedFilterRules.store(nullptr);Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"missing rules cannot skip query");
     Reset();Check(QueryLabelCannotHide(nullptr,17)==D::RequireQuery && QueryLabelCannotHide(nativeHeader.data(),0)==D::RequireQuery,"invalid borrowed observation refused");
     // A positive proof must imply no Hidden result for ALL completions of the

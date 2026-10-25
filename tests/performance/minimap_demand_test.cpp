@@ -30,13 +30,13 @@ constexpr uintptr_t Base=0x140000000,InnerNameWriterCallerRva=0x1FAA18,DirectCal
 std::atomic<std::shared_ptr<const FilterRuleTable>> PublishedFilterRules;
 enum class GeometryMode {Off,Rules};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Rules};
-std::atomic_bool HookInstalled{true},AutomapProjectionArmed{true};
+std::atomic_bool ItemCodeReaderReady{true},AutomapProjectionArmed{true};
 struct OwnedScope {bool owned{};bool Owns(const void*,const void*,uint32_t)const{return owned;}} ControllerGroundScope;
 constexpr uint32_t Gem=0x00726d67;
 uint32_t CanonicalItemCode(uint32_t value){return value;}
 bool PrintableItemCode(uint32_t value){return value==Gem;}
 uint32_t ReadCode(void*){return Gem;}
-auto OriginalGetItemCode=&ReadCode;
+auto NativeGetItemCode=&ReadCode;
 uint32_t fixtureQuantity=0,quality=2;
 bool qualityKnown=true;
 uint32_t GroundStackQuantity(const void*){return fixtureQuantity;}
@@ -85,7 +85,7 @@ void Reset() {
     const uint32_t x=100,y=200;std::memcpy(pathBytes.data()+0x10,&x,4);std::memcpy(pathBytes.data()+0x14,&y,4);
     std::memcpy(recordBytes.data()+0x10,&header[2],4);
     MinimapProjectionItems={};MinimapProjectionItemCount=0;fixtureQuantity=0;quality=2;qualityKnown=true;
-    ActiveGeometryMode=GeometryMode::Rules;HookInstalled=true;AutomapProjectionArmed=true;ControllerGroundScope.owned=false;
+    ActiveGeometryMode=GeometryMode::Rules;ItemCodeReaderReady=true;AutomapProjectionArmed=true;ControllerGroundScope.owned=false;
 }
 void Label() {
     Check(HookInnerNameWriter(unitBytes.data(),recordBytes.data()+0x24,0x80,nullptr)==123,"native writer return unchanged");
