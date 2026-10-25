@@ -3,8 +3,10 @@ s=(Path(__file__).resolve().parents[1]/"src/plugin.cpp").read_text()
 assert '.version = UNHOARDER_VERSION_STRING' in s
 for term in ('AutomapRenderUnitRva=0xD76E0','ProjectClientToAutomapRva=0xD4910','GetLocalDataContextRva=0x8B2D0','GetLocalPlayerRva=0x9A480','ExpectedAutomapRenderUnit','ExpectedProjectClientToAutomap','ExpectedGetLocalDataContext','ExpectedGetLocalPlayer'):
     assert term in s,term
-assert 'GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")' in s
-assert 'reason=mapsense-loaded-shared-rendezvous' in s
+assert 'GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")' not in s
+assert 'TryAttachForeignAutomap(ExpectedAutomapRenderUnit.data(),' in s
+assert 'DiagnoseTrackedTooltipOwner(AutomapRenderUnitRva' in s
+assert 'entry-owned-without-qualified-cooperative-host' in s
 assert 'InstallInlineHook(AutomapRenderUnitRva' in s
 assert 'original(unit,automapContext);' in s
 assert 'ProjectClientToAutomap(automapContext,&projected' in s
