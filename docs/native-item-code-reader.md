@@ -1,58 +1,49 @@
-# Removing the GetItemCode detour (stacked PR)
+# SDK compiled classId-to-itemCode resolver (PR #12)
 
-## Immediate change
+## Architecture
 
-For D2R build 93847 UnHoarder formerly installed a pass-through inline
-hook at `D2R+0x36EF50` merely to obtain a callable original trampoline.
-No behavior or output was intercepted.
+A native ground-item unit has a 32-bit class ID in its verified header
+(`header[1]`). The code is resolved by a copied, immutable SDK index:
 
-The first phase of this change **removes the detour** and instead:
+    classId -> PublishedItemCodes[classId] -> item code
 
-- Verifies the same full 32-byte entry fingerprint before any call.
-- Stores a native `GetItemCodeFn` pointing directly to the verified engine
-  entry `D2RBase+0x36EF50`.
-- Reuses this read-only function for native ground-label, pickup,
-  automap, hover, drop-audio and visibility callbacks.
-- Leaves the reader and all dependent behavior *inactive* when the entry
-  is mismatched or belongs to another plugin. No foreign trampoline,
-  guessed relocation or code patching is attempted.
-- Does not change native item data, the SDK's public item handles or JSON.
+UnHoarder performs **no hook, trampoline or native function call** to
+D2R+0x36EF50. It does not enumerate external loose Excel files when
+resolving runtime item codes. JSON item-type selectors retain their
+independent existing Excel parsing.
 
-This frees native hook ownership of `0x36EF50` for other plugins and
-avoids installing a pass-through hook. It **does not** yet remove
-the dependency on the game's qualified native helper. If another plugin
-already detours this entry before UnHoarder starts, the reader will still
-refuse to arm; it will not join or overwrite the owner's detour.
+## Qualification on game thread
 
-## Long-term SDK-only path (not enabled)
+1. The loader invokes our `DataTablesLoadedEvent` listener after its
+   compiled tables are loaded, or `GameJoined` triggers a game-thread
+   refresh from `DataTableService`.
+2. `getTable(Rotw, Items)` provides the current row count, size,
+   revision and read-only pointer; reject missing/unreasonable metadata.
+3. `findRowByCode(Rotw, Items)` independently provides row pointers and
+   indexes for multiple canonical items: cap, hax, rin, amu, r01.
+4. Scan offsets within the compiled row and accept a **unique** four-byte
+   code field matching at least four independent SDK probes. D2MOO's
+   historical layout is not used as a current-build offset.
+5. For **every** row, extract its code and independently require
+   `findRowByCode` to return that same row index and revision.
+   Any unknown, missing, duplicate or invalid row rejects publication.
+6. Atomically publish the fully copied snapshot. Render, audio and
+   pickup paths never retain or call through SDK/game table pointers.
 
-The SDK 0.4.0 `getItemDetails` API reads item-owned magic stat lists,
-not item codes, and requires an opaque `ItemHandle`.
-`getItemInfo` exposes `ItemInfo.code`, but only for handles obtained
-through supported local-player inventory facilities, not arbitrary native
-ground units.
+Invalidate the snapshot before a new table revision is built; unknown
+class IDs, failed qualification or missing codes fail open, preserving
+native visibility/pickup/default audio.
 
-The 0.4.0 `DataTableService` exposes read-only compiled
-`DataTables::TableId::Items` rows after `DataTablesLoadedEvent`.
-D2MOO 1.10 documents `D2ItemsTxt.dwCode` at offset `0x80`,
-and `dwClassId` maps to an Items record index. This is only a historical
-research lead, **not qualification for current D2R build 93847**.
+### Runtime acceptance still required
 
-Before replacing direct calls with classId-to-code lookup, validate
-against live D2R compiled Items row stride, packed code field and at
-least a cross-category reference set including new modded items;
-synchronize refresh on data-table revision changes and refuse unknown
-or partial snapshots. Game callback/table loading thread requirements
-must be honored, with immutable read-only copies for UI and audio
-callbacks. Never infer a row offset solely from D2MOO.
+SDK row-index identity must still be proven to equal the native
+ground-item class ID in build 93847. A table built and validated against
+SDK lookups proves compiled-table consistency, not that external native
+units index the same records. Compare `ItemInfo.classId/code` for owned
+items plus representative actual ground drops; include weapons,
+armor, jewelry, runes, stackables and custom mod items. Verify
+Show/Hide, pickup, ALT override, icon and audio on each type and after
+Save & Exit. The log emits `LOOT_ITEM_CODES_READY` with rowSize,
+codeOffset, count and revision on success or a specific REFUSED reason.
 
-## Regression and acceptance
-
-CI statically verifies removal of the detour and compilation/tests;
-live testing must confirm ground-label Show/Hide, tooltip colors,
-drop sounds, minimap icons, ALT+click pickups, game exit/rejoin,
-foreign owners and the absence of any modification tracked at
-`0x36EF50` with UnHoarder's plugin ID.
-
-This PR is stacked on PR #11 and should be retargeted to `main` only
-after the import is merged.
+No live D2R acceptance has been performed solely by CI.
