@@ -1531,6 +1531,27 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
                 candidates,count,view.rowSize,view.rowCount,
                 candidateOffsets[0],candidateOffsets[1],candidateOffsets[2]);
             LogWarn(message);
+            // Failure-only diagnostics: distinguish duplicate upgrade-family
+            // fields from SDK rows that expose no packed code bytes at all.
+            // No native helper calls and no environment-variable probe gate.
+            for(unsigned i=0;i<count;++i) {
+                std::array<std::uint32_t,3> offsets{
+                    0xffffffffU,0xffffffffU,0xffffffffU};
+                unsigned matches=0;
+                for(std::uint32_t offset=0;offset<=view.rowSize-4;++offset) {
+                    if(ItemCodeTable::FromCompiledRow(
+                        probes[i].row,view.rowSize,offset)!=
+                        ItemCodeTable::Canonical(probes[i].code)) continue;
+                    if(matches<offsets.size()) offsets[matches]=offset;
+                    ++matches;
+                }
+                char detail[250]{};
+                std::snprintf(detail,sizeof(detail),
+                    "LOOT_ITEM_CODES_DIAG probeCode=0x%08X rowIndex=%u occurrences=%u firstOffsets=0x%X,0x%X,0x%X",
+                    probes[i].code,probes[i].index,matches,
+                    offsets[0],offsets[1],offsets[2]);
+                LogWarn(detail);
+            }
             PublishedItemCodes.store({},std::memory_order_release);
             return false;
         }
