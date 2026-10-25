@@ -13,7 +13,7 @@ using D=UnhoarderLabelVisibility::Decision;
 struct Rule {bool usesConditions{true},continueEvaluation{},show{true};uint32_t code{};RuleEngine::Conditions conditions{};};
 struct FilterRuleTable {std::vector<Rule> rules;};
 std::atomic<std::shared_ptr<const FilterRuleTable>> PublishedFilterRules;
-std::atomic<bool> ItemCodeReaderReady{true},HideGroundArmed{true};
+std::atomic<bool> ItemCodeTableReadyMock{true},HideGroundArmed{true};
 enum class GeometryMode {Off,Rules};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Rules};
 constexpr uint32_t Gem=0x00726d67,Armor=0x00706163,Potion=0x00317068;
@@ -36,25 +36,28 @@ uint32_t __fastcall ReadCode(void*) noexcept {
     }
     return nativeCode;
 }
-uint32_t(__fastcall* NativeGetItemCode)(void*)=&ReadCode;
+#include "item_code_table.hpp"
+std::atomic<std::shared_ptr<const UnHoarder::ItemCodeTable::Snapshot>> PublishedItemCodes{};
+std::uint32_t LookupItemCode(std::uint32_t) noexcept {return ReadCode(nullptr);}
+bool ItemCodeTableReady() noexcept {return ItemCodeTableReadyMock.load();}
 #include "label_preflight_runtime.inc"
 static void Check(bool ok,const char* what){++checks;if(!ok){std::fprintf(stderr,"FAIL: %s\n",what);std::exit(1);}}
-static void Reset(){nativeHeader={4,42,17,3};nativeCode=Gem;mutation=codeCalls=0;ItemCodeReaderReady=true;HideGroundArmed=true;ActiveGeometryMode=GeometryMode::Rules;PublishedFilterRules.store(table);}
+static void Reset(){nativeHeader={4,42,17,3};nativeCode=Gem;mutation=codeCalls=0;ItemCodeTableReadyMock=true;HideGroundArmed=true;ActiveGeometryMode=GeometryMode::Rules;PublishedFilterRules.store(table);auto c=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();c->codes.resize(43);c->codes[42]=Gem;PublishedItemCodes.store(c);}
 int main() {
     Rule unique;unique.conditions.qualities={7};
     Rule hide;hide.show=false;hide.conditions.typeCodes={Armor};hide.conditions.qualities={1,2,3,4,6};hide.conditions.sockets={true,true,false,false,0};
     Rule potion; potion.show=false;potion.conditions.codes={Potion};
     table=std::make_shared<FilterRuleTable>();table->rules={unique,hide,potion};Reset();
     for(unsigned frame=0;frame<120;++frame)for(uint32_t id=1;id<=15;++id){nativeHeader[2]=id;Check(QueryLabelCannotHide(nativeHeader.data(),id)==D::CannotHide,"town gem cannot match equipment/potion Hide rules");}
-    Check(codeCalls==3600,"every gem observation checks current code twice without property reads");
-    Reset();nativeCode=Armor;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"unknown rarity/socket values retain original full query");
-    Reset();nativeCode=Potion;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"known hidden code retains full query");
-    for(unsigned value=1;value<=7;++value){Reset();mutation=value;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"changing identity/code/rules/arming cannot skip query");}
+    Check(codeCalls==0,"all gem lookups use immutable SDK table without native code calls");
+    Reset();{auto c=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();c->codes.resize(43);c->codes[42]=Armor;PublishedItemCodes.store(c);}Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"unknown rarity/socket values retain original full query");
+    Reset();{auto c=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();c->codes.resize(43);c->codes[42]=Potion;PublishedItemCodes.store(c);}Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"known hidden code retains full query");
+    Reset();PublishedItemCodes.store({});Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"invalid or unloaded SDK item code snapshot cannot skip query");
     Reset();nativeHeader[0]=0;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"non-item refused");
     Reset();nativeHeader[2]=18;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"wrong id refused");
     Reset();nativeHeader[3]=5;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"strict ground mode retained");
-    Reset();nativeCode=0;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"invalid code refused");
-    Reset();ItemCodeReaderReady=false;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"unavailable code reader refused");
+    Reset();{auto c=std::make_shared<UnHoarder::ItemCodeTable::Snapshot>();c->codes.resize(43);PublishedItemCodes.store(c);}Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"invalid code refused");
+    Reset();ItemCodeTableReadyMock=false;Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"unavailable code reader refused");
     Reset();PublishedFilterRules.store(nullptr);Check(QueryLabelCannotHide(nativeHeader.data(),17)==D::RequireQuery,"missing rules cannot skip query");
     Reset();Check(QueryLabelCannotHide(nullptr,17)==D::RequireQuery && QueryLabelCannotHide(nativeHeader.data(),0)==D::RequireQuery,"invalid borrowed observation refused");
     // A positive proof must imply no Hidden result for ALL completions of the

@@ -14,7 +14,7 @@ struct Rules {unsigned hiddenRules=1;};
 std::atomic<std::shared_ptr<const Rules>> PublishedFilterRules{std::make_shared<Rules>()};
 enum class GeometryMode {Rules,Other};
 std::atomic<GeometryMode> ActiveGeometryMode{GeometryMode::Rules};
-std::atomic_bool HideGroundArmed{true},ItemCodeReaderReady{true};
+std::atomic_bool HideGroundArmed{true},ItemCodeTableReadyMock{true};
 std::array<uint32_t,4> item{4,11,42,3};
 uint32_t playerStorage{},inputMode{};
 uintptr_t manager=0x12340000,Base{};
@@ -38,7 +38,8 @@ void* __fastcall Lookup(uint32_t id,uint32_t type) noexcept {
     ++lookedUp;return !missing && id==42 && type==4?item.data():nullptr;
 }
 uint32_t Code(void*) noexcept {return badCode?0:0x6d6567;}
-auto NativeGetItemCode=&Code;
+std::uint32_t LookupItemCode(std::uint32_t) noexcept {return Code(nullptr);}
+bool ItemCodeTableReady() noexcept {return ItemCodeTableReadyMock.load();}
 uint32_t CanonicalItemCode(uint32_t code) noexcept {return code;}
 bool PrintableItemCode(uint32_t code) noexcept {return code!=0;}
 int GroundRuleItem(uint32_t,void*,const Rules*,uint32_t) noexcept {
@@ -60,10 +61,10 @@ void Reset() {
     item={4,11,42,3};playerStorage=0;inputMode=0;manager=0x12340000;
     leftAlt=rightAlt=0;lookedUp=resolved=forwarded=invalidated=keyReads=0;
     missing=badCode=visible=unknown=mutate=failRead=switchMode=lateAlt=false;
-    HideGroundArmed=true;ItemCodeReaderReady=true;ActiveGeometryMode=GeometryMode::Rules;
+    HideGroundArmed=true;ItemCodeTableReadyMock=true;ActiveGeometryMode=GeometryMode::Rules;
     PublishedFilterRules=std::make_shared<Rules>();NativePickupGuardQualified=true;
     Base=reinterpret_cast<uintptr_t>(&Lookup)-NativeItemLookupRva;
-    OriginalNativeActionDispatch=&Forward;NativeGetItemCode=&Code;
+    OriginalNativeActionDispatch=&Forward;
 }
 void Pickup() {HookNativeActionDispatch(22,&playerStorage,4,42);}
 int main() {
