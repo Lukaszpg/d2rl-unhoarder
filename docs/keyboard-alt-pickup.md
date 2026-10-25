@@ -16,8 +16,13 @@ was therefore expected. Label, background and hover rendering are unchanged.
 
 ## Build-specific native contract
 
-The existing 93787/93847 supported-build gate, PE timestamp `0x6AB3782C`, image
-size, call witnesses and SDK expected-byte registration remain. Dispatcher
+The current game-image check verifies the x64 PE signature, machine, optional
+header and image size. An earlier imported version also hard-required the
+loader's PE timestamp `0x6AB3782C`. This was obsolete for D2RLoader builds
+reporting a different timestamp (e.g. `0x6ACC8256`) while running the
+same qualified 93847 game code. The timestamp gate was removed, but the
+complete dispatcher-body fingerprint, item lookup and exact call-site
+witnesses **remain mandatory**. Dispatcher
 `0xFABE0` has the four-argument x64 ABI
 `void(uint32 action, void* player, uint32 type, uint32 id)`. Entry admission now
 requires the **complete original captured body** from QOL's already-reviewed

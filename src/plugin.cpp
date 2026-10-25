@@ -6370,12 +6370,16 @@ void InstallNativePickupGuard() noexcept {
        dos.e_lfanew<=0 || dos.e_lfanew>0x1000 ||
        !ReadSafe(static_cast<std::uintptr_t>(dos.e_lfanew),&nt,sizeof(nt)) ||
        nt.Signature!=IMAGE_NT_SIGNATURE ||
-       nt.FileHeader.TimeDateStamp!=0x6AB3782C ||
+       nt.FileHeader.Machine!=IMAGE_FILE_MACHINE_AMD64 ||
+       nt.OptionalHeader.Magic!=IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
        nt.OptionalHeader.SizeOfImage!=ImageSize){
-        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=PE-timestamp-or-image-size-mismatch forward-only=1");
+        LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=PE-header-or-image-size-invalid forward-only=1");
         return;
     }
 
+    // Loader PE timestamps can change without native dispatcher changes.
+    // Do not admit by build string, timestamp or a prologue: require the exact
+    // function body plus every code/call-edge fingerprint below.
     // These build-93847 call edges qualify both the immediate and deferred
     // routes into the dispatch function, plus the unit-by-id lookup used by
     // that dispatch. They are validation witnesses only; caller provenance is
