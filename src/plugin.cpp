@@ -5358,6 +5358,7 @@ bool __cdecl OnForeignDropSound(void* unit,void*) noexcept {
 using NativeDropPlayerFn=void (__fastcall*)(void*) noexcept;
 NativeDropPlayerFn OriginalNativeDropPlayer{};
 std::atomic_bool NativeDropSoundHookInstalled{};
+std::mutex NativeDropHookInstallMutex{};
 
 void __fastcall HookNativeDropPlayer(void* unit) noexcept {
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
@@ -5375,6 +5376,8 @@ void __fastcall HookNativeDropPlayer(void* unit) noexcept {
 }
 
 bool ArmNativeDropSoundHook() noexcept {
+    // Registration can race a filter reload on another plugin/thread.
+    std::lock_guard installLock(NativeDropHookInstallMutex);
     if (NativeDropSoundHookInstalled.load(std::memory_order_acquire))
         return OriginalNativeDropPlayer!=nullptr || ForeignDropCompatAttached;
     const auto* build=Context?ResolveBuildName(Context):nullptr;

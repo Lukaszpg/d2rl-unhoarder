@@ -8,7 +8,9 @@ assert 'ExamineGroundSoundCandidate(' not in s
 assert 'trigger=first-ground-label' not in s
 assert 'player(selected.dropSound.data(),unit,0,0)' in s
 assert 'return result!=nullptr;' in s
-assert 'OriginalNativeDropPlayer(unit);' in s
+assert '[](void* item) noexcept {OriginalNativeDropPlayer(item);}' in s
+assert 'original(unit);' in (Path(__file__).resolve().parents[1]/'src/native_drop_sound.hpp').read_text()
+assert 'NativeDropSubscribers.Dispatch(' in s
 assert '!QualifyNamedSoundBackend() || !ArmNativeDropSoundHook()' in s
 assert 'no-label-fallback=1' in s
 assert 'QueueNamedSound(' not in s and 'struct SoundRequest' not in s
