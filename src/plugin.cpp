@@ -90,6 +90,7 @@ bool ForeignAutomapCompatAttached{};
 bool TryAttachForeignDropAudio(const void*,std::uint32_t) noexcept;
 bool TryAttachForeignAutomap(const void*,std::uint32_t) noexcept;
 bool ArmNativeDropSoundHook() noexcept;
+bool OwnsNativeDropAudioHook() noexcept;
 bool __cdecl OnForeignDropSound(void*,void*) noexcept;
 void __cdecl OnForeignAutomapUnit(void*,void*,void*) noexcept;
 
@@ -4245,7 +4246,8 @@ const UnhoarderLabelVisibility::Service PublishedLabelVisibilityService{
     sizeof(UnhoarderLabelVisibility::Service),UnhoarderLabelVisibility::Version,&QueryLabelCannotHide};
 bool __cdecl RegisterNativeDrop(
         const D2RL::PluginContext* consumer,NativeHookCompat::DropSoundReplacementFn callback,void* user) noexcept {
-    if(!ArmNativeDropSoundHook())return false;
+    // Our provider service cannot host clients through a foreign-owner lease.
+    if(!ArmNativeDropSoundHook() || !OwnsNativeDropAudioHook())return false;
     return NativeDropSubscribers.Register(consumer,callback,user);
 }
 bool __cdecl UnregisterNativeDrop(
@@ -4254,6 +4256,10 @@ bool __cdecl UnregisterNativeDrop(
 }
 bool __cdecl RegisterNativeAutomap(
         const D2RL::PluginContext* consumer,NativeHookCompat::AutomapUnitObserverFn callback,void* user) noexcept {
+    // A leased foreign renderer dispatches to its own registered consumers,
+    // not to this plugin's local host registry.
+    if(!OriginalAutomapRenderUnit ||
+       !AutomapProjectionHookInstalled.load(std::memory_order_acquire))return false;
     return NativeAutomapSubscribers.Register(consumer,callback,user);
 }
 bool __cdecl UnregisterNativeAutomap(
@@ -5359,6 +5365,10 @@ using NativeDropPlayerFn=void (__fastcall*)(void*) noexcept;
 NativeDropPlayerFn OriginalNativeDropPlayer{};
 std::atomic_bool NativeDropSoundHookInstalled{};
 std::mutex NativeDropHookInstallMutex{};
+bool OwnsNativeDropAudioHook() noexcept {
+    return NativeDropSoundHookInstalled.load(std::memory_order_acquire) &&
+        OriginalNativeDropPlayer!=nullptr;
+}
 
 void __fastcall HookNativeDropPlayer(void* unit) noexcept {
     const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
