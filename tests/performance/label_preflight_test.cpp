@@ -37,6 +37,7 @@ uint32_t __fastcall ReadCode(void*) noexcept {
     return nativeCode;
 }
 #include "item_code_table.hpp"
+namespace ItemCodeTable=UnHoarder::ItemCodeTable;
 std::atomic<std::shared_ptr<const UnHoarder::ItemCodeTable::Snapshot>> PublishedItemCodes{};
 std::uint32_t LookupItemCode(std::uint32_t) noexcept {return ReadCode(nullptr);}
 bool ItemCodeTableReady() noexcept {return ItemCodeTableReadyMock.load();}

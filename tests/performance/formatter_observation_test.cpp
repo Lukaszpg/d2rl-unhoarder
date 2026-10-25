@@ -52,6 +52,7 @@ bool PrintableItemCode(uint32_t v) noexcept {return v==Armor;}
 uint32_t Code(void*){return nativeCode;}
 std::uint32_t LookupItemCode(std::uint32_t) noexcept {return Code(nullptr);}
 #include "item_code_table.hpp"
+namespace ItemCodeTable=UnHoarder::ItemCodeTable;
 std::atomic<std::shared_ptr<const UnHoarder::ItemCodeTable::Snapshot>> PublishedItemCodes{};
 bool ItemCodeTableReady() noexcept {return ItemCodeTableReadyMock.load();}
 std::atomic<void*> GroundQuantityReader;
