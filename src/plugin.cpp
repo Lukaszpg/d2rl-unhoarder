@@ -4389,6 +4389,54 @@ bool DiagnoseTrackedTooltipOwner(
     return exactEntryHook;
 }
 
+bool TryAttachForeignAutomap(const void* expected,std::uint32_t bytes) noexcept {
+    std::array<char,64> owner{};
+    if(!DiagnoseTrackedTooltipOwner(AutomapRenderUnitRva,expected,bytes,owner))return false;
+    const auto* broker=ResolvePluginCommunication();
+    if(!broker)return false;
+    D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> lease{};
+    if(D2RL::PluginCommunication::Acquire(Context,broker,owner.data(),
+            NativeHookCompat::ServiceName,NativeHookCompat::ServiceVersion,
+            sizeof(NativeHookCompat::Service),&lease)!=D2RL::PluginCommunication::Result::Success ||
+       !lease || !NativeHookCompat::Valid(lease.Get()) ||
+       !lease->registerAutomap(Context,&OnForeignAutomapUnit,nullptr))return false;
+    ForeignAutomapCompatLease=std::move(lease);
+    ForeignAutomapCompatAttached=true;
+    char msg[220]{};
+    std::snprintf(msg,sizeof(msg),
+        "LOOT_NATIVE_HOOK_COMPAT_CHAINED entry=automap host=%s mode=leased-observer",owner.data());
+    LogInfo(msg);
+    return true;
+}
+bool TryAttachForeignDropAudio(const void* expected,std::uint32_t bytes) noexcept {
+    std::array<char,64> owner{};
+    if(!DiagnoseTrackedTooltipOwner(NativeHookCompat::DropAudioRva,expected,bytes,owner))return false;
+    const auto* broker=ResolvePluginCommunication();
+    if(!broker)return false;
+    D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> lease{};
+    if(D2RL::PluginCommunication::Acquire(Context,broker,owner.data(),
+            NativeHookCompat::ServiceName,NativeHookCompat::ServiceVersion,
+            sizeof(NativeHookCompat::Service),&lease)!=D2RL::PluginCommunication::Result::Success ||
+       !lease || !NativeHookCompat::Valid(lease.Get()) ||
+       !lease->registerDrop(Context,&OnForeignDropSound,nullptr))return false;
+    ForeignDropCompatLease=std::move(lease);
+    ForeignDropCompatAttached=true;
+    char msg[220]{};
+    std::snprintf(msg,sizeof(msg),
+        "LOOT_NATIVE_HOOK_COMPAT_CHAINED entry=drop-audio host=%s mode=leased-replacer",owner.data());
+    LogInfo(msg);
+    return true;
+}
+void DetachForeignNativeHookCompat() noexcept {
+    if(ForeignDropCompatAttached && ForeignDropCompatLease)
+        (void)ForeignDropCompatLease->unregisterDrop(Context,&OnForeignDropSound,nullptr);
+    ForeignDropCompatAttached=false;
+    (void)ForeignDropCompatLease.Reset();
+    if(ForeignAutomapCompatAttached && ForeignAutomapCompatLease)
+        (void)ForeignAutomapCompatLease->unregisterAutomap(Context,&OnForeignAutomapUnit,nullptr);
+    ForeignAutomapCompatAttached=false;
+    (void)ForeignAutomapCompatLease.Reset();
+}
 void __cdecl OnCompatibleInWorldLabel(
     const InWorldCompat::Event* event, void*) noexcept {
     if (!event || event->structSize < sizeof(InWorldCompat::Event)
@@ -5297,6 +5345,16 @@ bool TryReplaceNativeDropSound(void* unit,const NativeDropSound::Snapshot& snaps
     return result!=nullptr;
 }
 
+bool __cdecl OnForeignDropSound(void* unit,void*) noexcept {
+    // Borrowed unit from the exact, diagnosed host's native drop callback.
+    // Repeat item identity and ground-mode checks before overriding its audio.
+    NativeDropSound::Snapshot first{},second{};
+    if(!unit || !SoundMemoryRead(reinterpret_cast<std::uintptr_t>(unit),&first,sizeof(first)) ||
+       !SoundMemoryRead(reinterpret_cast<std::uintptr_t>(unit),&second,sizeof(second)) ||
+       !NativeDropSound::Eligible(0x1C36A0,first,second))return false;
+    return TryReplaceNativeDropSound(unit,second);
+}
+
 using NativeDropPlayerFn=void (__fastcall*)(void*) noexcept;
 NativeDropPlayerFn OriginalNativeDropPlayer{};
 std::atomic_bool NativeDropSoundHookInstalled{};
@@ -5317,12 +5375,19 @@ void __fastcall HookNativeDropPlayer(void* unit) noexcept {
 }
 
 bool ArmNativeDropSoundHook() noexcept {
-    if (NativeDropSoundHookInstalled.load(std::memory_order_acquire))return OriginalNativeDropPlayer!=nullptr;
+    if (NativeDropSoundHookInstalled.load(std::memory_order_acquire))
+        return OriginalNativeDropPlayer!=nullptr || ForeignDropCompatAttached;
     const auto* build=Context?ResolveBuildName(Context):nullptr;
-    if (!Context || !IsSupportedBuild(build) || !Base || !ImageSize ||
-        !NativeDropSound::Verify([](std::uintptr_t rva,void* out,std::size_t bytes) noexcept {return ReadSafe(rva,out,bytes);}) ||
-        !Context->CheckExpectedBytes(NativeDropSound::Rva,NativeDropSound::Witness0,20)) {
-        LogWarn("LOOT_SOUND_DROP_HOOK_REFUSED native-body-or-callsite-mismatch no-label-fallback=1 native-audio-preserved=1");
+    if(!Context || !IsSupportedBuild(build) || !Base || !ImageSize)return false;
+    const bool nativeVerified=NativeDropSound::Verify(
+        [](std::uintptr_t rva,void* out,std::size_t bytes) noexcept {return ReadSafe(rva,out,bytes);});
+    if(!nativeVerified || !Context->CheckExpectedBytes(
+            NativeDropSound::Rva,NativeDropSound::Witness0,20)) {
+        if(TryAttachForeignDropAudio(NativeDropSound::Witness0,20)) {
+            NativeDropSoundHookInstalled.store(true,std::memory_order_release);
+            return true;
+        }
+        LogWarn("LOOT_SOUND_DROP_HOOK_REFUSED native-body-or-cooperative-owner-mismatch native-audio-preserved=1");
         return false;
     }
     if (!Context->InstallInlineHook(NativeDropSound::Rva,NativeDropSound::Witness0,20,
@@ -6388,6 +6453,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 }
 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
+    DetachForeignNativeHookCompat();
     MapsSocket::Shutdown();
     RuntimeWorkerStop();
     FirstFilterActivationPending.store(false,std::memory_order_release);
