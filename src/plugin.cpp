@@ -1453,35 +1453,61 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
             return false;
         }
         struct Probe{std::uint32_t code, index; const void* row;};
-        constexpr std::array<std::uint32_t,5> anchors{
-            D2RL::Items::MakeItemCode("cap"),
+        // Base-tier diversity is essential: a Normal weapon has both
+        // code == normcode, while Exceptional/Elite weapons distinguish them.
+        // Hand Axe -> Hatchet -> Tomahawk: hax / 9ha / 7ha.
+        // All three are mandatory witnesses; the other code families check
+        // that the field is not weapon-specific.
+        constexpr std::array<std::uint32_t,7> anchors{
             D2RL::Items::MakeItemCode("hax"),
+            D2RL::Items::MakeItemCode("9ha"),
+            D2RL::Items::MakeItemCode("7ha"),
+            D2RL::Items::MakeItemCode("cap"),
             D2RL::Items::MakeItemCode("rin"),
             D2RL::Items::MakeItemCode("amu"),
             D2RL::Items::MakeItemCode("r01")
         };
         std::array<Probe,anchors.size()> probes{};
         unsigned count=0;
-        for(const auto code:anchors) {
+        for(unsigned probeIndex=0;probeIndex<anchors.size();++probeIndex) {
+            const auto code=anchors[probeIndex];
             RowView row{.structSize=RowViewSize,.bank=Bank::Rotw};
-            if(service->findRowByCode(context,Bank::Rotw,TableId::Items,code,&row)
-               !=Result::Success) continue;
+            const auto result=service->findRowByCode(
+                context,Bank::Rotw,TableId::Items,code,&row);
+            if(result!=Result::Success) {
+                // Do not quietly fall back to Normal-only witnesses.
+                if(probeIndex<3U) {
+                    char message[208]{};
+                    std::snprintf(message,sizeof(message),
+                        "LOOT_ITEM_CODES_REFUSED reason=required-tier-anchor-missing code=0x%08X sdkResult=%u",
+                        code,static_cast<unsigned>(result));
+                    LogWarn(message);
+                    PublishedItemCodes.store({},std::memory_order_release);
+                    return false;
+                }
+                continue;
+            }
             if(row.tableId!=TableId::Items || row.bank!=Bank::Rotw ||
                row.revision!=view.revision || row.rowSize!=view.rowSize ||
                row.rowIndex>=view.rowCount || !row.row) {
-                LogWarn("LOOT_ITEM_CODES_REFUSED reason=anchor-row-metadata-mismatch");
+                char message[230]{};
+                std::snprintf(message,sizeof(message),
+                    "LOOT_ITEM_CODES_REFUSED reason=anchor-row-metadata-mismatch code=0x%08X rowIndex=%u rowSize=%u tableRowSize=%u",
+                    code,row.rowIndex,row.rowSize,view.rowSize);
+                LogWarn(message);
                 PublishedItemCodes.store({},std::memory_order_release);
                 return false;
             }
             probes[count++]={code,row.rowIndex,row.row};
         }
-        if(count<4) {
-            LogWarn("LOOT_ITEM_CODES_REFUSED reason=fewer-than-four-SDK-code-probes");
+        if(count<5) {
+            LogWarn("LOOT_ITEM_CODES_REFUSED reason=fewer-than-five-SDK-code-probes");
             PublishedItemCodes.store({},std::memory_order_release);
             return false;
         }
         std::uint32_t foundOffset=0;
         unsigned candidates=0;
+        std::array<std::uint32_t,6> candidateOffsets{};
         for(std::uint32_t offset=0;offset<=view.rowSize-4;++offset) {
             bool all=true;
             for(unsigned i=0;i<count;++i) {
@@ -1491,10 +1517,20 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
                     all=false;break;
                 }
             }
-            if(all){foundOffset=offset;++candidates;}
+            if(all) {
+                if(candidates<candidateOffsets.size())
+                    candidateOffsets[candidates]=offset;
+                foundOffset=offset;
+                ++candidates;
+            }
         }
         if(candidates!=1) {
-            LogWarn("LOOT_ITEM_CODES_REFUSED reason=code-offset-not-uniquely-qualified");
+            char message[300]{};
+            std::snprintf(message,sizeof(message),
+                "LOOT_ITEM_CODES_REFUSED reason=code-offset-not-uniquely-qualified candidates=%u anchors=%u rowSize=%u rowCount=%u offsets=0x%X,0x%X,0x%X",
+                candidates,count,view.rowSize,view.rowCount,
+                candidateOffsets[0],candidateOffsets[1],candidateOffsets[2]);
+            LogWarn(message);
             PublishedItemCodes.store({},std::memory_order_release);
             return false;
         }
@@ -1509,7 +1545,11 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
                 raw+static_cast<std::size_t>(index)*view.rowSize,
                 view.rowSize,foundOffset);
             if(!code) {
-                LogWarn("LOOT_ITEM_CODES_REFUSED reason=compiled-row-has-invalid-code");
+                char message[180]{};
+                std::snprintf(message,sizeof(message),
+                    "LOOT_ITEM_CODES_REFUSED reason=compiled-row-has-invalid-code rowIndex=%u codeOffset=0x%X",
+                    index,foundOffset);
+                LogWarn(message);
                 PublishedItemCodes.store({},std::memory_order_release);
                 return false;
             }
@@ -1519,7 +1559,11 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
                verified.tableId!=TableId::Items || verified.bank!=Bank::Rotw ||
                verified.rowIndex!=index || verified.revision!=view.revision ||
                verified.rowSize!=view.rowSize) {
-                LogWarn("LOOT_ITEM_CODES_REFUSED reason=compiled-row-code-index-mismatch");
+                char message[220]{};
+                std::snprintf(message,sizeof(message),
+                    "LOOT_ITEM_CODES_REFUSED reason=compiled-row-code-index-mismatch rowIndex=%u code=0x%08X sdkRowIndex=%u",
+                    index,code,verified.rowIndex);
+                LogWarn(message);
                 PublishedItemCodes.store({},std::memory_order_release);
                 return false;
             }
