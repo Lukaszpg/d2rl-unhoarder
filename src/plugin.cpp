@@ -1441,7 +1441,7 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
     try {
         using namespace D2RL::DataTables;
         const auto* service=ItemCodeDataTables;
-        TableView view{.structSize=TableViewSize};
+        TableView view{.structSize=TableViewSize,.bank=Bank::Rotw};
         if(service->getTable(context,Bank::Rotw,TableId::Items,&view)!=Result::Success ||
            view.tableId!=TableId::Items || view.bank!=Bank::Rotw ||
            !view.rows || !view.revision ||
@@ -1463,7 +1463,7 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
         std::array<Probe,anchors.size()> probes{};
         unsigned count=0;
         for(const auto code:anchors) {
-            RowView row{.structSize=RowViewSize};
+            RowView row{.structSize=RowViewSize,.bank=Bank::Rotw};
             if(service->findRowByCode(context,Bank::Rotw,TableId::Items,code,&row)
                !=Result::Success) continue;
             if(row.tableId!=TableId::Items || row.bank!=Bank::Rotw ||
@@ -1513,7 +1513,7 @@ bool RebuildItemCodeTable(const D2RL::PluginContext* context,
                 PublishedItemCodes.store({},std::memory_order_release);
                 return false;
             }
-            RowView verified{.structSize=RowViewSize};
+            RowView verified{.structSize=RowViewSize,.bank=Bank::Rotw};
             if(service->findRowByCode(context,Bank::Rotw,TableId::Items,
                 ItemCodeTable::PadForSdk(code),&verified)!=Result::Success ||
                verified.tableId!=TableId::Items || verified.bank!=Bank::Rotw ||
@@ -3844,7 +3844,7 @@ struct GroundFormatterCapture final {
            !ItemCodeTableReady() ||
            !HideGroundArmed.load(std::memory_order_acquire) ||
            ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
-           !ItemCodeTableReady() || CanonicalItemCode(LookupItemCode(header[1]))!=code)
+           CanonicalItemCode(LookupItemCode(header[1]))!=code)
             return;
         scope->header=header;scope->rules=rules;scope->item=observed;scope->available=true;
         Perf::Counters[Perf::FormatterObservation].Record(0,1);
@@ -4340,7 +4340,9 @@ UnhoarderVisibility::Decision __cdecl QueryGroundVisibility(
        copied!=sizeof(before) || before[0]!=4 || before[2]!=guid || before[3]!=3)
         return D::Unknown;
     auto* mutableUnit=const_cast<void*>(unit);
-    if(CanonicalItemCode(LookupItemCode(before[1]))!=code) return D::Unknown;
+    const auto codesAtStart=PublishedItemCodes.load(std::memory_order_acquire);
+    if(!codesAtStart || ItemCodeTable::Lookup(*codesAtStart,before[1])!=code)
+        return D::Unknown;
     GroundFormatterCapture presentation(unit,guid,code,rules);
     const auto item=GroundRuleItem(code,mutableUnit,rules.get(),guid);
     GroundRuleDecision decision{};
@@ -4348,6 +4350,7 @@ UnhoarderVisibility::Decision __cdecl QueryGroundVisibility(
     if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
        copied!=sizeof(after) || before!=after ||
        rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
+       codesAtStart!=PublishedItemCodes.load(std::memory_order_acquire) ||
        !HideGroundArmed.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
         return D::Unknown;
@@ -4372,14 +4375,14 @@ UnhoarderLabelVisibility::Decision __cdecl QueryLabelCannotHide(
     std::array<std::uint32_t,4> before{},after{};SIZE_T copied{};
     if(!ReadProcessMemory(GetCurrentProcess(),unit,before.data(),sizeof(before),&copied) ||
        copied!=sizeof(before) || before[0]!=4 || before[2]!=guid || before[3]!=3)return D::RequireQuery;
-    auto* mutableUnit=const_cast<void*>(unit);
-    const auto code=CanonicalItemCode(LookupItemCode(before[1]));
+    const auto codesAtStart=PublishedItemCodes.load(std::memory_order_acquire);
+    const auto code=codesAtStart ? ItemCodeTable::Lookup(*codesAtStart,before[1]) : 0U;
     if(!PrintableItemCode(code))return D::RequireQuery;
     RuleEngine::Item item{};item.code=code;item.classIdKnown=true;item.classId=before[1];
     if(UnHoarder::GroundActionDemand::HidePossible(rules->rules,item))return D::RequireQuery;
     // The borrowed item's identity and code, the rule snapshot and presentation
     // arming are checked again before the caller may skip any work.
-    if(CanonicalItemCode(LookupItemCode(before[1]))!=code ||
+    if(codesAtStart!=PublishedItemCodes.load(std::memory_order_acquire) ||
        !ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
        copied!=sizeof(after) || before!=after ||
        rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
@@ -4595,8 +4598,13 @@ void __cdecl OnCompatibleInWorldLabel(
         || event->unitType != 4 || !event->nativeUnit || !event->source
         || !event->sourceLength || event->sourceLength > 255U
         || !ItemCodeTableReady()) return;
-    const auto code=CanonicalItemCode(
-        LookupItemCode(event->classId));
+    std::array<std::uint32_t,4> header{};
+    SIZE_T copied{};
+    if(!ReadProcessMemory(GetCurrentProcess(),event->nativeUnit,
+            header.data(),sizeof(header),&copied) || copied!=sizeof(header) ||
+       header[0]!=4 || header[1]!=event->classId || header[2]!=event->unitId)
+        return;
+    const auto code=CanonicalItemCode(LookupItemCode(event->classId));
     if (!PrintableItemCode(code)) return;
     ObserveNativeRowLiveLabel(event->unitType,event->classId,event->unitId,code,
         event->nativeUnit,event->source,event->sourceLength);
@@ -4614,8 +4622,13 @@ bool __cdecl OnCompatibleInWorldStyle(
         return false;
     const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
     if (!snapshot) return false;
-    const auto code=CanonicalItemCode(
-        LookupItemCode(event->classId));
+    std::array<std::uint32_t,4> header{};
+    SIZE_T copied{};
+    if(!ReadProcessMemory(GetCurrentProcess(),event->nativeUnit,
+            header.data(),sizeof(header),&copied) || copied!=sizeof(header) ||
+       header[0]!=4 || header[1]!=event->classId || header[2]!=event->unitId)
+        return false;
+    const auto code=CanonicalItemCode(LookupItemCode(event->classId));
     if (!PrintableItemCode(code)) return false;
     const auto observed=GroundRuleItem(code,event->nativeUnit,snapshot.get(),
         event->unitId,GroundPropertyLive::Purpose::VerifiedLabel);
@@ -5470,7 +5483,8 @@ bool TryReplaceNativeDropSound(void* unit,const NativeDropSound::Snapshot& snaps
     const auto base=SoundLoaderBase.load(std::memory_order_acquire);
     const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!base || !rules || !rules->soundRules)return false;
-    const auto code=CanonicalItemCode(LookupItemCode(header[1]));
+    const auto code=CanonicalItemCode(LookupItemCode(snapshot.classId));
+    if(!PrintableItemCode(code))return false;
     const auto item=GroundRuleItem(code,unit,rules.get(),snapshot.id,
         GroundPropertyLive::Purpose::VerifiedLabel);
     GroundRuleDecision selected{};
@@ -6228,9 +6242,7 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     if(!PickupGuard::GroundMode(header[3]))
         return PickupGuard::Decision::NotGround;
 
-    NativePickupGuardInside=true;
     const auto code=CanonicalItemCode(LookupItemCode(header[1]));
-    NativePickupGuardInside=false;
     if(!PrintableItemCode(code))
         return PickupGuard::Decision::InvalidCode;
 
@@ -6243,7 +6255,8 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     // Code/property reads must not turn a recycled or moving unit into proof.
     std::array<std::uint32_t,4> after{};copied=0;
     if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
-       copied!=sizeof(after) || after!=header)
+       copied!=sizeof(after) || after!=header ||
+       !ItemCodeTableReady() || LookupItemCode(after[1])!=code)
         return PickupGuard::Decision::InvalidUnit;
     if(KeyboardAltHeld()) return PickupGuard::Decision::AltOverride;
     if(!KeyboardPickupMode()) return PickupGuard::Decision::NonKeyboardInput;
