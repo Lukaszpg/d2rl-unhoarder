@@ -4,6 +4,9 @@
 #include <cstdio>
 int main() {
     using namespace UnHoarder::NativeDropSound;
+    assert(IsBundledFilterSound("Filter01") && IsBundledFilterSound("Filter16"));
+    for(const auto* name:{"Filter00","Filter17","Filter99","Filter1X","Other001","Filter001"})
+        assert(!IsBundledFilterSound(name));
     Snapshot item{4,520,137,5};int nativeCalls{},customCalls{},reads{},unit{};
     bool selected=true,accepted=true,readable=true;
     auto original=[&](void* p){assert(p==&unit);++nativeCalls;};

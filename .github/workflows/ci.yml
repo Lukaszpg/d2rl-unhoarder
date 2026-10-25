@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/**', 'fix/**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 

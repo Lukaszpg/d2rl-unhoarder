@@ -1434,13 +1434,17 @@ void ObserveAutomapGroundUnit(const void* unit) noexcept {
 
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     const auto negSlot=(static_cast<std::size_t>(unitId)*2654435761ULL)%AutomapNegativeCacheCapacity;
-    const auto& neg=AutomapNegativeCache[negSlot];
-    if(neg.unitId==unitId && neg.code==code &&
-       neg.generation==snapshot->generation &&
-       now>=neg.observedTick &&
-       now-neg.observedTick<=MinimapProjectionItemFreshMilliseconds) {
-        return;
+    // Cache is advisory. Never race a lifecycle reset on its shared storage.
+    bool cachedNegative=false;
+    if(MinimapProjectionItemMutex.try_lock()) {
+        const auto& neg=AutomapNegativeCache[negSlot];
+        cachedNegative=neg.unitId==unitId && neg.code==code &&
+            neg.generation==snapshot->generation &&
+            now>=neg.observedTick &&
+            now-neg.observedTick<=MinimapProjectionItemFreshMilliseconds;
+        MinimapProjectionItemMutex.unlock();
     }
+    if(cachedNegative) return;
 
     const auto ruleItem=GroundRuleItem(code,unit,snapshot.get(),unitId,
         GroundPropertyLive::Purpose::VerifiedLabel,true);
@@ -1452,7 +1456,11 @@ void ObserveAutomapGroundUnit(const void* unit) noexcept {
         UpdateMinimapProjectionIconRule(unitId,code,rule,snapshot->generation);
     } else {
         UpdateMinimapProjectionIconRule(unitId,code,nullptr,snapshot->generation);
-        AutomapNegativeCache[negSlot]={unitId,code,snapshot->generation,now};
+        // Contention skips a performance hint rather than stalling rendering.
+        if(MinimapProjectionItemMutex.try_lock()) {
+            AutomapNegativeCache[negSlot]={unitId,code,snapshot->generation,now};
+            MinimapProjectionItemMutex.unlock();
+        }
     }
 }
 
@@ -3295,21 +3303,24 @@ bool ReloadFilterRules() {
                     LogWarn(message);return false;
                 }
                 bool soundAssetAvailable=true;
-                if (sound.size()==8 && sound.starts_with("Filter")) {
+                if (NativeDropSound::IsBundledFilterSound(sound)) {
                     const auto soundExcel = itemTypes.loaded ? itemTypes.excel
                         : (baseNames.loaded ? baseNames.excel : BaseNameTable::DiscoverExcel(FilterConfigPath));
+                    // An undiscoverable asset cannot authorize native sound
+                    // suppression. MPQ-only installations fail safe to vanilla.
+                    soundAssetAvailable=false;
                     if (!soundExcel.empty()) {
                         std::error_code sfxEc;
                         const auto flacPath = soundExcel.parent_path().parent_path() /
                             L"hd" / L"global" / L"sfx" / L"item" / (sound + ".flac");
-                        if (!std::filesystem::is_regular_file(flacPath, sfxEc) || sfxEc) {
-                            soundAssetAvailable=false;
-                            char message[280]{};
-                            std::snprintf(message,sizeof(message),
-                                "LOOT_SOUND_ASSET_MISSING entry=%zu name='%s' reason=missing-flac-in-mod-data fallback=native-drop-sound",
-                                line,sound.c_str());
-                            LogWarn(message);
-                        }
+                        soundAssetAvailable=std::filesystem::is_regular_file(flacPath,sfxEc) && !sfxEc;
+                    }
+                    if (!soundAssetAvailable) {
+                        char message[280]{};
+                        std::snprintf(message,sizeof(message),
+                            "LOOT_SOUND_ASSET_MISSING entry=%zu name='%s' reason=missing-or-unresolved-flac fallback=native-drop-sound",
+                            line,sound.c_str());
+                        LogWarn(message);
                     }
                 }
                 if (soundAssetAvailable) {

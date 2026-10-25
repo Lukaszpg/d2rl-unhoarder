@@ -2,8 +2,15 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <string_view>
 namespace UnHoarder::NativeDropSound {
 inline constexpr std::uintptr_t Rva=0x1c8130;
+inline bool IsBundledFilterSound(std::string_view name) noexcept {
+    if(name.size()!=8 || name.substr(0,6)!="Filter" ||
+       name[6]<'0' || name[6]>'9' || name[7]<'0' || name[7]>'9') return false;
+    const unsigned number=(name[6]-'0')*10U+(name[7]-'0');
+    return number>=1 && number<=16;
+}
 struct Snapshot {std::uint32_t type{},classId{},id{},mode{};};
 inline bool Eligible(std::uintptr_t caller,const Snapshot& before,const Snapshot& after) noexcept {
     return (caller==0x1c36a0 || caller==0x1c6c9e) && before.type==4 &&
