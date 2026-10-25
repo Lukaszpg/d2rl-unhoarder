@@ -2,6 +2,8 @@
 #include <D2RLPlugin/item.h>
 #include <D2RLPlugin/inventory.h>
 #include <D2RLPlugin/lifecycle_events.h>
+#include <D2RLPlugin/data_tables.h>
+#include "item_code_table.hpp"
 #include "ground_quantity_label.hpp"
 #include "ground_label_background.hpp"
 #include "native_drop_sound.hpp"
@@ -196,13 +198,6 @@ constexpr std::uint32_t CanonicalItemCode(std::uint32_t raw) noexcept {
     return raw;
 }
 
-constexpr std::uintptr_t GetItemCodeRva = 0x36EF50;
-constexpr std::array<std::uint8_t, 32> ExpectedGetItemCode{
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x57, 0x48, 0x83,
-    0xEC, 0x20, 0x48, 0x8B, 0xF9, 0x48, 0x85, 0xC9,
-    0x75, 0x13, 0x88, 0x4C, 0x24, 0x30, 0x48, 0x8D,
-    0x4C, 0x24, 0x30, 0xE8, 0x80, 0x83, 0xFF, 0xFF,
-};
 constexpr std::size_t CandidateTextMaximum = 96;
 constexpr std::uintptr_t LabelFormatterRva = 0x1FA9F0;
 // _ReturnAddress() points AFTER the 5-byte CALL, not at the CALL opcode.
@@ -237,7 +232,6 @@ constexpr std::size_t InnerNameBufferBytes = 0x80; // observed r8d=0x80
 constexpr std::size_t InnerNamePrefixBytes = 4; // text at record+0x28
 enum class GeometryMode : std::uint32_t { Off, Rules };
 
-using GetItemCodeFn = std::uint32_t(__fastcall*)(void*) noexcept;
 using LabelFormatterFn = std::uint8_t(__fastcall*)(
     void*, void*, void*, std::uint32_t, std::uint64_t, std::uint64_t) noexcept;
 LabelFormatterFn OriginalLabelFormatter{};
@@ -245,8 +239,17 @@ std::atomic_bool FormatterHookInstalled{};
 const D2RL::PluginContext* Context{};
 std::uintptr_t Base{};
 std::uint32_t ImageSize{};
-GetItemCodeFn NativeGetItemCode{};
-std::atomic_bool ItemCodeReaderReady{};
+std::atomic<std::shared_ptr<const ItemCodeTable::Snapshot>> PublishedItemCodes{};
+const D2RL::DataTableService* ItemCodeDataTables{};
+const D2RL::LifecycleService* ItemCodeLifecycle{};
+D2RL::Lifecycle::ListenerHandle ItemCodeTablesListener{D2RL::Lifecycle::InvalidHandle};
+inline bool ItemCodeTableReady() noexcept {
+    return PublishedItemCodes.load(std::memory_order_acquire)!=nullptr;
+}
+inline std::uint32_t LookupItemCode(std::uint32_t classId) noexcept {
+    const auto snapshot=PublishedItemCodes.load(std::memory_order_acquire);
+    return snapshot?ItemCodeTable::Lookup(*snapshot,classId):0;
+}
 using InnerNameWriterFn = std::uint64_t(__fastcall*)(
     void*, void*, std::uint32_t, void*) noexcept;
 InnerNameWriterFn OriginalInnerNameWriter{};
@@ -1426,14 +1429,161 @@ std::atomic<const InWorldCompat::Service*> InWorldCompatService{};
 bool InWorldCompatObserverAttached{};
 bool InWorldCompatTransformerAttached{};
 
+
+bool ActivateConfiguredFilter(bool automatic) noexcept;
+
+// Build once on the authoritative game callback, never in a render/audio path.
+// Exact compiled row byte layout is derived by independent SDK code probes.
+// The full mapping is then cross-checked against SDK findRowByCode.
+bool RebuildItemCodeTable(const D2RL::PluginContext* context,
+    std::uint64_t requiredRevision=0) noexcept {
+    if(!context || !ItemCodeDataTables) return false;
+    try {
+        using namespace D2RL::DataTables;
+        const auto* service=ItemCodeDataTables;
+        TableView view{.structSize=TableViewSize};
+        if(service->getTable(context,Bank::Rotw,TableId::Items,&view)!=Result::Success ||
+           view.tableId!=TableId::Items || view.bank!=Bank::Rotw ||
+           !view.rows || !view.revision ||
+           (requiredRevision && view.revision!=requiredRevision) ||
+           view.rowCount<100 || view.rowCount>8192 ||
+           view.rowSize<32 || view.rowSize>8192) {
+            LogWarn("LOOT_ITEM_CODES_REFUSED reason=compiled-Items-table-unavailable-or-invalid");
+            PublishedItemCodes.store({},std::memory_order_release);
+            return false;
+        }
+        struct Probe{std::uint32_t code, index; const void* row;};
+        constexpr std::array<std::uint32_t,5> anchors{
+            D2RL::Items::MakeItemCode("cap"),
+            D2RL::Items::MakeItemCode("hax"),
+            D2RL::Items::MakeItemCode("rin"),
+            D2RL::Items::MakeItemCode("amu"),
+            D2RL::Items::MakeItemCode("r01")
+        };
+        std::array<Probe,anchors.size()> probes{};
+        unsigned count=0;
+        for(const auto code:anchors) {
+            RowView row{.structSize=RowViewSize};
+            if(service->findRowByCode(context,Bank::Rotw,TableId::Items,code,&row)
+               !=Result::Success) continue;
+            if(row.tableId!=TableId::Items || row.bank!=Bank::Rotw ||
+               row.revision!=view.revision || row.rowSize!=view.rowSize ||
+               row.rowIndex>=view.rowCount || !row.row) {
+                LogWarn("LOOT_ITEM_CODES_REFUSED reason=anchor-row-metadata-mismatch");
+                PublishedItemCodes.store({},std::memory_order_release);
+                return false;
+            }
+            probes[count++]={code,row.rowIndex,row.row};
+        }
+        if(count<4) {
+            LogWarn("LOOT_ITEM_CODES_REFUSED reason=fewer-than-four-SDK-code-probes");
+            PublishedItemCodes.store({},std::memory_order_release);
+            return false;
+        }
+        std::uint32_t foundOffset=0;
+        unsigned candidates=0;
+        for(std::uint32_t offset=0;offset<=view.rowSize-4;++offset) {
+            bool all=true;
+            for(unsigned i=0;i<count;++i) {
+                const auto actual=ItemCodeTable::FromCompiledRow(
+                    probes[i].row,view.rowSize,offset);
+                if(actual!=ItemCodeTable::Canonical(probes[i].code)){
+                    all=false;break;
+                }
+            }
+            if(all){foundOffset=offset;++candidates;}
+        }
+        if(candidates!=1) {
+            LogWarn("LOOT_ITEM_CODES_REFUSED reason=code-offset-not-uniquely-qualified");
+            PublishedItemCodes.store({},std::memory_order_release);
+            return false;
+        }
+        auto built=std::make_shared<ItemCodeTable::Snapshot>();
+        built->codes.resize(view.rowCount);
+        built->revision=view.revision;
+        built->rowSize=view.rowSize;
+        built->codeOffset=foundOffset;
+        const auto* raw=static_cast<const unsigned char*>(view.rows);
+        for(std::uint32_t index=0;index<view.rowCount;++index) {
+            const auto code=ItemCodeTable::FromCompiledRow(
+                raw+static_cast<std::size_t>(index)*view.rowSize,
+                view.rowSize,foundOffset);
+            if(!code) {
+                LogWarn("LOOT_ITEM_CODES_REFUSED reason=compiled-row-has-invalid-code");
+                PublishedItemCodes.store({},std::memory_order_release);
+                return false;
+            }
+            RowView verified{.structSize=RowViewSize};
+            if(service->findRowByCode(context,Bank::Rotw,TableId::Items,
+                ItemCodeTable::PadForSdk(code),&verified)!=Result::Success ||
+               verified.tableId!=TableId::Items || verified.bank!=Bank::Rotw ||
+               verified.rowIndex!=index || verified.revision!=view.revision ||
+               verified.rowSize!=view.rowSize) {
+                LogWarn("LOOT_ITEM_CODES_REFUSED reason=compiled-row-code-index-mismatch");
+                PublishedItemCodes.store({},std::memory_order_release);
+                return false;
+            }
+            built->codes[index]=code;
+        }
+        // Publish only after every record, bank and revision is validated.
+        PublishedItemCodes.store(std::move(built),std::memory_order_release);
+        char msg[260]{};
+        std::snprintf(msg,sizeof(msg),
+            "LOOT_ITEM_CODES_READY source=SDK-compiled-Items bank=Rotw revision=%llu rows=%u rowSize=%u codeOffset=0x%X native-getitemcode-calls=0 itemcode-hooks=0",
+            static_cast<unsigned long long>(view.revision),view.rowCount,
+            view.rowSize,foundOffset);
+        LogInfo(msg);
+        return true;
+    } catch(const std::exception&) {
+        PublishedItemCodes.store({},std::memory_order_release);
+        LogWarn("LOOT_ITEM_CODES_REFUSED reason=memory-or-SDK-snapshot-exception");
+        return false;
+    }
+}
+void __cdecl OnItemCodeTablesLoaded(
+    const D2RL::PluginContext* context,
+    const D2RL::Lifecycle::DataTablesLoadedEvent* event,void*) noexcept {
+    // Old snapshot cannot authorize codes from a newly compiled table.
+    PublishedItemCodes.store({},std::memory_order_release);
+    if(!D2RL::Lifecycle::HasDataTablesLoadedEventField(
+        event,D2RL::Lifecycle::DataTablesLoadedEventRequiredSize)) return;
+    if(RebuildItemCodeTable(context,event->revision) &&
+       PublishedFilterRules.load(std::memory_order_acquire))
+        (void)ActivateConfiguredFilter(true);
+}
+void RegisterItemCodeTableLifecycle() noexcept {
+    if(!Context) return;
+    const D2RL::DataTableService* tables{};
+    const D2RL::LifecycleService* lifecycle{};
+    if(Context->QueryService(&tables)!=D2RL::ServiceQueryResult::Success ||
+       !D2RL::HasDataTableServiceField(tables,D2RL::DataTableServiceRequiredSize) ||
+       !tables->getTable || !tables->findRowByCode ||
+       Context->QueryService(&lifecycle)!=D2RL::ServiceQueryResult::Success ||
+       !D2RL::HasLifecycleServiceField(lifecycle,D2RL::LifecycleServiceRequiredSize) ||
+       !lifecycle->registerDataTablesLoadedListener) {
+        LogWarn("LOOT_ITEM_CODES_REFUSED reason=SDK-data-tables-or-lifecycle-unavailable");
+        return;
+    }
+    const D2RL::Lifecycle::DataTablesLoadedListener listener{
+        D2RL::Lifecycle::DataTablesLoadedListenerSize,0,
+        &OnItemCodeTablesLoaded,nullptr
+    };
+    if(lifecycle->registerDataTablesLoadedListener(
+        Context,&listener,&ItemCodeTablesListener)!=D2RL::Lifecycle::Result::Success ||
+       ItemCodeTablesListener==D2RL::Lifecycle::InvalidHandle) {
+        LogWarn("LOOT_ITEM_CODES_REFUSED reason=table-listener-registration-failed");
+        return;
+    }
+    ItemCodeDataTables=tables;
+    ItemCodeLifecycle=lifecycle;
+}
 const D2RL::LifecycleService* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 
 void ObserveAutomapGroundUnit(const void* unit) noexcept {
     if(!unit ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
-       !ItemCodeReaderReady.load(std::memory_order_acquire) ||
-       !NativeGetItemCode) return;
+       !ItemCodeTableReady()) return;
     const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
     if(!snapshot || snapshot->minimapIconRules==0) return;
     std::uint32_t header[4]{};
@@ -1443,7 +1593,7 @@ void ObserveAutomapGroundUnit(const void* unit) noexcept {
        (header[3]!=3 && header[3]!=5)) return;
     const auto unitId=header[2];
     const auto classId=header[1];
-    const auto code=CanonicalItemCode(NativeGetItemCode(const_cast<void*>(unit)));
+    const auto code=CanonicalItemCode(LookupItemCode(classId));
     if(!PrintableItemCode(code)) return;
 
     bool knownIcon=false;
@@ -1520,6 +1670,10 @@ void __cdecl OnInWorldGameJoined(const D2RL::PluginContext*,
     if (!event || event->kind != D2RL::Lifecycle::GameplayEventKind::GameJoined)
         return;
     ResetMinimapTracking();
+    if(ItemCodeDataTables && RebuildItemCodeTable(Context) &&
+       PublishedFilterRules.load(std::memory_order_acquire) &&
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
+        (void)ActivateConfiguredFilter(true);
     if (AutomapProjectionHookInstalled.load(std::memory_order_acquire) &&
         std::string_view(MinimapOverlayRenderer::ActiveBackendName())=="none")
         (void)InitializeMinimapMarkerRenderer();
@@ -3483,7 +3637,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
     if (mode != GeometryMode::Rules ||
         returnAddress != Base + InnerNameWriterCallerRva + DirectCallBytes ||
         !unit || !output || bufferSize != InnerNameBufferBytes ||
-        !NativeGetItemCode || !ItemCodeReaderReady.load(std::memory_order_acquire))
+        !ItemCodeTableReady())
         return result;
     Perf::Scope timing(Perf::Counters[Perf::Name]);
     const auto outputAddress = reinterpret_cast<std::uintptr_t>(output);
@@ -3508,7 +3662,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
         !ControllerGroundScope.Owns(unit,output,header[2])) {
         return result;
     }
-    const auto code = CanonicalItemCode(NativeGetItemCode(unit)); // original helper trampoline
+    const auto code = CanonicalItemCode(LookupItemCode(header[1])); // SDK-derived classId lookup
     const char* configuredName = nullptr;
     std::size_t configuredBytes = 0;
     std::shared_ptr<const FilterRuleTable> snapshot;
@@ -3606,9 +3760,8 @@ void ArmInnerNameWriter() noexcept {
     if (!Context || !ResolveBuildName(Context) ||
         !IsSupportedBuild(ResolveBuildName(Context)) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
-        !OriginalLabelFormatter || !NativeGetItemCode ||
-        !ItemCodeReaderReady.load(std::memory_order_acquire)) {
-        LogWarn("LOOT_GEOMETRY_REFUSED formatter-arm and item-code hook required on build 93847");
+        !OriginalLabelFormatter || !ItemCodeTableReady()) {
+        LogWarn("LOOT_GEOMETRY_REFUSED formatter-arm and SDK-Items-index required on build 93847");
         return;
     }
     std::array<std::uint8_t,5> call{};
@@ -3688,10 +3841,10 @@ struct GroundFormatterCapture final {
            scope->epoch!=GroundFormatterEpoch.load(std::memory_order_acquire) ||
            !ReadGroundFormatterHeader(scope->unit,after) || after!=header ||
            rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
-           !ItemCodeReaderReady.load(std::memory_order_acquire) ||
+           !ItemCodeTableReady() ||
            !HideGroundArmed.load(std::memory_order_acquire) ||
            ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
-           !NativeGetItemCode || CanonicalItemCode(NativeGetItemCode(const_cast<void*>(scope->unit)))!=code)
+           !ItemCodeTableReady() || CanonicalItemCode(LookupItemCode(header[1]))!=code)
             return;
         scope->header=header;scope->rules=rules;scope->item=observed;scope->available=true;
         Perf::Counters[Perf::FormatterObservation].Record(0,1);
@@ -3710,7 +3863,7 @@ bool ConsumeGroundFormatterObservation(const void* unit,const void* record,
        scope->rules!=rules || rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
        scope->epoch!=GroundFormatterEpoch.load(std::memory_order_acquire) ||
        scope->header[2]!=id || scope->item.code!=code ||
-       !ItemCodeReaderReady.load(std::memory_order_acquire) || !HideGroundArmed.load(std::memory_order_acquire) ||
+       !ItemCodeTableReady() || !HideGroundArmed.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
        !ReadGroundFormatterHeader(unit,current) || current!=scope->header)return false;
     item=scope->item;
@@ -3722,7 +3875,7 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
                            bool paired, std::uint8_t result, bool controller=false) noexcept {
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !sourceCall || !paired || !result || !unit || !record ||
-        !NativeGetItemCode || !ItemCodeReaderReady.load(std::memory_order_acquire)) return;
+        !ItemCodeTableReady()) return;
     Perf::Scope timing(Perf::Counters[Perf::Identity]);
     std::uint32_t header[3]{},recordId{};
     SIZE_T copied{};
@@ -3742,7 +3895,7 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
         recordId!=header[2]) {
         return;
     }
-    const auto code=CanonicalItemCode(NativeGetItemCode(unit));
+    const auto code=CanonicalItemCode(LookupItemCode(header[1]));
     const auto table=PublishedFilterRules.load(std::memory_order_acquire);
     if (!table) return;
     RuleEngine::Item scalars{};
@@ -4175,8 +4328,7 @@ UnhoarderVisibility::Decision __cdecl QueryGroundVisibility(
     Perf::Scope timing(Perf::Counters[Perf::Visibility]);
     using D=UnhoarderVisibility::Decision;
     code=CanonicalItemCode(code);
-    if(!unit || !guid || !PrintableItemCode(code) || !NativeGetItemCode ||
-       !ItemCodeReaderReady.load(std::memory_order_acquire)) return D::Unknown;
+    if(!unit || !guid || !PrintableItemCode(code) || !ItemCodeTableReady()) return D::Unknown;
     if(!HideGroundArmed.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
         return D::Visible;
@@ -4188,7 +4340,7 @@ UnhoarderVisibility::Decision __cdecl QueryGroundVisibility(
        copied!=sizeof(before) || before[0]!=4 || before[2]!=guid || before[3]!=3)
         return D::Unknown;
     auto* mutableUnit=const_cast<void*>(unit);
-    if(CanonicalItemCode(NativeGetItemCode(mutableUnit))!=code) return D::Unknown;
+    if(CanonicalItemCode(LookupItemCode(before[1]))!=code) return D::Unknown;
     GroundFormatterCapture presentation(unit,guid,code,rules);
     const auto item=GroundRuleItem(code,mutableUnit,rules.get(),guid);
     GroundRuleDecision decision{};
@@ -4212,8 +4364,7 @@ UnhoarderLabelVisibility::Decision __cdecl QueryLabelCannotHide(
     const void* unit,std::uint32_t guid) noexcept {
     Perf::Scope timing(Perf::Counters[Perf::LabelPreflight]);
     using D=UnhoarderLabelVisibility::Decision;
-    if(!unit || !guid || !NativeGetItemCode ||
-       !ItemCodeReaderReady.load(std::memory_order_acquire))return D::RequireQuery;
+    if(!unit || !guid || !ItemCodeTableReady())return D::RequireQuery;
     if(!HideGroundArmed.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)return D::CannotHide;
     const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
@@ -4222,13 +4373,13 @@ UnhoarderLabelVisibility::Decision __cdecl QueryLabelCannotHide(
     if(!ReadProcessMemory(GetCurrentProcess(),unit,before.data(),sizeof(before),&copied) ||
        copied!=sizeof(before) || before[0]!=4 || before[2]!=guid || before[3]!=3)return D::RequireQuery;
     auto* mutableUnit=const_cast<void*>(unit);
-    const auto code=CanonicalItemCode(NativeGetItemCode(mutableUnit));
+    const auto code=CanonicalItemCode(LookupItemCode(before[1]));
     if(!PrintableItemCode(code))return D::RequireQuery;
     RuleEngine::Item item{};item.code=code;item.classIdKnown=true;item.classId=before[1];
     if(UnHoarder::GroundActionDemand::HidePossible(rules->rules,item))return D::RequireQuery;
     // The borrowed item's identity and code, the rule snapshot and presentation
     // arming are checked again before the caller may skip any work.
-    if(CanonicalItemCode(NativeGetItemCode(mutableUnit))!=code ||
+    if(CanonicalItemCode(LookupItemCode(before[1]))!=code ||
        !ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
        copied!=sizeof(after) || before!=after ||
        rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
@@ -4443,9 +4594,9 @@ void __cdecl OnCompatibleInWorldLabel(
     if (!event || event->structSize < sizeof(InWorldCompat::Event)
         || event->unitType != 4 || !event->nativeUnit || !event->source
         || !event->sourceLength || event->sourceLength > 255U
-        || !NativeGetItemCode) return;
+        || !ItemCodeTableReady()) return;
     const auto code=CanonicalItemCode(
-        NativeGetItemCode(const_cast<void*>(event->nativeUnit)));
+        LookupItemCode(event->classId));
     if (!PrintableItemCode(code)) return;
     ObserveNativeRowLiveLabel(event->unitType,event->classId,event->unitId,code,
         event->nativeUnit,event->source,event->sourceLength);
@@ -4458,13 +4609,13 @@ bool __cdecl OnCompatibleInWorldStyle(
         || event->unitType != 4 || !event->nativeUnit || !event->source
         || !event->sourceLength || event->sourceLength > 255U
         || !replacement || capacity == 0U
-        || !NativeGetItemCode || !ItemCodeReaderReady.load(std::memory_order_acquire)
+        || !ItemCodeTableReady()
         || ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
         return false;
     const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
     if (!snapshot) return false;
     const auto code=CanonicalItemCode(
-        NativeGetItemCode(const_cast<void*>(event->nativeUnit)));
+        LookupItemCode(event->classId));
     if (!PrintableItemCode(code)) return false;
     const auto observed=GroundRuleItem(code,event->nativeUnit,snapshot.get(),
         event->unitId,GroundPropertyLive::Purpose::VerifiedLabel);
@@ -5132,8 +5283,8 @@ void EnableAutomaticNativeHover() noexcept {
                     !rules->hiddenRules) ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !scope || !scope->getCurrentItem || !scope->isReady ||
-        !scope->isReady() || !NativeGetItemCode || !ItemCodeReaderReady.load()) {
-        LogWarn("LOOT_NATIVE_HOVER_UNAVAILABLE reason=json-or-generic-host-scope-or-native-filter-not-ready no-fallback=1");
+        !scope->isReady() || !ItemCodeTableReady()) {
+        LogWarn("LOOT_NATIVE_HOVER_UNAVAILABLE reason=json-or-generic-host-scope-or-SDK-Items-index-not-ready no-fallback=1");
         return;
     }
     if (!NativeRowAppendHookInstalled.load(std::memory_order_acquire) ||
@@ -5314,13 +5465,12 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
 }
 
 bool TryReplaceNativeDropSound(void* unit,const NativeDropSound::Snapshot& snapshot) noexcept {
-    if (!SoundArmed.load(std::memory_order_acquire) || !NativeGetItemCode ||
-        !ItemCodeReaderReady.load(std::memory_order_acquire) ||
+    if (!SoundArmed.load(std::memory_order_acquire) || !ItemCodeTableReady() ||
         ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)return false;
     const auto base=SoundLoaderBase.load(std::memory_order_acquire);
     const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
     if (!base || !rules || !rules->soundRules)return false;
-    const auto code=CanonicalItemCode(NativeGetItemCode(unit));
+    const auto code=CanonicalItemCode(LookupItemCode(header[1]));
     const auto item=GroundRuleItem(code,unit,rules.get(),snapshot.id,
         GroundPropertyLive::Purpose::VerifiedLabel);
     GroundRuleDecision selected{};
@@ -5641,9 +5791,8 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=valid-json-empty-rules");
         return false;
     }
-    if (!Context || !NativeGetItemCode ||
-        !ItemCodeReaderReady.load(std::memory_order_acquire)) {
-        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=item-code-reader-unavailable");
+    if (!Context || !ItemCodeTableReady()) {
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=SDK-Items-index-unavailable");
         return false;
     }
     if (!FormatterHookInstalled.load(std::memory_order_acquire))
@@ -5844,7 +5993,7 @@ bool QueueFirstFilterActivation(const char* trigger,
 // any validation or reactivation failure.
 bool TryLiveFilterReload(const char* trigger) noexcept {
     const auto previous=PublishedFilterRules.load(std::memory_order_acquire);
-    if(!Context || !ItemCodeReaderReady.load(std::memory_order_acquire)) {
+    if(!Context || !ItemCodeTableReady()) {
         LogWarn("LOOT_RELOAD_REFUSED reason=runtime-not-ready previous-rules-preserved=1");
         return false;
     }
@@ -6048,7 +6197,7 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
         return PickupGuard::Decision::VisibilityNotArmed;
     if(ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
         return PickupGuard::Decision::RulesModeInactive;
-    if(!ItemCodeReaderReady.load(std::memory_order_acquire) || !NativeGetItemCode)
+    if(!ItemCodeTableReady())
         return PickupGuard::Decision::CodeReaderUnavailable;
     if(!player) return PickupGuard::Decision::NullPlayer;
     if(NativePickupGuardInside) return PickupGuard::Decision::Reentrant;
@@ -6080,7 +6229,7 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
         return PickupGuard::Decision::NotGround;
 
     NativePickupGuardInside=true;
-    const auto code=CanonicalItemCode(NativeGetItemCode(unit));
+    const auto code=CanonicalItemCode(LookupItemCode(header[1]));
     NativePickupGuardInside=false;
     if(!PrintableItemCode(code))
         return PickupGuard::Decision::InvalidCode;
@@ -6429,27 +6578,20 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         context->LogWarn("LOOT_FILTER_INACTIVE unexpected build, no native hook");
         return true;
     }
-    // This entry is invoked as a native reader, not intercepted by UnHoarder.
-    // Refuse unknown builds, untracked detours and foreign-owned entry patches.
-    // The loader must not be asked to install a 0x36EF50 inline hook.
-    if (!context->CheckExpectedBytes(GetItemCodeRva, ExpectedGetItemCode.data(),
-            static_cast<std::uint32_t>(ExpectedGetItemCode.size()))) {
-        context->LogWarn("LOOT_FILTER_INACTIVE native-item-code-reader-owned-or-fingerprint-mismatch; hooks-added=0");
-        return true;
-    }
-    NativeGetItemCode = reinterpret_cast<GetItemCodeFn>(Base + GetItemCodeRva);
-    ItemCodeReaderReady.store(true, std::memory_order_release);
-    LogInfo("LOOT_ITEM_CODE_READER_READY mode=direct-verified-native-call entry=0x36EF50 hook-installed=0");
+    // No GetItemCode hook or native call. DataTablesLoaded/GameJoined build
+    // the SDK-backed immutable class ID index on the game thread.
+    PublishedItemCodes.store({},std::memory_order_release);
     PublishTooltipCompatService();
     PublishGroundVisibilityService();
     PublishNativeHookService();
     (void)InstallStandaloneAutomapProjection();
     QualifyVendorSellPrice();
-    // Reuse the qualified native filter pipeline automatically once the
-    // complete JSON ruleset is published and the item-code reader is ready.
+    // Arm immediately only if the index is already present; otherwise
+    // the SDK DataTablesLoaded or GameJoined callback activates the rules.
     if (PublishedFilterRules.load(std::memory_order_acquire))
         (void)ActivateConfiguredFilter(true);
     else LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
+    RegisterItemCodeTableLifecycle();
     RegisterInWorldLifecycle();
     StartSoundInventoryObserver();
     // Keyboard pickup uses fresh filter proof; either held ALT key overrides.
@@ -6508,11 +6650,17 @@ D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
 
     PublishedFilterRules.store(std::shared_ptr<const FilterRuleTable>{},std::memory_order_release);
     FilterConfigPath.clear();
-    ItemCodeReaderReady.store(false, std::memory_order_release);
+    PublishedItemCodes.store({},std::memory_order_release);
+    if(ItemCodeLifecycle && Context && ItemCodeTablesListener!=D2RL::Lifecycle::InvalidHandle &&
+       ItemCodeLifecycle->unregisterDataTablesLoadedListener)
+        (void)ItemCodeLifecycle->unregisterDataTablesLoadedListener(
+            Context,ItemCodeTablesListener);
+    ItemCodeTablesListener=D2RL::Lifecycle::InvalidHandle;
+    ItemCodeLifecycle=nullptr;
+    ItemCodeDataTables=nullptr;
     SharedLabelPaintCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
     GlyphRendererCompatRoute.store(TooltipCompatRoute::None,std::memory_order_release);
     QuiesceOwnedTooltipCompatSubscribers();
-    NativeGetItemCode = nullptr;
     // The loader owns detour removal. Do not null out native trampolines
     // while other thread callbacks could still be forwarding through them.
 
