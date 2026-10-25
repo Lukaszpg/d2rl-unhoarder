@@ -83,6 +83,15 @@ namespace {
 namespace NativeHookCompat=D2RLInterop::NativeItemHookCompatV1;
 NativeHookSubscribers::Registry<NativeHookCompat::DropSoundReplacementFn> NativeDropSubscribers{};
 NativeHookSubscribers::Registry<NativeHookCompat::AutomapUnitObserverFn> NativeAutomapSubscribers{};
+D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> ForeignDropCompatLease{};
+D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> ForeignAutomapCompatLease{};
+bool ForeignDropCompatAttached{};
+bool ForeignAutomapCompatAttached{};
+bool TryAttachForeignDropAudio(const void*,std::uint32_t) noexcept;
+bool TryAttachForeignAutomap(const void*,std::uint32_t) noexcept;
+bool ArmNativeDropSoundHook() noexcept;
+bool __cdecl OnForeignDropSound(void*,void*) noexcept;
+void __cdecl OnForeignAutomapUnit(void*,void*,void*) noexcept;
 
 
 // Under D2RLoader, the in-memory executable image is D2RLoader.exe (unpacked
@@ -875,15 +884,7 @@ bool IsLocalPlayerAutomapPass(void* unit) noexcept {
 
 void ObserveAutomapGroundUnit(const void* unit) noexcept;
 
-__declspec(noinline) void __fastcall HookAutomapRenderUnit(
-        void* unit,void* automapContext) noexcept {
-    const auto original=OriginalAutomapRenderUnit;
-    if(!original) return;
-    original(unit,automapContext);
-    NativeAutomapSubscribers.Dispatch([&](auto observer,void* user) noexcept {
-        observer(unit,automapContext,user);
-        return false;
-    });
+void ProcessAutomapRenderedUnit(void* unit,void* automapContext) noexcept {
     if(!AutomapProjectionArmed.load(std::memory_order_acquire) ||
        !automapContext || !unit) return;
     if(!IsLocalPlayerAutomapPass(unit)) {
@@ -946,6 +947,21 @@ __declspec(noinline) void __fastcall HookAutomapRenderUnit(
     } __except(EXCEPTION_EXECUTE_HANDLER) { MinimapOverlayRenderer::Clear(); }
 }
 
+__declspec(noinline) void __fastcall HookAutomapRenderUnit(
+        void* unit,void* automapContext) noexcept {
+    const auto original=OriginalAutomapRenderUnit;
+    if(!original)return;
+    original(unit,automapContext);
+    NativeAutomapSubscribers.Dispatch([&](auto observer,void* user) noexcept {
+        observer(unit,automapContext,user);
+        return false;
+    });
+    ProcessAutomapRenderedUnit(unit,automapContext);
+}
+void __cdecl OnForeignAutomapUnit(void* unit,void* automapContext,void*) noexcept {
+    // An exact, diagnosed owner already forwarded the native render call.
+    ProcessAutomapRenderedUnit(unit,automapContext);
+}
 bool InstallStandaloneAutomapProjection() noexcept {
     AutomapProjectionHookInstalled.store(false,std::memory_order_release);
     OriginalAutomapRenderUnit=nullptr;
@@ -956,24 +972,29 @@ bool InstallStandaloneAutomapProjection() noexcept {
         LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context hooks=0 mapSenseDependency=0");
         return false;
     }
-    if(GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")!=nullptr) {
-        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
-        return false;
-    }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
         return Context->CheckExpectedBytes(rva,expected.data(),
             static_cast<std::uint32_t>(expected.size()));
     };
     if(!check(ProjectClientToAutomapRva,ExpectedProjectClientToAutomap) ||
        !check(GetLocalDataContextRva,ExpectedGetLocalDataContext) ||
-       !check(GetLocalPlayerRva,ExpectedGetLocalPlayer) ||
-       !check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
+       !check(GetLocalPlayerRva,ExpectedGetLocalPlayer)) {
         LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=native-contract-fingerprint hooks=0");
         return false;
     }
     ProjectClientToAutomap=reinterpret_cast<ProjectClientToAutomapFn>(Base+ProjectClientToAutomapRva);
     GetLocalDataContext=reinterpret_cast<GetLocalDataContextFn>(Base+GetLocalDataContextRva);
     GetLocalPlayer=reinterpret_cast<GetLocalPlayerFn>(Base+GetLocalPlayerRva);
+    if(!check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
+        if(TryAttachForeignAutomap(ExpectedAutomapRenderUnit.data(),
+                static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()))) {
+            AutomapProjectionHookInstalled.store(true,std::memory_order_release);
+            return true;
+        }
+        ProjectClientToAutomap=nullptr;GetLocalDataContext=nullptr;GetLocalPlayer=nullptr;
+        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED reason=entry-owned-without-qualified-cooperative-host");
+        return false;
+    }
     if(!Context->InstallInlineHook(AutomapRenderUnitRva,ExpectedAutomapRenderUnit.data(),
             static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()),
             HookAutomapRenderUnit,&OriginalAutomapRenderUnit) || !OriginalAutomapRenderUnit) {
@@ -4224,6 +4245,7 @@ const UnhoarderLabelVisibility::Service PublishedLabelVisibilityService{
     sizeof(UnhoarderLabelVisibility::Service),UnhoarderLabelVisibility::Version,&QueryLabelCannotHide};
 bool __cdecl RegisterNativeDrop(
         const D2RL::PluginContext* consumer,NativeHookCompat::DropSoundReplacementFn callback,void* user) noexcept {
+    if(!ArmNativeDropSoundHook())return false;
     return NativeDropSubscribers.Register(consumer,callback,user);
 }
 bool __cdecl UnregisterNativeDrop(
