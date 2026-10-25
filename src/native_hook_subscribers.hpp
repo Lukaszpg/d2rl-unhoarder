@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -17,6 +18,7 @@ class Registry {
     std::mutex mutex_;
     std::condition_variable idle_;
     std::array<Slot,Capacity> slots_{};
+    std::atomic<unsigned> subscribers_{0};
     inline static thread_local bool executing_=false;
 public:
     bool Register(const void* owner,Callback callback,void* user) noexcept {
@@ -25,7 +27,9 @@ public:
         for(const auto& slot:slots_)
             if(slot.owner==owner && slot.callback==callback && slot.user==user)return false;
         for(auto& slot:slots_)if(!slot.owner && !slot.inFlight) {
-            slot={owner,callback,user,0};return true;
+            slot={owner,callback,user,0};
+            subscribers_.fetch_add(1,std::memory_order_release);
+            return true;
         }
         return false;
     }
@@ -34,13 +38,14 @@ public:
         std::unique_lock lock(mutex_);
         for(auto& slot:slots_)if(slot.owner==owner && slot.callback==callback && slot.user==user) {
             slot.callback=nullptr; // no new dispatch may capture it
+            subscribers_.fetch_sub(1,std::memory_order_release);
             idle_.wait(lock,[&slot]{return slot.inFlight==0;});
             slot={};return true;
         }
         return false;
     }
     template<class Invoke> bool Dispatch(Invoke invoke) noexcept {
-        if(executing_)return false;
+        if(executing_ || subscribers_.load(std::memory_order_acquire)==0)return false;
         std::array<Pending,Capacity> pending{};
         std::size_t count=0;
         {
