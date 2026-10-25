@@ -5900,10 +5900,15 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
     SyncFilterBackgroundState();
     SyncFilterTextColorState();
     SyncFilterVisibilityState();
-    if (rules->backgroundRules || rules->textColorRules || rules->hiddenRules)
-        EnableAutomaticNativeHover();
-    else
+    if (rules->backgroundRules || rules->textColorRules || rules->hiddenRules) {
+        // The generic in-world label host may attach later on GameJoined.
+        // Avoid a misleading startup refusal before that lifecycle callback.
+        const auto* host=InWorldCompatService.load(std::memory_order_acquire);
+        if(host && host->isReady && host->isReady())
+            EnableAutomaticNativeHover();
+    } else {
         ResetNativeRowLiveSession();
+    }
     // New files/initial activation qualify the native drop route.
     // For live reloads, keep already-observed sound IDs while cancelling any
     // sounds queued from the previous generation (the old epoch).
@@ -6675,9 +6680,11 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     QualifyVendorSellPrice();
     // Arm immediately only if the index is already present; otherwise
     // the SDK DataTablesLoaded or GameJoined callback activates the rules.
-    if (PublishedFilterRules.load(std::memory_order_acquire))
-        (void)ActivateConfiguredFilter(true);
-    else LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
+    if (!PublishedFilterRules.load(std::memory_order_acquire))
+        LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
+    // SDK Items has not loaded yet at plugin startup. The table listener
+    // activates existing JSON rules as soon as a qualified index is ready.
+    // Do not emit a false 'filter inactive' warning for this expected phase.
     RegisterItemCodeTableLifecycle();
     RegisterInWorldLifecycle();
     StartSoundInventoryObserver();
