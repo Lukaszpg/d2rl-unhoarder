@@ -38,8 +38,13 @@ Potential foreign providers must implement this exact ABI themselves;
 - An unknown, untracked, multiply owned or uncooperative native entry
   disables only the contended feature. Unhoarder will not overwrite it.
 - Existing tooltip paint/glyph services, stat-reader service and in-world
-  label service remain unchanged; the pickup dispatcher and item-code reader
-  still have no cooperative hook API and must refuse collision.
+  label service remain unchanged. The pickup dispatcher still has no
+  cooperative hook API. The item-code reader now performs a **direct,
+  fingerprint-checked engine call** at `0x36EF50` and installs no hook there;
+  it rejects an entry already modified by another plugin, rather than
+  attempting to chain an unknown detour. The direct call may still be
+  affected if another plugin patches that entry *after* admission. A future
+  SDK-only classId-to-code resolver would remove that remaining dependency.
 
 ### Cache and asset hardening
 
