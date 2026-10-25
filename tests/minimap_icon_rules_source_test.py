@@ -26,6 +26,7 @@ assert 'item.sizePx=rule->minimapSizePx;' in p
 assert 'marker.sizePx=item.sizePx;' in p
 assert '++fresh->minimapIconRules;' in p
 assert 'UpdateMinimapProjectionIconRule(header[2],code,rule);' in p
+assert 'ObserveAutomapGroundUnit(unit);' in p
 assert 'ClearMinimapProjectionIconStyles();' in p
 
 for shape in ('Circle','Diamond','Triangle','Star'):

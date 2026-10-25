@@ -1,4 +1,5 @@
 #include "minimap_overlay_renderer.hpp"
+#include "loot_performance.hpp"
 
 #include <MinHook.h>
 #include <d3d12.h>
@@ -500,6 +501,7 @@ HRESULT STDMETHODCALLTYPE HookPresent(
     const auto original = OriginalPresent;
     if (original == nullptr) return DXGI_ERROR_INVALID_CALL;
     {
+        Perf::Scope timing(Perf::Counters[Perf::MinimapRender]);
         std::scoped_lock lock(RenderMutex);
         RenderAutonomousFrameLocked(swapChain);
     }

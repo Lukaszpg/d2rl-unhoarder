@@ -3,9 +3,21 @@
 #include <D2RLPlugin/inventory.h>
 #include <D2RLPlugin/lifecycle_events.h>
 #include "ground_quantity_label.hpp"
+#include "ground_label_background.hpp"
+#include "native_drop_sound.hpp"
+#include "native_hook_subscribers.hpp"
+#include "../interop/native_item_hook_compat_v1.hpp"
+#include "maps_socket_runtime.hpp"
+#include "controller_ground_label.hpp"
+#include "controller_ground_label_witnesses.hpp"
 #include "ground_visibility_policy.hpp"
 #include "native_pickup_guard_policy.hpp"
+#include "native_pickup_profile.hpp"
+#include "ground_visibility_service.hpp"
+#include "ground_label_visibility_service.h"
+#include "guarded_local_read.hpp"
 #include "filter_rule_engine.hpp"
+#include "ground_action_demand.hpp"
 #include "base_name_table.hpp"
 #include "item_type_table.hpp"
 #include "ground_property_reader.hpp"
@@ -26,6 +38,7 @@
 #include "native_row_font_color_policy.hpp"
 #include "ground_sound_registry.hpp"
 #include "named_sound_loader_identity.hpp"
+#include "loot_performance.hpp"
 #include "../interop/unhoarder_tooltip_compat_v1.hpp"
 #include "../interop/unit_stat_read_compat_v1.hpp"
 #include "../interop/in_world_item_label_compat_v1.hpp"
@@ -34,6 +47,7 @@
 #include <D2RLPlugin/threads.h>
 #include <Windows.h>
 #include <intrin.h>
+#pragma comment(lib, "Version.lib")
 
 #include <algorithm>
 #include <array>
@@ -45,6 +59,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -65,6 +80,106 @@
 
 namespace UnHoarder {
 namespace {
+namespace NativeHookCompat=D2RLInterop::NativeItemHookCompatV1;
+NativeHookSubscribers::Registry<NativeHookCompat::DropSoundReplacementFn> NativeDropSubscribers{};
+NativeHookSubscribers::Registry<NativeHookCompat::AutomapUnitObserverFn> NativeAutomapSubscribers{};
+D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> ForeignDropCompatLease{};
+D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> ForeignAutomapCompatLease{};
+bool ForeignDropCompatAttached{};
+bool ForeignAutomapCompatAttached{};
+bool TryAttachForeignDropAudio(const void*,std::uint32_t) noexcept;
+bool TryAttachForeignAutomap(const void*,std::uint32_t) noexcept;
+bool ArmNativeDropSoundHook() noexcept;
+bool OwnsNativeDropAudioHook() noexcept;
+bool __cdecl OnForeignDropSound(void*,void*) noexcept;
+void __cdecl OnForeignAutomapUnit(void*,void*,void*) noexcept;
+
+
+// Under D2RLoader, the in-memory executable image is D2RLoader.exe (unpacked
+// 93847), while ctx->buildVersion / D2R.exe on disk may advance on storefront
+// updates (e.g. 93847, 93787, 94995). Every native hook and read is guarded
+// directly by CheckExpectedBytes and PE image checks, so build strings are
+// informational rather than a hard block.
+inline bool IsSupportedBuild(const char* build) noexcept {
+    return build && *build != '\0';
+}
+
+// Returns the trailing dotted component of a version string such as
+// "3.3.93787" -> "93787". Empty when no digits are present.
+inline std::string TrailingBuildComponent(std::string_view version) {
+    while (!version.empty() && (version.back() == '\0' || version.back() == ' '))
+        version.remove_suffix(1);
+    const auto dot = version.find_last_of('.');
+    if (dot != std::string_view::npos) version.remove_prefix(dot + 1);
+    if (version.empty()) return {};
+    for (const char c : version)
+        if (c < '0' || c > '9') return {};
+    return std::string(version);
+}
+
+// Reads the FileVersion string ("3.3.93787") from the host process image.
+// The numeric VS_FIXEDFILEINFO cannot hold builds > 65535, so use the string.
+inline std::string ReadHostExeBuild() {
+    wchar_t path[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, path, MAX_PATH)) return {};
+    DWORD handle = 0;
+    const DWORD size = GetFileVersionInfoSizeW(path, &handle);
+    if (!size) return {};
+    std::vector<std::uint8_t> data(size);
+    if (!GetFileVersionInfoW(path, 0, size, data.data())) return {};
+    struct LangCodePage { WORD lang; WORD codePage; };
+    LangCodePage* translations = nullptr;
+    UINT translationBytes = 0;
+    if (!VerQueryValueW(data.data(), L"\\VarFileInfo\\Translation",
+            reinterpret_cast<void**>(&translations), &translationBytes) ||
+        !translations || translationBytes < sizeof(LangCodePage)) return {};
+    for (UINT i = 0; i < translationBytes / sizeof(LangCodePage); ++i) {
+        for (const wchar_t* key : {L"FileVersion", L"ProductVersion"}) {
+            wchar_t query[96]{};
+            std::swprintf(query, std::size(query), L"\\StringFileInfo\\%04x%04x\\%s",
+                translations[i].lang, translations[i].codePage, key);
+            wchar_t* value = nullptr;
+            UINT chars = 0;
+            if (!VerQueryValueW(data.data(), query, reinterpret_cast<void**>(&value), &chars) ||
+                !value || !chars) continue;
+            std::string narrow;
+            for (const wchar_t* p = value; *p; ++p)
+                narrow.push_back(*p < 0x80 ? static_cast<char>(*p) : '?');
+            auto build = TrailingBuildComponent(narrow);
+            if (!build.empty()) return build;
+        }
+    }
+    return {};
+}
+
+// D2RLoader 1.3.1 may hand plugins a PluginContext that is smaller than the
+// pinned SDK's sizeof(PluginContext) (so D2RL::GetBuildName returns nullptr),
+// or leave buildName unset on some launch platforms (observed: Steam). Resolve
+// the build defensively: raw buildName -> buildVersion -> D2R.exe FileVersion.
+inline const char* ResolveBuildName(const D2RL::PluginContext* ctx) noexcept {
+    static std::once_flag once;
+    static std::string cached;
+    try {
+        std::call_once(once, [ctx] {
+            auto covers = [ctx](std::size_t offset) {
+                return ctx && ctx->contextSize >= offset + sizeof(const char*);
+            };
+            if (covers(offsetof(D2RL::PluginContext, buildName)) &&
+                ctx->buildName && *ctx->buildName) {
+                cached = ctx->buildName;
+                return;
+            }
+            if (covers(offsetof(D2RL::PluginContext, buildVersion)) && ctx->buildVersion) {
+                cached = TrailingBuildComponent(ctx->buildVersion);
+                if (!cached.empty()) return;
+            }
+            cached = ReadHostExeBuild();
+        });
+    } catch (...) {
+        return nullptr;
+    }
+    return cached.empty() ? nullptr : cached.c_str();
+}
 
 // Qualifies against the 93847 process, not a declaration that this is a label function.
 // D2 item codes occupy four native bytes, but many Excel codes have only
@@ -213,7 +328,6 @@ constexpr std::size_t MaximumFilterNameBytes = 79; // measured in BYTES (no NUL)
 // UnHoarder forwards a stack-local replacement pointer for the synchronous
 // draw only; it never persists color data into the native label record.
 constexpr std::uintptr_t GroundColorOffset = 0x14;
-constexpr std::array<float,4> OriginalGroundBackground{{0.0f,0.0f,0.0f,0.6f}};
 std::atomic_bool BackgroundTintArmed{};
 std::atomic_bool HideGroundArmed{};
 
@@ -421,8 +535,8 @@ bool TryAcquireCooperativeGroundQuantityReader(
 void QualifyGroundQuantityReader() noexcept {
     GroundQuantityReader.store(nullptr,std::memory_order_release);
     (void)GroundQuantityCompatLease.Reset();
-    if (!Context || !Context->exeBase || !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context))!="93847") return;
+    if (!Context || !Context->exeBase || !ResolveBuildName(Context) ||
+        !IsSupportedBuild(ResolveBuildName(Context))) return;
     const auto base=static_cast<std::uintptr_t>(Context->exeBase);
     std::array<std::uint8_t,10> entry{};
     SIZE_T copied{};
@@ -541,6 +655,14 @@ bool GroundCandidatePageReadable(std::uintptr_t address,
     if(address<0x10000 || (address&7U)!=0 ||
         address>std::numeric_limits<std::uintptr_t>::max()-bytes)
         return false;
+    DWORD currentProtection{};
+    if(CurrentPageQuery::SinglePage(address,bytes,0,currentProtection)) {
+        if(currentProtection&(PAGE_GUARD|PAGE_NOACCESS))return false;
+        const auto readable=currentProtection&0xFFU;
+        return readable==PAGE_READONLY || readable==PAGE_READWRITE ||
+            readable==PAGE_WRITECOPY || readable==PAGE_EXECUTE_READ ||
+            readable==PAGE_EXECUTE_READWRITE || readable==PAGE_EXECUTE_WRITECOPY;
+    }
     MEMORY_BASIC_INFORMATION page{};
     if(VirtualQuery(reinterpret_cast<const void*>(address),&page,
             sizeof(page))!=sizeof(page) || page.State!=MEM_COMMIT ||
@@ -626,12 +748,21 @@ struct MinimapProjectionItem final {
     std::uint32_t code{},unitId{},classId{},mode{};
     std::int32_t worldX{},worldY{};
     std::uint64_t observedTick{};
+    std::uint64_t evaluatedGeneration{};
     bool hasIcon{};
     MinimapOverlayRenderer::Shape shape{MinimapOverlayRenderer::Shape::Diamond};
     std::array<float,4> borderColor{};
     std::array<float,4> fillColor{};
     float sizePx{MinimapIconPolicy::DefaultSizePx};
 };
+struct AutomapNegativeCacheEntry final {
+    std::uint32_t unitId{};
+    std::uint32_t code{};
+    std::uint64_t generation{};
+    std::uint64_t observedTick{};
+};
+constexpr std::size_t AutomapNegativeCacheCapacity=512;
+std::array<AutomapNegativeCacheEntry,AutomapNegativeCacheCapacity> AutomapNegativeCache{};
 std::mutex MinimapProjectionItemMutex;
 std::array<MinimapProjectionItem,MinimapProjectionItemCapacity> MinimapProjectionItems{};
 std::size_t MinimapProjectionItemCount{};
@@ -642,6 +773,7 @@ void ResetMinimapTracking() noexcept {
         std::lock_guard lock(MinimapProjectionItemMutex);
         MinimapProjectionItems.fill({});
         MinimapProjectionItemCount=0;
+        AutomapNegativeCache.fill({});
     }
     AutomapMarkerFrameSequence.store(0,std::memory_order_relaxed);
     MinimapOverlayRenderer::Clear();
@@ -679,7 +811,7 @@ void UpdateMinimapProjectionPosition(std::uint32_t code,std::uint32_t unitId,
 }
 
 void UpdateMinimapProjectionIconRule(std::uint32_t unitId,std::uint32_t code,
-    const GroundRuleDecision* rule) noexcept {
+    const GroundRuleDecision* rule,std::uint64_t generation=0) noexcept {
     if(unitId==0) return;
     if(!MinimapProjectionItemMutex.try_lock()) return;
     code=CanonicalItemCode(code);
@@ -706,6 +838,7 @@ void UpdateMinimapProjectionIconRule(std::uint32_t unitId,std::uint32_t code,
     if(slot<MinimapProjectionItemCount) {
         auto& item=MinimapProjectionItems[slot];
         item.hasIcon=hasIcon;
+        if(generation!=0) item.evaluatedGeneration=generation;
         if(hasIcon) {
             item.shape=rule->minimapShape;
             item.borderColor=rule->minimapBorderColor;
@@ -718,8 +851,11 @@ void UpdateMinimapProjectionIconRule(std::uint32_t unitId,std::uint32_t code,
 
 void ClearMinimapProjectionIconStyles() noexcept {
     std::lock_guard lock(MinimapProjectionItemMutex);
-    for(std::size_t i=0;i<MinimapProjectionItemCount;++i)
+    for(std::size_t i=0;i<MinimapProjectionItemCount;++i) {
         MinimapProjectionItems[i].hasIcon=false;
+        MinimapProjectionItems[i].evaluatedGeneration=0;
+    }
+    AutomapNegativeCache.fill({});
     MinimapOverlayRenderer::Clear();
 }
 
@@ -747,13 +883,15 @@ bool IsLocalPlayerAutomapPass(void* unit) noexcept {
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-__declspec(noinline) void __fastcall HookAutomapRenderUnit(
-        void* unit,void* automapContext) noexcept {
-    const auto original=OriginalAutomapRenderUnit;
-    if(!original) return;
-    original(unit,automapContext);
+void ObserveAutomapGroundUnit(const void* unit) noexcept;
+
+void ProcessAutomapRenderedUnit(void* unit,void* automapContext) noexcept {
     if(!AutomapProjectionArmed.load(std::memory_order_acquire) ||
-       !automapContext || !IsLocalPlayerAutomapPass(unit)) return;
+       !automapContext || !unit) return;
+    if(!IsLocalPlayerAutomapPass(unit)) {
+        ObserveAutomapGroundUnit(unit);
+        return;
+    }
     const auto now=static_cast<std::uint64_t>(GetTickCount64());
     std::array<MinimapProjectionItem,MinimapProjectionItemCapacity> items{};
     std::size_t itemCount{};
@@ -810,6 +948,21 @@ __declspec(noinline) void __fastcall HookAutomapRenderUnit(
     } __except(EXCEPTION_EXECUTE_HANDLER) { MinimapOverlayRenderer::Clear(); }
 }
 
+__declspec(noinline) void __fastcall HookAutomapRenderUnit(
+        void* unit,void* automapContext) noexcept {
+    const auto original=OriginalAutomapRenderUnit;
+    if(!original)return;
+    original(unit,automapContext);
+    NativeAutomapSubscribers.Dispatch([&](auto observer,void* user) noexcept {
+        observer(unit,automapContext,user);
+        return false;
+    });
+    ProcessAutomapRenderedUnit(unit,automapContext);
+}
+void __cdecl OnForeignAutomapUnit(void* unit,void* automapContext,void*) noexcept {
+    // An exact, diagnosed owner already forwarded the native render call.
+    ProcessAutomapRenderedUnit(unit,automapContext);
+}
 bool InstallStandaloneAutomapProjection() noexcept {
     AutomapProjectionHookInstalled.store(false,std::memory_order_release);
     OriginalAutomapRenderUnit=nullptr;
@@ -820,24 +973,29 @@ bool InstallStandaloneAutomapProjection() noexcept {
         LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=no-image-or-context hooks=0 mapSenseDependency=0");
         return false;
     }
-    if(GetModuleHandleW(L"d2rl-ruffneckk-mapsense.dll")!=nullptr) {
-        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=mapsense-loaded-shared-rendezvous hooks=0 coexistence=preserved");
-        return false;
-    }
     const auto check=[&](std::uintptr_t rva,const auto& expected) {
         return Context->CheckExpectedBytes(rva,expected.data(),
             static_cast<std::uint32_t>(expected.size()));
     };
     if(!check(ProjectClientToAutomapRva,ExpectedProjectClientToAutomap) ||
        !check(GetLocalDataContextRva,ExpectedGetLocalDataContext) ||
-       !check(GetLocalPlayerRva,ExpectedGetLocalPlayer) ||
-       !check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
+       !check(GetLocalPlayerRva,ExpectedGetLocalPlayer)) {
         LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED version=" UNHOARDER_VERSION_STRING " reason=native-contract-fingerprint hooks=0");
         return false;
     }
     ProjectClientToAutomap=reinterpret_cast<ProjectClientToAutomapFn>(Base+ProjectClientToAutomapRva);
     GetLocalDataContext=reinterpret_cast<GetLocalDataContextFn>(Base+GetLocalDataContextRva);
     GetLocalPlayer=reinterpret_cast<GetLocalPlayerFn>(Base+GetLocalPlayerRva);
+    if(!check(AutomapRenderUnitRva,ExpectedAutomapRenderUnit)) {
+        if(TryAttachForeignAutomap(ExpectedAutomapRenderUnit.data(),
+                static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()))) {
+            AutomapProjectionHookInstalled.store(true,std::memory_order_release);
+            return true;
+        }
+        ProjectClientToAutomap=nullptr;GetLocalDataContext=nullptr;GetLocalPlayer=nullptr;
+        LogWarn("LOOT_MINIMAP_PROJECTION_REFUSED reason=entry-owned-without-qualified-cooperative-host");
+        return false;
+    }
     if(!Context->InstallInlineHook(AutomapRenderUnitRva,ExpectedAutomapRenderUnit.data(),
             static_cast<std::uint32_t>(ExpectedAutomapRenderUnit.size()),
             HookAutomapRenderUnit,&OriginalAutomapRenderUnit) || !OriginalAutomapRenderUnit) {
@@ -896,6 +1054,7 @@ void ObserveMinimapItemPosition(const void* nativeUnit,std::uint32_t rawCode,
     std::uint32_t unitId,std::uint32_t classId) noexcept {
     if(!AutomapProjectionArmed.load(std::memory_order_acquire) || !nativeUnit ||
        !unitId || !PrintableItemCode(rawCode)) return;
+    Perf::Scope timing(Perf::Counters[Perf::MinimapPosition]);
     std::array<std::uint8_t,MinimapUnitBytes> first{},last{};
     std::array<std::uint8_t,MinimapPathBytes> pathFirst{},pathLast{};
     SIZE_T copied{};
@@ -943,6 +1102,7 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
     const char** reason=nullptr,
     bool includeEthereal=false,
     bool includeIdentified=false) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::Quality]);
     const auto fail=[reason](const char* why) noexcept
         -> GroundPropertyLive::Scalars {
         if(reason)*reason=why;
@@ -950,8 +1110,8 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
     };
     if(reason)*reason="ok";
     if (!nativeUnit || !expectedId || !Context ||
-        !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context))!="93847")
+        !ResolveBuildName(Context) ||
+        !IsSupportedBuild(ResolveBuildName(Context)))
         return fail("unit-or-build-unavailable");
     std::array<std::uint8_t,0x18> before{},after{};
     SIZE_T copied{};
@@ -972,18 +1132,21 @@ GroundPropertyLive::Scalars ReadNativeGroundQualityLevel(
         return fail("item-data-page-not-readable");
     std::array<std::uint8_t,length> itemData{},check{};
     copied=0;
-    if(!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(address),itemData.data(),
-            itemData.size(),&copied) || copied!=itemData.size())
+    // The complete current span was page-qualified immediately above. Keep
+    // both property observations and fault containment, without an API copy.
+    if(!GuardedLocalRead::Detail::CopyReadable(
+            reinterpret_cast<const void*>(address),itemData.data(),itemData.size()))
         return fail("item-data-first-read-failed");
     copied=0;
     if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,after.data(),
             after.size(),&copied) || copied!=after.size() ||
        before!=after) return fail("unit-changed-during-read");
     copied=0;
-    if(!ReadProcessMemory(GetCurrentProcess(),
-            reinterpret_cast<const void*>(address),check.data(),
-            check.size(),&copied) || copied!=check.size())
+    // Re-qualify after the intervening unit read; never reuse a page proof.
+    if(!GroundCandidatePageReadable(address,length))
+        return fail("item-data-second-page-not-readable");
+    if(!GuardedLocalRead::Detail::CopyReadable(
+            reinterpret_cast<const void*>(address),check.data(),check.size()))
         return fail("item-data-second-read-failed");
     if(GroundPropertyReader::ReadLe32(itemData.data())!=
            GroundPropertyReader::ReadLe32(check.data()) ||
@@ -1021,12 +1184,23 @@ constexpr std::int32_t GroundSocketStatId=194;
 bool ReadNativeGroundSockets(const void* nativeUnit,
     std::uint32_t expectedId,std::uint32_t expectedClassId,
     GroundPropertyLive::Purpose purpose,std::uint32_t& sockets) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::Sockets]);
     sockets=0; // meaningful ONLY when the return value is true
     if(!nativeUnit || !expectedId || !Context ||
-       !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847") return false;
+       !ResolveBuildName(Context) ||
+       !IsSupportedBuild(ResolveBuildName(Context))) return false;
     const auto getter=GroundQuantityReader.load(std::memory_order_acquire);
-    if(!getter) return false; // never interpret missing bridge as zero sockets
+    // A missing general stat service is never interpreted as zero sockets.
+    // The alternate capability admits only the exact Maps stat-194 path.
+    const auto readSocket=[&](std::int64_t& value) noexcept {
+        if (getter) {value=getter(const_cast<void*>(nativeUnit),GroundSocketStatId,0);return true;}
+        const bool ok=MapsSocket::Read(Context->exeBase,const_cast<void*>(nativeUnit),value);
+        if (ok) {
+            static std::atomic_bool reported{};
+            if (!reported.exchange(true)) LogInfo("LOOT_SOCKET_READER_READY stat=194 layer=0 source=exact-Maps-forwarding item-only=1 original-called-once=1 ownership-rechecked-per-read=1");
+        }
+        return ok;
+    };
     std::array<std::uint32_t,4> before{},after{};
     SIZE_T copied{};
     if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,before.data(),
@@ -1034,15 +1208,15 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
        before[0]!=4 || before[1]!=expectedClassId ||
        before[2]!=expectedId ||
        !GroundPropertyLive::AllowsMode(before[3],purpose)) return false;
-    const auto first=getter(const_cast<void*>(nativeUnit),
-        GroundSocketStatId,0);
+    std::int64_t first{};
+    if (!readSocket(first)) return false;
     copied=0;
     if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,after.data(),
         sizeof(after),&copied) || copied!=sizeof(after) ||
        before!=after) return false;
     // Two matching scalar reads protect against a transient stat result.
-    const auto second=getter(const_cast<void*>(nativeUnit),
-        GroundSocketStatId,0);
+    std::int64_t second{};
+    if (!readSocket(second)) return false;
     copied=0;
     std::array<std::uint32_t,4> finalHeader{};
     if(!ReadProcessMemory(GetCurrentProcess(),nativeUnit,finalHeader.data(),
@@ -1056,12 +1230,14 @@ bool ReadNativeGroundSockets(const void* nativeUnit,
 bool ReadNativeVendorSellPrice(const void* nativeUnit,
     std::uint32_t expectedId,std::uint32_t expectedClassId,std::uint32_t code,
     GroundPropertyLive::Purpose purpose,std::uint32_t& price,
-    RuleEngine::Item* itemSnapshot=nullptr) noexcept;
+    RuleEngine::Item* itemSnapshot,std::uint64_t rulesGeneration) noexcept;
 
 RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
     const FilterRuleTable* table,std::uint32_t expectedId=0,
     GroundPropertyLive::Purpose purpose=
-        GroundPropertyLive::Purpose::StrictGround) noexcept {
+        GroundPropertyLive::Purpose::StrictGround,
+    bool geometryActionsOnly=false) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::Properties]);
     RuleEngine::Item item{};
     item.code=CanonicalItemCode(code);
     if (!nativeUnit) return item;
@@ -1087,6 +1263,7 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
     // then re-evaluate. Unknown native values stop property-dependent matching
     // so a later broad Hide cannot turn an unreadable item into a false match.
     for(unsigned propertyGroup=0;propertyGroup<5 && table;++propertyGroup) {
+        if(geometryActionsOnly && !UnHoarder::GroundActionDemand::GeometryPossible(table->rules,item))break;
         const auto next=RuleEngine::NextNativeProperty(table->rules,item);
         if(next==RuleEngine::NextProperty::None) break;
 
@@ -1133,7 +1310,7 @@ RuleEngine::Item GroundRuleItem(std::uint32_t code,const void* nativeUnit,
         if(next==RuleEngine::NextProperty::SellPrice) {
             std::uint32_t sellPrice{};
             if(!ReadNativeVendorSellPrice(nativeUnit,header[2],header[1],
-                    item.code,purpose,sellPrice,&item))
+                    item.code,purpose,sellPrice,&item,table->generation))
                 break;
             item.sellPriceKnown=true;
             item.sellPrice=sellPrice;
@@ -1219,6 +1396,8 @@ void MergeGroundRuleAction(GroundRuleDecision& output,
 
 bool ResolveGroundRule(const FilterRuleTable* table,
     const RuleEngine::Item& item,GroundRuleDecision& output) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::Rules]);
+    timing.Items(table?table->rules.size():0);
     output={};
     if(!table) return false;
     return RuleEngine::ResolveMatchingRulesFailOpen(table->rules,item,
@@ -1231,6 +1410,7 @@ bool ResolveGroundRule(const FilterRuleTable* table,
             output.show=true;
         });
 }
+
 
 // The hidden-tooltip hover path can be owned by another D2RLoader plugin.
 // Discover that exact owner through DiagnosticsService and consume only the
@@ -1249,6 +1429,73 @@ bool InWorldCompatTransformerAttached{};
 const D2RL::LifecycleService* InWorldLifecycle{};
 D2RL::Lifecycle::ListenerHandle InWorldJoinedListener{D2RL::Lifecycle::InvalidHandle};
 
+void ObserveAutomapGroundUnit(const void* unit) noexcept {
+    if(!unit ||
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
+       !HookInstalled.load(std::memory_order_acquire) ||
+       !OriginalGetItemCode) return;
+    const auto snapshot=PublishedFilterRules.load(std::memory_order_acquire);
+    if(!snapshot || snapshot->minimapIconRules==0) return;
+    std::uint32_t header[4]{};
+    SIZE_T copied{};
+    if(!ReadProcessMemory(GetCurrentProcess(),unit,header,sizeof(header),&copied) ||
+       copied!=sizeof(header) || header[0]!=4 || !header[2] ||
+       (header[3]!=3 && header[3]!=5)) return;
+    const auto unitId=header[2];
+    const auto classId=header[1];
+    const auto code=CanonicalItemCode(OriginalGetItemCode(const_cast<void*>(unit)));
+    if(!PrintableItemCode(code)) return;
+
+    bool knownIcon=false;
+    if(MinimapProjectionItemMutex.try_lock()) {
+        for(std::size_t i=0;i<MinimapProjectionItemCount;++i) {
+            const auto& existing=MinimapProjectionItems[i];
+            if(existing.unitId==unitId && existing.code==code &&
+               existing.evaluatedGeneration==snapshot->generation &&
+               existing.hasIcon) {
+                knownIcon=true;
+                break;
+            }
+        }
+        MinimapProjectionItemMutex.unlock();
+    }
+    if(knownIcon) {
+        ObserveMinimapItemPosition(unit,code,unitId,classId);
+        return;
+    }
+
+    const auto now=static_cast<std::uint64_t>(GetTickCount64());
+    const auto negSlot=(static_cast<std::size_t>(unitId)*2654435761ULL)%AutomapNegativeCacheCapacity;
+    // Cache is advisory. Never race a lifecycle reset on its shared storage.
+    bool cachedNegative=false;
+    if(MinimapProjectionItemMutex.try_lock()) {
+        const auto& neg=AutomapNegativeCache[negSlot];
+        cachedNegative=neg.unitId==unitId && neg.code==code &&
+            neg.generation==snapshot->generation &&
+            now>=neg.observedTick &&
+            now-neg.observedTick<=MinimapProjectionItemFreshMilliseconds;
+        MinimapProjectionItemMutex.unlock();
+    }
+    if(cachedNegative) return;
+
+    const auto ruleItem=GroundRuleItem(code,unit,snapshot.get(),unitId,
+        GroundPropertyLive::Purpose::VerifiedLabel,true);
+    GroundRuleDecision resolvedRule{};
+    const auto* rule=ResolveGroundRule(snapshot.get(),ruleItem,resolvedRule) ?
+        &resolvedRule : nullptr;
+    if(rule && rule->hasMinimapIcon) {
+        ObserveMinimapItemPosition(unit,code,unitId,classId);
+        UpdateMinimapProjectionIconRule(unitId,code,rule,snapshot->generation);
+    } else {
+        UpdateMinimapProjectionIconRule(unitId,code,nullptr,snapshot->generation);
+        // Contention skips a performance hint rather than stalling rendering.
+        if(MinimapProjectionItemMutex.try_lock()) {
+            AutomapNegativeCache[negSlot]={unitId,code,snapshot->generation,now};
+            MinimapProjectionItemMutex.unlock();
+        }
+    }
+}
+
 void RuntimeWorkerStart() noexcept;
 void RuntimeWorkerStop() noexcept;
 bool ReloadFilterRules();
@@ -1258,9 +1505,6 @@ void ResetNativeRowLiveSession() noexcept;
 void EnableAutomaticNativeHover() noexcept;
 bool TryAttachInWorldLabelCompat() noexcept;
 void DetachInWorldLabelCompat() noexcept;
-void ObserveGroundSoundIdentity(std::uint32_t unitId,
-    std::uint32_t rawCode,const void* nativeUnit,
-    std::uint32_t knownClassId) noexcept;
 void ObserveNativeRowLiveLabel(std::int32_t type,
     std::uint32_t classId,std::uint32_t unitId,std::uint32_t rawCode,
     const void* nativeUnit,const char* source,std::uint32_t sourceLength) noexcept;
@@ -1413,6 +1657,7 @@ struct VendorSellPriceCacheEntry final {
     std::uint32_t unitId{},classId{},code{},price{};
     std::uintptr_t nativeUnit{};
     ULONGLONG observedMs{};
+    std::uint64_t rulesGeneration{};
     bool valid{};
 };
 std::array<VendorSellPriceCacheEntry,VendorSellPriceCacheCapacity>
@@ -1474,18 +1719,19 @@ void ForgetVendorSellPriceItem(std::uint32_t unitId) noexcept {
     // being dropped again with the same runtime ID. The cache is tiny and
     // lookup/store never hold this lock across a native call.
     std::lock_guard lock(VendorSellPriceCacheMutex);
-    for(auto& entry:VendorSellPriceCache)
-        if(entry.valid && entry.unitId==unitId) entry={};
+    auto& entry=VendorSellPriceCache[
+        static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()];
+    if(entry.valid && entry.unitId==unitId) entry={};
 }
 
 bool TryGetCachedVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
-    std::uint32_t code,const void* nativeUnit,std::uint32_t& price,
+    std::uint32_t code,const void* nativeUnit,std::uint64_t rulesGeneration,std::uint32_t& price,
     ULONGLONG& observedMs) noexcept {
     if(!VendorSellPriceCacheMutex.try_lock()) return false;
     const auto& entry=VendorSellPriceCache[
         static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()];
     const auto now=GetTickCount64();
-    const bool hit=entry.valid && entry.unitId==unitId &&
+    const bool hit=entry.valid && entry.unitId==unitId && entry.rulesGeneration==rulesGeneration &&
         entry.classId==classId && entry.code==code &&
         entry.nativeUnit==reinterpret_cast<std::uintptr_t>(nativeUnit) &&
         now>=entry.observedMs && now-entry.observedMs<=VendorSellPriceCacheTtlMs;
@@ -1499,12 +1745,12 @@ bool TryGetCachedVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
 
 void StoreVendorSellPrice(std::uint32_t unitId,std::uint32_t classId,
     std::uint32_t code,const void* nativeUnit,std::uint32_t price,
-    ULONGLONG observedMs) noexcept {
+    ULONGLONG observedMs,std::uint64_t rulesGeneration) noexcept {
     if(!VendorSellPriceCacheMutex.try_lock()) return;
     VendorSellPriceCache[
         static_cast<std::size_t>(unitId)%VendorSellPriceCache.size()]=
         {unitId,classId,code,price,reinterpret_cast<std::uintptr_t>(nativeUnit),
-            observedMs,true};
+            observedMs,rulesGeneration,true};
     VendorSellPriceCacheMutex.unlock();
 }
 
@@ -1549,7 +1795,7 @@ bool VendorSellPriceContext(void*& player,std::uint8_t& difficulty,
 bool ReadNativeVendorSellPrice(const void* nativeUnit,
     std::uint32_t expectedId,std::uint32_t expectedClassId,std::uint32_t code,
     GroundPropertyLive::Purpose purpose,std::uint32_t& price,
-    RuleEngine::Item* itemSnapshot) noexcept {
+    RuleEngine::Item* itemSnapshot,std::uint64_t rulesGeneration) noexcept {
     price=0;
     if(!nativeUnit || !expectedId || !code ||
        !VendorSellPriceQualified.load(std::memory_order_acquire))
@@ -1557,7 +1803,7 @@ bool ReadNativeVendorSellPrice(const void* nativeUnit,
 
     ULONGLONG observedMs{};
     if(TryGetCachedVendorSellPrice(
-            expectedId,expectedClassId,code,nativeUnit,price,observedMs)) {
+            expectedId,expectedClassId,code,nativeUnit,rulesGeneration,price,observedMs)) {
         if(itemSnapshot) itemSnapshot->sellPriceObservedMs=observedMs;
         return true;
     }
@@ -1614,7 +1860,7 @@ bool ReadNativeVendorSellPrice(const void* nativeUnit,
     observedMs=GetTickCount64();
     if(itemSnapshot) itemSnapshot->sellPriceObservedMs=observedMs;
     StoreVendorSellPrice(expectedId,expectedClassId,code,nativeUnit,price,
-        observedMs);
+        observedMs,rulesGeneration);
     return true;
 }
 
@@ -1623,8 +1869,8 @@ void QualifyVendorSellPrice() noexcept {
     VendorSellPriceRequalifyNextGame.store(false,std::memory_order_release);
     ResetVendorSellPriceSession();
 
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if(!Context || !build || std::string_view(build)!="93847" ||
+    const char* build=Context?ResolveBuildName(Context):nullptr;
+    if(!Context || !IsSupportedBuild(build) ||
        !Base || !ImageSize) {
         LogWarn("LOOT_SELL_PRICE_REFUSED reason=unexpected-build-or-image");
         return;
@@ -2076,8 +2322,8 @@ void ArmNativeRowRuntime() noexcept {
 
         return;
     }
-    const char* build=Context?D2RL::GetBuildName(Context):nullptr;
-    if (!Context || !Base || !build || std::string_view(build)!="93847") {
+    const char* build=Context?ResolveBuildName(Context):nullptr;
+    if (!Context || !Base || !IsSupportedBuild(build)) {
         LogWarn("LOOT_NATIVE_ROW_REFUSED version=" UNHOARDER_VERSION_STRING " reason=build-or-base no-hook=1 no-fallback=1");
         return;
     }
@@ -2283,32 +2529,8 @@ bool TryNativeRowBgLive(void* element,std::uintptr_t caller) noexcept {
     // background. Do not inspect Alt/input state and do not mutate native
     // objects or the item's pickup/interaction state. Unlike bulk ground
     // paint, this row renderer handles only visual output for this label.
-    if (!rule->show) {
-        LARGE_INTEGER finalNow{};
-        const auto latest=NativeRowLiveLatestLabel;
-        if (!NativeRowBgLiveEnabled.load(std::memory_order_acquire) ||
-            NativeRowBgLiveEpoch.load(std::memory_order_acquire)!=epoch ||
-            NativeRowLiveLastAppend.appendSequence!=append.appendSequence ||
-            NativeRowLiveLastAppend.epoch!=epoch ||
-            latest.sequence!=append.labelSequence ||
-            latest.rulesGeneration!=append.rulesGeneration ||
-            !QueryPerformanceCounter(&finalNow) ||
-            !NativeRowBgLivePolicy::RecentChain(
-                append.qpc,finalNow.QuadPart,frequency.QuadPart) ||
-            rules->generation!=append.rulesGeneration ||
-            !GroundVisibility::SuppressHiddenHover(
-                HideGroundArmed.load(std::memory_order_acquire),
-                current.scopeMatches && current.unitId==append.unitId &&
-                    current.classId==append.classId && current.code==append.code,
-                append.qualified && append.appendSequence!=0,
-                append.row==reinterpret_cast<std::uintptr_t>(element),
-                exact,latest.rulesGeneration==append.rulesGeneration,
-                !rule->show)) {
-            NativeRowBgLiveRejected.fetch_add(1,std::memory_order_relaxed);
-            return false;
-        }
-        return true; // ONLY this fully verified hidden-hover row is not drawn
-    }
+    // Targeted labels remain native and usable even when bulk loot labels hide.
+    if (!rule->show) return false;
     if (!rule->hasBackground && !rule->hasTextColor) return false;
     if (NativeRowBgInsideRenderer ||
         NativeRowBgDrawGate.test_and_set(std::memory_order_acquire)) {
@@ -2666,7 +2888,7 @@ bool ParseV2Conditions(const nlohmann::json& value,
                 if(!EnsureItemTypeCatalog(types,error))return false;
                 const auto* codes=types.catalog.Find(token);
                 if(!codes) {
-                    error="unknown-itemType-in-itemtypes.txt:"+token.substr(0,75);
+                    char warn[240]{};std::snprintf(warn,sizeof(warn),"LOOT_ITEMTYPE_IGNORED reason=unknown-itemType-in-itemtypes.txt token=%.*s",75,token.c_str());LogWarn(warn);if(!token.empty())return true;}if(codes->empty()) {char warn[240]{};std::snprintf(warn,sizeof(warn),"LOOT_ITEMTYPE_IGNORED reason=itemType-has-no-items token=%.*s",75,token.c_str());LogWarn(warn);if(!token.empty())return true;
                     return false;
                 }
                 parsed.insert(parsed.end(),codes->begin(),codes->end());
@@ -2687,7 +2909,7 @@ bool ParseV2Conditions(const nlohmann::json& value,
             std::sort(parsed.begin(),parsed.end());
             parsed.erase(std::unique(parsed.begin(),parsed.end()),parsed.end());
             if(parsed.empty()) {
-                error="itemType-selector-has-no-item-codes";return false;
+                LogWarn("LOOT_ITEMTYPE_RULE_INACTIVE reason=itemType-selector-has-no-item-codes rule-disabled=1");parsed.push_back(0xFFFFFFFFU);
             }
             dest.typeCodes=std::move(parsed);
         } else if(key=="rarity") {
@@ -3112,8 +3334,31 @@ bool ReloadFilterRules() {
                         "LOOT_RULES_REFUSED entry=%zu invalid-dropSound expected=1..63-sounds.txt-row-name-ASCII last-valid-rules-preserved=1",line);
                     LogWarn(message);return false;
                 }
-                std::memcpy(rule.dropSound.data(),sound.c_str(),sound.size()+1);
-                rule.hasDropSound=true;++fresh->soundRules;
+                bool soundAssetAvailable=true;
+                if (NativeDropSound::IsBundledFilterSound(sound)) {
+                    const auto soundExcel = itemTypes.loaded ? itemTypes.excel
+                        : (baseNames.loaded ? baseNames.excel : BaseNameTable::DiscoverExcel(FilterConfigPath));
+                    // An undiscoverable asset cannot authorize native sound
+                    // suppression. MPQ-only installations fail safe to vanilla.
+                    soundAssetAvailable=false;
+                    if (!soundExcel.empty()) {
+                        std::error_code sfxEc;
+                        const auto flacPath = soundExcel.parent_path().parent_path() /
+                            L"hd" / L"global" / L"sfx" / L"item" / (sound + ".flac");
+                        soundAssetAvailable=std::filesystem::is_regular_file(flacPath,sfxEc) && !sfxEc;
+                    }
+                    if (!soundAssetAvailable) {
+                        char message[280]{};
+                        std::snprintf(message,sizeof(message),
+                            "LOOT_SOUND_ASSET_MISSING entry=%zu name='%s' reason=missing-or-unresolved-flac fallback=native-drop-sound",
+                            line,sound.c_str());
+                        LogWarn(message);
+                    }
+                }
+                if (soundAssetAvailable) {
+                    std::memcpy(rule.dropSound.data(),sound.c_str(),sound.size()+1);
+                    rule.hasDropSound=true;++fresh->soundRules;
+                }
             }
             if (block->contains("minimapIcon")) {
                 const auto& icon=(*block)["minimapIcon"];
@@ -3225,6 +3470,11 @@ bool ReloadFilterRules() {
     }
 }
 
+// Controller formatter uses R8 for temporary geometry, not the item label.
+// This TLS scope comes only from the separately fingerprinted controller CALL.
+std::atomic_bool ControllerGroundLabelsReady{};
+thread_local ControllerGroundLabel::Scope ControllerGroundScope{};
+
 // Read/write a *specific* 93847 ground-name output region only. The native
 // inner writer is invoked first; our substitution happens while its parent
 // formatter has NOT YET measured text or calculated x/y/width/height.
@@ -3240,6 +3490,7 @@ std::uint64_t __fastcall HookInnerNameWriter(
         !unit || !output || bufferSize != InnerNameBufferBytes ||
         !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire))
         return result;
+    Perf::Scope timing(Perf::Counters[Perf::Name]);
     const auto outputAddress = reinterpret_cast<std::uintptr_t>(output);
     if (outputAddress < 0x24 || outputAddress > UINTPTR_MAX - 4) {
         return result;
@@ -3258,11 +3509,11 @@ std::uint64_t __fastcall HookInnerNameWriter(
             &recordId, sizeof(recordId), &copied) || copied != sizeof(recordId)) {
         return result;
     }
-    if (recordId != header[2]) {
+    if (recordId != header[2] &&
+        !ControllerGroundScope.Owns(unit,output,header[2])) {
         return result;
     }
     const auto code = CanonicalItemCode(OriginalGetItemCode(unit)); // original helper trampoline
-    ObserveMinimapItemPosition(unit,code,recordId,header[1]);
     const char* configuredName = nullptr;
     std::size_t configuredBytes = 0;
     std::shared_ptr<const FilterRuleTable> snapshot;
@@ -3273,10 +3524,15 @@ std::uint64_t __fastcall HookInnerNameWriter(
         snapshot = PublishedFilterRules.load(std::memory_order_acquire);
         if (snapshot) {
             const auto ruleItem=GroundRuleItem(code,unit,snapshot.get(),header[2],
-                GroundPropertyLive::Purpose::VerifiedLabel);
+                GroundPropertyLive::Purpose::VerifiedLabel,true);
             GroundRuleDecision resolvedRule{};
             const auto* rule=ResolveGroundRule(snapshot.get(),ruleItem,resolvedRule) ?
                 &resolvedRule : nullptr;
+            // Resolve the icon before sampling coordinates. No-icon outcomes
+            // still clear the old icon below; icon paths retain every guard.
+            if(rule && rule->hasMinimapIcon)
+                ObserveMinimapItemPosition(unit,code,header[2],header[1]);
+            else Perf::Counters[Perf::MinimapPositionSkipped].Record(0,1);
             UpdateMinimapProjectionIconRule(header[2],code,rule);
             if (rule && rule->hasName) {
                 configuredName=rule->name.data();
@@ -3352,8 +3608,8 @@ void ArmInnerNameWriter() noexcept {
         LogInfo("LOOT_GEOMETRY_HOOK_READY already-installed=1");
         return;
     }
-    if (!Context || !D2RL::GetBuildName(Context) ||
-        std::string_view(D2RL::GetBuildName(Context)) != "93847" ||
+    if (!Context || !ResolveBuildName(Context) ||
+        !IsSupportedBuild(ResolveBuildName(Context)) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !OriginalLabelFormatter || !OriginalGetItemCode ||
         !HookInstalled.load(std::memory_order_acquire)) {
@@ -3383,11 +3639,96 @@ void ArmInnerNameWriter() noexcept {
 // Record identity at the only point with a verified native item pointer.
 // The painter may read a separate label record, so match unit ID, recent
 // formatter observation, and exact label text; NEVER compare record pointers.
+// A one-way, invocation-local handoff from a freshly guarded visibility query
+// to the SAME formatter's presentation identity. Pickup queries never consume
+// this observation. No property, native admission or page proof survives the
+// formatter, and no native pointer is retained by the resulting paint identity.
+std::atomic<std::uint64_t> GroundFormatterEpoch{};
+struct GroundFormatterObservation;
+thread_local GroundFormatterObservation* CurrentGroundFormatter{};
+struct GroundFormatterObservation final {
+    GroundFormatterObservation* previous{};
+    const void* unit{};
+    const void* output{};
+    std::uint64_t epoch{},serial{};
+    bool eligible{},available{};
+    std::array<std::uint32_t,6> header{}; // identity + item-data pointer
+    std::shared_ptr<const FilterRuleTable> rules;
+    RuleEngine::Item item{};
+    GroundFormatterObservation(const void* u,const void* out,bool qualified) noexcept
+        : previous(CurrentGroundFormatter),unit(u),output(out),
+          epoch(GroundFormatterEpoch.load(std::memory_order_acquire)),eligible(qualified) {
+        // A nested native formatter invalidates any outer handoff, even when
+        // its eventual label is not eligible. Restore scope, never old data.
+        if(previous){previous->available=false;++previous->serial;}
+        CurrentGroundFormatter=this;
+    }
+    ~GroundFormatterObservation() noexcept {CurrentGroundFormatter=previous;}
+    GroundFormatterObservation(const GroundFormatterObservation&)=delete;
+    GroundFormatterObservation& operator=(const GroundFormatterObservation&)=delete;
+};
+bool ReadGroundFormatterHeader(const void* unit,std::array<std::uint32_t,6>& header) noexcept {
+    SIZE_T copied{};
+    return unit && ReadProcessMemory(GetCurrentProcess(),unit,header.data(),sizeof(header),&copied) &&
+        copied==sizeof(header) && header[0]==4 && header[2] && header[3]==3;
+}
+struct GroundFormatterCapture final {
+    GroundFormatterObservation* scope{};
+    std::uint64_t serial{};
+    std::uint32_t code{};
+    std::array<std::uint32_t,6> header{};
+    std::shared_ptr<const FilterRuleTable> rules;
+    GroundFormatterCapture(const void* unit,std::uint32_t id,std::uint32_t c,
+        const std::shared_ptr<const FilterRuleTable>& table) noexcept
+        : scope(CurrentGroundFormatter),code(c),rules(table) {
+        if(!scope)return;
+        scope->available=false;serial=++scope->serial;
+        if(!scope->eligible || scope->unit!=unit || !rules || rules->usesQuantity || rules->usesSellPrice ||
+           !ReadGroundFormatterHeader(unit,header) ||
+           header[2]!=id)scope=nullptr;
+    }
+    void Publish(const RuleEngine::Item& observed) noexcept {
+        std::array<std::uint32_t,6> after{};
+        if(!scope || CurrentGroundFormatter!=scope || serial!=scope->serial ||
+           scope->epoch!=GroundFormatterEpoch.load(std::memory_order_acquire) ||
+           !ReadGroundFormatterHeader(scope->unit,after) || after!=header ||
+           rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
+           !HookInstalled.load(std::memory_order_acquire) ||
+           !HideGroundArmed.load(std::memory_order_acquire) ||
+           ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
+           !OriginalGetItemCode || CanonicalItemCode(OriginalGetItemCode(const_cast<void*>(scope->unit)))!=code)
+            return;
+        scope->header=header;scope->rules=rules;scope->item=observed;scope->available=true;
+        Perf::Counters[Perf::FormatterObservation].Record(0,1);
+    }
+};
+bool ConsumeGroundFormatterObservation(const void* unit,const void* record,
+    std::uint32_t id,std::uint32_t code,const std::shared_ptr<const FilterRuleTable>& rules,
+    RuleEngine::Item& item) noexcept {
+    auto* scope=CurrentGroundFormatter;
+    if(!scope || !scope->available)return false;
+    scope->available=false; // exactly one presentation consumer
+    const auto address=reinterpret_cast<std::uintptr_t>(record);
+    std::array<std::uint32_t,6> current{};
+    if(!scope->eligible || scope->unit!=unit || address>UINTPTR_MAX-0x24 ||
+       scope->output!=reinterpret_cast<const void*>(address+0x24) ||
+       scope->rules!=rules || rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
+       scope->epoch!=GroundFormatterEpoch.load(std::memory_order_acquire) ||
+       scope->header[2]!=id || scope->item.code!=code ||
+       !HookInstalled.load(std::memory_order_acquire) || !HideGroundArmed.load(std::memory_order_acquire) ||
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
+       !ReadGroundFormatterHeader(unit,current) || current!=scope->header)return false;
+    item=scope->item;
+    Perf::Counters[Perf::FormatterReuse].Record(0,1);
+    return true;
+}
+
 void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
-                           bool paired, std::uint8_t result) noexcept {
+                           bool paired, std::uint8_t result, bool controller=false) noexcept {
     if (ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
         !sourceCall || !paired || !result || !unit || !record ||
         !OriginalGetItemCode || !HookInstalled.load(std::memory_order_acquire)) return;
+    Perf::Scope timing(Perf::Counters[Perf::Identity]);
     std::uint32_t header[3]{},recordId{};
     SIZE_T copied{};
     const auto address=reinterpret_cast<std::uintptr_t>(record);
@@ -3397,7 +3738,10 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
         return;
     }
     copied=0;
-    if (!ReadProcessMemory(GetCurrentProcess(),
+    if (controller) {
+        if (!ControllerGroundScope.Owns(unit,reinterpret_cast<void*>(address+0x24),header[2])) return;
+        recordId=header[2]; // native caller publishes this ID AFTER the formatter returns
+    } else if (!ReadProcessMemory(GetCurrentProcess(),
         reinterpret_cast<const void*>(address+0x10),&recordId,
         sizeof(recordId),&copied) || copied!=sizeof(recordId) ||
         recordId!=header[2]) {
@@ -3406,8 +3750,12 @@ void RememberGroundIdentity(void* unit, void* record, bool sourceCall,
     const auto code=CanonicalItemCode(OriginalGetItemCode(unit));
     const auto table=PublishedFilterRules.load(std::memory_order_acquire);
     if (!table) return;
-    const auto scalars=GroundRuleItem(code,unit,table.get(),recordId,
-        GroundPropertyLive::Purpose::VerifiedLabel);
+    RuleEngine::Item scalars{};
+    if(!ConsumeGroundFormatterObservation(unit,record,recordId,code,table,scalars)) {
+        Perf::Counters[Perf::FormatterFallback].Record(0,1);
+        scalars=GroundRuleItem(code,unit,table.get(),recordId,
+            GroundPropertyLive::Purpose::VerifiedLabel);
+    }
     GroundRuleDecision resolvedRule{};
     const auto* selected=ResolveGroundRule(table.get(),scalars,resolvedRule) ?
         &resolvedRule : nullptr;
@@ -3515,7 +3863,10 @@ void __cdecl UnHoarderSharedLabelPaintMiddleware(
     void*,std::uintptr_t caller,
     void* rect,void* textArg,void* colorArg,
     TooltipCompat::SharedLabelPaintNextFn next,void* nextContext) noexcept {
-    const bool ground=caller==Base+0x1517AF6;
+    const bool ground=caller==Base+0x1517AF6 ||
+        (ControllerGroundLabelsReady.load(std::memory_order_acquire) &&
+         caller==Base+ControllerGroundLabel::PaintReturn);
+    const auto styleStarted=ground?LootPerf::Now():0;
     const bool rulesActive=ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules;
     const bool tint=rulesActive && BackgroundTintArmed.load(std::memory_order_acquire);
     const bool hide=rulesActive && HideGroundArmed.load(std::memory_order_acquire);
@@ -3580,8 +3931,7 @@ void __cdecl UnHoarderSharedLabelPaintMiddleware(
             }
 
             if (tint && !concealGroundVisuals && rule && rule->hasBackground &&
-                nameMatches && std::memcmp(rgba.data(),OriginalGroundBackground.data(),
-                    sizeof(rgba))==0) {
+                nameMatches && GroundLabelBackground::KnownNativeBlack(rgba)) {
                 forwardedRgba=rule->background;
                 forwardedColor=forwardedRgba.data();
             }
@@ -3594,6 +3944,10 @@ void __cdecl UnHoarderSharedLabelPaintMiddleware(
     const float* const previousGlyphColor=VerifiedRuleGlyphColor;
     VerifiedRuleGlyphColor=concealGroundVisuals ? invisibleRgba.data() :
         (ground && hasScopedRuleTextColor?scopedRuleTextColor.data():nullptr);
+    if(ground) {
+        const auto ended=LootPerf::Now();
+        Perf::Counters[Perf::Style].Record(ended>=styleStarted?ended-styleStarted:0,1);
+    }
 
     // A qualified show:false bulk-ground label omits the remainder of the
     // middleware chain. Pickup suppression is enforced independently.
@@ -3819,6 +4173,133 @@ const D2RL::PluginCommunicationService* ResolvePluginCommunication() noexcept {
     return service;
 }
 
+UnhoarderVisibility::Decision __cdecl QueryGroundVisibility(
+    const void* unit,std::uint32_t guid,std::uint32_t code) noexcept {
+    // Even an early failed/reentrant query retires an earlier presentation witness.
+    if(CurrentGroundFormatter){CurrentGroundFormatter->available=false;++CurrentGroundFormatter->serial;}
+    Perf::Scope timing(Perf::Counters[Perf::Visibility]);
+    using D=UnhoarderVisibility::Decision;
+    code=CanonicalItemCode(code);
+    if(!unit || !guid || !PrintableItemCode(code) || !OriginalGetItemCode ||
+       !HookInstalled.load(std::memory_order_acquire)) return D::Unknown;
+    if(!HideGroundArmed.load(std::memory_order_acquire) ||
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
+        return D::Visible;
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+    if(!rules) return D::Unknown;
+    if(!rules->hiddenRules) return D::Visible;
+    std::array<std::uint32_t,4> before{},after{};SIZE_T copied{};
+    if(!ReadProcessMemory(GetCurrentProcess(),unit,before.data(),sizeof(before),&copied) ||
+       copied!=sizeof(before) || before[0]!=4 || before[2]!=guid || before[3]!=3)
+        return D::Unknown;
+    auto* mutableUnit=const_cast<void*>(unit);
+    if(CanonicalItemCode(OriginalGetItemCode(mutableUnit))!=code) return D::Unknown;
+    GroundFormatterCapture presentation(unit,guid,code,rules);
+    const auto item=GroundRuleItem(code,mutableUnit,rules.get(),guid);
+    GroundRuleDecision decision{};
+    const bool matched=ResolveGroundRule(rules.get(),item,decision);
+    if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
+       copied!=sizeof(after) || before!=after ||
+       rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
+       !HideGroundArmed.load(std::memory_order_acquire) ||
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
+        return D::Unknown;
+    if(!matched) return D::Unknown;
+    presentation.Publish(item); // presentation only; never an input to this query
+    return decision.show?D::Visible:D::Hidden;
+}
+const UnhoarderVisibility::Service PublishedVisibilityService{
+    sizeof(UnhoarderVisibility::Service),UnhoarderVisibility::Version,&QueryGroundVisibility};
+// No copied mutable properties or cached native admission. This callback only
+// proves that the current code excludes EVERY Hide rule in the current snapshot.
+// All other outcomes require the original guarded QOL visibility query.
+UnhoarderLabelVisibility::Decision __cdecl QueryLabelCannotHide(
+    const void* unit,std::uint32_t guid) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::LabelPreflight]);
+    using D=UnhoarderLabelVisibility::Decision;
+    if(!unit || !guid || !OriginalGetItemCode ||
+       !HookInstalled.load(std::memory_order_acquire))return D::RequireQuery;
+    if(!HideGroundArmed.load(std::memory_order_acquire) ||
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)return D::CannotHide;
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+    if(!rules)return D::RequireQuery;
+    std::array<std::uint32_t,4> before{},after{};SIZE_T copied{};
+    if(!ReadProcessMemory(GetCurrentProcess(),unit,before.data(),sizeof(before),&copied) ||
+       copied!=sizeof(before) || before[0]!=4 || before[2]!=guid || before[3]!=3)return D::RequireQuery;
+    auto* mutableUnit=const_cast<void*>(unit);
+    const auto code=CanonicalItemCode(OriginalGetItemCode(mutableUnit));
+    if(!PrintableItemCode(code))return D::RequireQuery;
+    RuleEngine::Item item{};item.code=code;item.classIdKnown=true;item.classId=before[1];
+    if(UnHoarder::GroundActionDemand::HidePossible(rules->rules,item))return D::RequireQuery;
+    // The borrowed item's identity and code, the rule snapshot and presentation
+    // arming are checked again before the caller may skip any work.
+    if(CanonicalItemCode(OriginalGetItemCode(mutableUnit))!=code ||
+       !ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
+       copied!=sizeof(after) || before!=after ||
+       rules!=PublishedFilterRules.load(std::memory_order_acquire) ||
+       !HideGroundArmed.load(std::memory_order_acquire) ||
+       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)return D::RequireQuery;
+    Perf::Counters[Perf::LabelNoHide].Record(0,1);
+    return D::CannotHide;
+}
+const UnhoarderLabelVisibility::Service PublishedLabelVisibilityService{
+    sizeof(UnhoarderLabelVisibility::Service),UnhoarderLabelVisibility::Version,&QueryLabelCannotHide};
+bool __cdecl RegisterNativeDrop(
+        const D2RL::PluginContext* consumer,NativeHookCompat::DropSoundReplacementFn callback,void* user) noexcept {
+    // Our provider service cannot host clients through a foreign-owner lease.
+    if(!ArmNativeDropSoundHook() || !OwnsNativeDropAudioHook())return false;
+    return NativeDropSubscribers.Register(consumer,callback,user);
+}
+bool __cdecl UnregisterNativeDrop(
+        const D2RL::PluginContext* consumer,NativeHookCompat::DropSoundReplacementFn callback,void* user) noexcept {
+    return NativeDropSubscribers.Unregister(consumer,callback,user);
+}
+bool __cdecl RegisterNativeAutomap(
+        const D2RL::PluginContext* consumer,NativeHookCompat::AutomapUnitObserverFn callback,void* user) noexcept {
+    // A leased foreign renderer dispatches to its own registered consumers,
+    // not to this plugin's local host registry.
+    if(!OriginalAutomapRenderUnit ||
+       !AutomapProjectionHookInstalled.load(std::memory_order_acquire))return false;
+    return NativeAutomapSubscribers.Register(consumer,callback,user);
+}
+bool __cdecl UnregisterNativeAutomap(
+        const D2RL::PluginContext* consumer,NativeHookCompat::AutomapUnitObserverFn callback,void* user) noexcept {
+    return NativeAutomapSubscribers.Unregister(consumer,callback,user);
+}
+const NativeHookCompat::Service PublishedNativeHookService{
+    sizeof(NativeHookCompat::Service),NativeHookCompat::ServiceVersion,
+    NativeHookCompat::DropAudioRva,NativeHookCompat::AutomapUnitRva,
+    &RegisterNativeDrop,&UnregisterNativeDrop,
+    &RegisterNativeAutomap,&UnregisterNativeAutomap};
+void PublishNativeHookService() noexcept {
+    const auto* broker=ResolvePluginCommunication();
+    if(!broker || !broker->publishService)return;
+    const D2RL::PluginCommunication::PublishServiceRequest request{
+        .structSize=D2RL::PluginCommunication::PublishServiceRequestSize,
+        .flags=0,.name=NativeHookCompat::ServiceName,
+        .serviceVersion=NativeHookCompat::ServiceVersion,
+        .tableSize=sizeof(PublishedNativeHookService),
+        .table=&PublishedNativeHookService};
+    if(broker->publishService(Context,&request)==D2RL::PluginCommunication::Result::Success)
+        LogInfo("LOOT_NATIVE_HOOK_SERVICE_READY abi=1 owner-only=1 drop-audio=1 automap=1");
+}
+void PublishGroundVisibilityService() noexcept {
+    const auto* service=ResolvePluginCommunication();
+    if(!service || !service->publishService) return;
+    const D2RL::PluginCommunication::PublishServiceRequest request{
+        .structSize=D2RL::PluginCommunication::PublishServiceRequestSize,.flags=0,
+        .name=UnhoarderVisibility::Name,.serviceVersion=UnhoarderVisibility::Version,
+        .tableSize=sizeof(PublishedVisibilityService),.table=&PublishedVisibilityService};
+    if(service->publishService(Context,&request)==D2RL::PluginCommunication::Result::Success)
+        LogInfo("LOOT_VISIBILITY_SERVICE_READY abi=1 presentation-only=1 native-pickup=unchanged");
+    const D2RL::PluginCommunication::PublishServiceRequest labelRequest{
+        .structSize=D2RL::PluginCommunication::PublishServiceRequestSize,.flags=0,
+        .name=UnhoarderLabelVisibility::Name,.serviceVersion=UnhoarderLabelVisibility::Version,
+        .tableSize=sizeof(PublishedLabelVisibilityService),.table=&PublishedLabelVisibilityService};
+    if(service->publishService(Context,&labelRequest)==D2RL::PluginCommunication::Result::Success)
+        LogInfo("LOOT_LABEL_PREFLIGHT_SERVICE_READY abi=1 no-hide-proof-only=1 mutable-properties-cached=0 native-pickup=unchanged");
+}
+
 void PublishTooltipCompatService() noexcept {
     const auto* communication=ResolvePluginCommunication();
     if (!communication || !communication->publishService) {
@@ -3914,6 +4395,54 @@ bool DiagnoseTrackedTooltipOwner(
     return exactEntryHook;
 }
 
+bool TryAttachForeignAutomap(const void* expected,std::uint32_t bytes) noexcept {
+    std::array<char,64> owner{};
+    if(!DiagnoseTrackedTooltipOwner(AutomapRenderUnitRva,expected,bytes,owner))return false;
+    const auto* broker=ResolvePluginCommunication();
+    if(!broker)return false;
+    D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> lease{};
+    if(D2RL::PluginCommunication::Acquire(Context,broker,owner.data(),
+            NativeHookCompat::ServiceName,NativeHookCompat::ServiceVersion,
+            sizeof(NativeHookCompat::Service),&lease)!=D2RL::PluginCommunication::Result::Success ||
+       !lease || !NativeHookCompat::Valid(lease.Get()) ||
+       !lease->registerAutomap(Context,&OnForeignAutomapUnit,nullptr))return false;
+    ForeignAutomapCompatLease=std::move(lease);
+    ForeignAutomapCompatAttached=true;
+    char msg[220]{};
+    std::snprintf(msg,sizeof(msg),
+        "LOOT_NATIVE_HOOK_COMPAT_CHAINED entry=automap host=%s mode=leased-observer",owner.data());
+    LogInfo(msg);
+    return true;
+}
+bool TryAttachForeignDropAudio(const void* expected,std::uint32_t bytes) noexcept {
+    std::array<char,64> owner{};
+    if(!DiagnoseTrackedTooltipOwner(NativeHookCompat::DropAudioRva,expected,bytes,owner))return false;
+    const auto* broker=ResolvePluginCommunication();
+    if(!broker)return false;
+    D2RL::PluginCommunication::ServiceLease<NativeHookCompat::Service> lease{};
+    if(D2RL::PluginCommunication::Acquire(Context,broker,owner.data(),
+            NativeHookCompat::ServiceName,NativeHookCompat::ServiceVersion,
+            sizeof(NativeHookCompat::Service),&lease)!=D2RL::PluginCommunication::Result::Success ||
+       !lease || !NativeHookCompat::Valid(lease.Get()) ||
+       !lease->registerDrop(Context,&OnForeignDropSound,nullptr))return false;
+    ForeignDropCompatLease=std::move(lease);
+    ForeignDropCompatAttached=true;
+    char msg[220]{};
+    std::snprintf(msg,sizeof(msg),
+        "LOOT_NATIVE_HOOK_COMPAT_CHAINED entry=drop-audio host=%s mode=leased-replacer",owner.data());
+    LogInfo(msg);
+    return true;
+}
+void DetachForeignNativeHookCompat() noexcept {
+    if(ForeignDropCompatAttached && ForeignDropCompatLease)
+        (void)ForeignDropCompatLease->unregisterDrop(Context,&OnForeignDropSound,nullptr);
+    ForeignDropCompatAttached=false;
+    (void)ForeignDropCompatLease.Reset();
+    if(ForeignAutomapCompatAttached && ForeignAutomapCompatLease)
+        (void)ForeignAutomapCompatLease->unregisterAutomap(Context,&OnForeignAutomapUnit,nullptr);
+    ForeignAutomapCompatAttached=false;
+    (void)ForeignAutomapCompatLease.Reset();
+}
 void __cdecl OnCompatibleInWorldLabel(
     const InWorldCompat::Event* event, void*) noexcept {
     if (!event || event->structSize < sizeof(InWorldCompat::Event)
@@ -3923,8 +4452,6 @@ void __cdecl OnCompatibleInWorldLabel(
     const auto code=CanonicalItemCode(
         OriginalGetItemCode(const_cast<void*>(event->nativeUnit)));
     if (!PrintableItemCode(code)) return;
-    ObserveMinimapItemPosition(event->nativeUnit,code,event->unitId,event->classId);
-    ObserveGroundSoundIdentity(event->unitId,code,event->nativeUnit,event->classId);
     ObserveNativeRowLiveLabel(event->unitType,event->classId,event->unitId,code,
         event->nativeUnit,event->source,event->sourceLength);
 }
@@ -3949,6 +4476,9 @@ bool __cdecl OnCompatibleInWorldStyle(
     GroundRuleDecision resolvedRule{};
     const auto* rule=ResolveGroundRule(snapshot.get(),observed,resolvedRule)
         ? &resolvedRule : nullptr;
+    if(rule && rule->hasMinimapIcon)
+        ObserveMinimapItemPosition(event->nativeUnit,code,event->unitId,event->classId);
+    else Perf::Counters[Perf::MinimapPositionSkipped].Record(0,1);
     UpdateMinimapProjectionIconRule(event->unitId,code,rule);
     const auto quantity=GroundStackQuantity(event->nativeUnit);
     const char palette=rule && rule->hasTextColor
@@ -3969,8 +4499,8 @@ bool __cdecl OnCompatibleInWorldStyle(
 bool TryAttachInWorldLabelCompat() noexcept {
     if (InWorldCompatLease && InWorldCompatService.load(std::memory_order_acquire))
         return true;
-    if (!Context || !D2RL::GetBuildName(Context)
-        || std::string_view(D2RL::GetBuildName(Context))!="93847") return false;
+    if (!Context || !ResolveBuildName(Context)
+        || !IsSupportedBuild(ResolveBuildName(Context))) return false;
     std::array<char,64> owner{};
     if (!DiagnoseTrackedTooltipOwner(InWorldFormatterRva,
             ExpectedInWorldFormatter.data(),
@@ -4362,6 +4892,7 @@ std::uint64_t __cdecl UnHoarderGlyphRendererMiddleware(
     void*,std::uintptr_t caller,
     void* context,float x,float y,const float* nativeRgba,
     TooltipCompat::GlyphRendererNextFn next,void* nextContext) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::Glyph]);
     if (!next) return 0;
     std::uint64_t hiddenHoverColored{};
     if (TryForwardNativeRowFontGlyph(
@@ -4395,8 +4926,8 @@ void ArmCorrectedGlyphB() noexcept {
         LogInfo("LOOT_GLYPH_B_ARMED version=" UNHOARDER_VERSION_STRING " already-installed=1 abi=RCX,XMM1,XMM2,R9-pointer hookA=0");
         return;
     }
-    const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
-    if (!Context || !build || std::string_view(build)!="93847" ||
+    const char* build=Context ? ResolveBuildName(Context) : nullptr;
+    if (!Context || !IsSupportedBuild(build) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !InnerNameHookInstalled.load(std::memory_order_acquire) ||
         !BackgroundPaintHookInstalled.load(std::memory_order_acquire) ||
@@ -4475,14 +5006,14 @@ void SyncFilterTextColorState() noexcept {
 
 void EnsureSharedLabelPaintHook() noexcept {
     if (BackgroundPaintHookInstalled.load(std::memory_order_acquire)) return;
-    const char* build=Context ? D2RL::GetBuildName(Context) : nullptr;
+    const char* build=Context ? ResolveBuildName(Context) : nullptr;
     constexpr std::array<std::uint8_t,17> expected{{
         0x48,0x89,0x5C,0x24,0x10,0x48,0x89,0x74,0x24,0x18,
         0x57,0x48,0x83,0xEC,0x40,0x49,0x8B}};
     constexpr std::array<std::uint8_t,5> groundCall{{0xE8,0xEA,0x2D,0xCE,0xFE}};
     constexpr std::array<std::uint8_t,5> neighborCall{{0xE8,0x9A,0x0A,0xCE,0xFE}};
     std::array<std::uint8_t,5> groundBytes{},neighborBytes{};
-    if (!Context || !build || std::string_view(build)!="93847" ||
+    if (!Context || !IsSupportedBuild(build) ||
         !FormatterHookInstalled.load(std::memory_order_acquire) ||
         !OriginalLabelFormatter ||
         !ReadSafe(0x1517AF1,groundBytes.data(),groundBytes.size()) ||
@@ -4647,14 +5178,14 @@ void EnableAutomaticNativeHover() noexcept {
 }
 
 
-// Per-game first-observed-unit sound alert. The Alt-ground-label and optional
-// Qualified ground-label observations feed one registry. The public
+// Native drop-sound replacement. Each qualified native audio event resolves
+// one rule; label observers never enqueue audio. The public
 // InventoryService is polled on the UI thread: seeing an existing, alerted
 // unit ID in the player's owned inventory or cursor FORGETS precisely that ID.
-// A later ground observation of the same unit can play another sound. This
-// does not hook monster/TC drops or infer pickup from missing labels.
+// A later native drop of the same unit can play another sound immediately. This
+// does not modify monster/TC drops or infer pickup from missing labels.
 // Sound resolution still uses the qualified D2RLoader sounds.txt row-NAME
-// backend on the game thread, not the sounds.txt numeric Index or FMOD.
+// backend inside the original native audio callback, not a numeric Index or FMOD.
 const D2RL::ThreadService* SoundThreads{};
 const D2RL::InventoryService* SoundInventory{};
 const D2RL::ItemService* SoundInventoryItems{};
@@ -4663,9 +5194,7 @@ std::atomic_bool SoundPickupPollPending{};
 constexpr auto SoundPickupPollInterval=std::chrono::milliseconds(150);
 std::atomic<std::uintptr_t> SoundLoaderBase{};
 std::atomic_bool SoundArmed{};
-std::atomic<ULONGLONG> SoundArmMs{};
 std::atomic<std::uint64_t> SoundRegistryEpoch{1};
-constexpr ULONGLONG SoundBaselineMs=1500;
 SoundIdentity::Registry SoundSeenRegistry{};
 std::mutex SoundSeenMutex;
 
@@ -4783,137 +5312,130 @@ bool SoundMemoryRead(std::uintptr_t addr,void* data,std::size_t size) noexcept {
         "LOOT_SOUND_QUALIFY matched=1 version=" UNHOARDER_VERSION_STRING " "
         "layout=%s nativeNamePlayer=D2RLoader+0x1A0C00 "
         "witnesses=%zu callChain=3 registration=exact executePage=1 "
-        "nameBased=1 gameThreadRequired=1 rowIndexNotUsed=1",
+        "nameBased=1 nativeAudioCallbackRequired=1 rowIndexNotUsed=1",
         SoundLoaderIdentity::Name(layout),matched);
     LogInfo(msg);
     return true;
 }
 
-struct SoundRequest {
-    std::array<char,64> name{};
-    std::uint32_t unitId{},code{};
-    std::uint64_t registryEpoch{}, itemTicket{};
-};
-void __cdecl PlayNamedSoundOnGameThread(
-    const D2RL::PluginContext* logger,void* requestArg) noexcept {
-    std::unique_ptr<SoundRequest> request(static_cast<SoundRequest*>(requestArg));
-    if(!request || !request->name[0])return;
-    if(!SoundArmed.load(std::memory_order_acquire) ||
-       request->registryEpoch != SoundRegistryEpoch.load(std::memory_order_acquire)) {
-        return;
-    }
-    // A pickup must cancel a queued old alert even if this unit is
-    // re-dropped (and re-registered) within the same game epoch.
-    if (!SoundSeenMutex.try_lock()) return;
-    const bool valid = request->registryEpoch ==
-        SoundRegistryEpoch.load(std::memory_order_acquire) &&
-        SoundSeenRegistry.IsCurrent(request->unitId, request->itemTicket);
-    SoundSeenMutex.unlock();
-    if (!valid) return;
+bool TryReplaceNativeDropSound(void* unit,const NativeDropSound::Snapshot& snapshot) noexcept {
+    if (!SoundArmed.load(std::memory_order_acquire) || !OriginalGetItemCode ||
+        !HookInstalled.load(std::memory_order_acquire) ||
+        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)return false;
     const auto base=SoundLoaderBase.load(std::memory_order_acquire);
-    if(!base)return;
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+    if (!base || !rules || !rules->soundRules)return false;
+    const auto code=CanonicalItemCode(OriginalGetItemCode(unit));
+    const auto item=GroundRuleItem(code,unit,rules.get(),snapshot.id,
+        GroundPropertyLive::Purpose::VerifiedLabel);
+    GroundRuleDecision selected{};
+    if (!ResolveGroundRule(rules.get(),item,selected) || !selected.hasDropSound ||
+        !selected.dropSound[0])return false;
+    NativeDropSound::Snapshot current{};
+    if (!SoundMemoryRead(reinterpret_cast<std::uintptr_t>(unit),&current,sizeof(current)) ||
+        current.type!=snapshot.type || current.classId!=snapshot.classId ||
+        current.id!=snapshot.id || current.mode!=snapshot.mode)return false;
+    // The reviewed name player forwards RDX to the SAME native audio player
+    // as the intercepted routine. Keep the exact item in this native call's
+    // lifetime; no authoritative-thread queue is needed on remote clients.
     using PlayNamedFn=void* (__fastcall*)(const char*,void*,int,int);
     auto* player=reinterpret_cast<PlayNamedFn>(base+0x1A0C00U);
-    void* result=player(request->name.data(),nullptr,0,1);
-    char codeText[5]{};
-    CodeText(request->code,codeText);
-    char message[320]{};
+    void* result=player(selected.dropSound.data(),unit,0,0);
+    char codeText[5]{};CodeText(code,codeText);
+    char message[330]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_PLAY version=" UNHOARDER_VERSION_STRING " trigger=first-ground-label code='%s' unitId=%u name='%s' engineReturned=%u gameThread=%lu note=return-not-audibility-proof",
-        codeText,request->unitId,
-        request->name.data(),result?1U:0U,static_cast<unsigned long>(GetCurrentThreadId()));
-    if(logger) {
-        logger->LogInfo(message);
-    }
+        "LOOT_SOUND_PLAY version=" UNHOARDER_VERSION_STRING " trigger=native-item-drop code='%s' unitId=%u name='%s' engineReturned=%u nativeSuppressed=%u fallback=%s callbackThread=%lu note=return-not-audibility-proof",
+        codeText,snapshot.id,selected.dropSound.data(),result?1U:0U,result?1U:0U,
+        result?"none":"native",static_cast<unsigned long>(GetCurrentThreadId()));
+    LogInfo(message);
+    return result!=nullptr;
 }
 
-bool QueueNamedSound(std::string_view name,std::uint32_t unitId,
-                     std::uint32_t code,std::uint64_t observedEpoch,
-                     std::uint64_t itemTicket) noexcept {
-    if(name.empty() || name.size()>63 || !SoundThreads ||
-       !SoundThreads->runOnGameThread || !Context ||
-       !SoundLoaderBase.load(std::memory_order_acquire)) {
+bool __cdecl OnForeignDropSound(void* unit,void*) noexcept {
+    // Borrowed unit from the exact, diagnosed host's native drop callback.
+    // Repeat item identity and ground-mode checks before overriding its audio.
+    NativeDropSound::Snapshot first{},second{};
+    if(!unit || !SoundMemoryRead(reinterpret_cast<std::uintptr_t>(unit),&first,sizeof(first)) ||
+       !SoundMemoryRead(reinterpret_cast<std::uintptr_t>(unit),&second,sizeof(second)) ||
+       !NativeDropSound::Eligible(0x1C36A0,first,second))return false;
+    return TryReplaceNativeDropSound(unit,second);
+}
+
+using NativeDropPlayerFn=void (__fastcall*)(void*) noexcept;
+NativeDropPlayerFn OriginalNativeDropPlayer{};
+std::atomic_bool NativeDropSoundHookInstalled{};
+std::mutex NativeDropHookInstallMutex{};
+bool OwnsNativeDropAudioHook() noexcept {
+    return NativeDropSoundHookInstalled.load(std::memory_order_acquire) &&
+        OriginalNativeDropPlayer!=nullptr;
+}
+
+void __fastcall HookNativeDropPlayer(void* unit) noexcept {
+    const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+    NativeDropSound::Dispatch(caller>=Base?caller-Base:UINTPTR_MAX,unit,
+        [](void* item) noexcept {OriginalNativeDropPlayer(item);},
+        [](void* item,NativeDropSound::Snapshot& out) noexcept {
+            return SoundMemoryRead(reinterpret_cast<std::uintptr_t>(item),&out,sizeof(out));
+        },
+        [](void* item,const NativeDropSound::Snapshot& snapshot) noexcept {
+            if(TryReplaceNativeDropSound(item,snapshot))return true;
+            return NativeDropSubscribers.Dispatch([&](auto replacer,void* user) noexcept {
+                return replacer(item,user);
+            });
+        });
+}
+
+bool ArmNativeDropSoundHook() noexcept {
+    // Registration can race a filter reload on another plugin/thread.
+    std::lock_guard installLock(NativeDropHookInstallMutex);
+    if (NativeDropSoundHookInstalled.load(std::memory_order_acquire))
+        return OriginalNativeDropPlayer!=nullptr || ForeignDropCompatAttached;
+    const auto* build=Context?ResolveBuildName(Context):nullptr;
+    if(!Context || !IsSupportedBuild(build) || !Base || !ImageSize)return false;
+    const bool nativeVerified=NativeDropSound::Verify(
+        [](std::uintptr_t rva,void* out,std::size_t bytes) noexcept {return ReadSafe(rva,out,bytes);});
+    if(!nativeVerified || !Context->CheckExpectedBytes(
+            NativeDropSound::Rva,NativeDropSound::Witness0,20)) {
+        if(TryAttachForeignDropAudio(NativeDropSound::Witness0,20)) {
+            NativeDropSoundHookInstalled.store(true,std::memory_order_release);
+            return true;
+        }
+        LogWarn("LOOT_SOUND_DROP_HOOK_REFUSED native-body-or-cooperative-owner-mismatch native-audio-preserved=1");
         return false;
     }
-    auto* request=new(std::nothrow) SoundRequest{};
-    if(!request) {
+    if (!Context->InstallInlineHook(NativeDropSound::Rva,NativeDropSound::Witness0,20,
+        HookNativeDropPlayer,&OriginalNativeDropPlayer) || !OriginalNativeDropPlayer) {
+        LogWarn("LOOT_SOUND_DROP_HOOK_REFUSED loader-install-failed no-label-fallback=1 native-audio-preserved=1");
         return false;
     }
-    std::memcpy(request->name.data(),name.data(),name.size());
-    request->name[name.size()]='\0';
-    request->unitId=unitId;request->code=code;
-    request->registryEpoch=observedEpoch;
-    request->itemTicket=itemTicket;
-    // The callback owns the raw allocation on Success. Never access it
-    // after dispatch: the service may run the callback synchronously if we
-    // are already on the game thread, and callback may have freed it.
-    const auto codeResult=SoundThreads->runOnGameThread(
-        Context,&PlayNamedSoundOnGameThread,request);
-    if(codeResult!=D2RL::Threads::Result::Success) {
-        delete request;
-        return false;
-    }
+    NativeDropSoundHookInstalled.store(true,std::memory_order_release);
+    LogInfo("LOOT_SOUND_DROP_HOOK_READY hook=D2R+0x1C8130 callerReturns=0x1C36A0,0x1C6C9E native-fallback-once=1 replacement=accepted-custom-only item-identity=before-after mode=ground-or-dropping label-dependency=0");
     return true;
-}
-
-// Shared, read-only identity sink. The rule is resolved BEFORE claiming an ID;
-// this keeps non-sound items out of the fixed-capacity sound registry. There
-// is no visibility timeout, cooldown, or label-based replay heuristic.
-void ObserveGroundSoundIdentity(std::uint32_t unitId,
-    std::uint32_t rawCode,const void* nativeUnit,
-    std::uint32_t knownClassId) noexcept {
-    if (!SoundArmed.load(std::memory_order_acquire) || !unitId ||
-        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
-        return;
-    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
-    if (!rules || !rules->soundRules) return;
-    const auto code=CanonicalItemCode(rawCode);
-    auto item=GroundRuleItem(code,nativeUnit,rules.get(),unitId,
-        GroundPropertyLive::Purpose::VerifiedLabel);
-    if(!item.classIdKnown && knownClassId!=0xffffffffU) {
-        item.classIdKnown=true;item.classId=knownClassId;
-    }
-    GroundRuleDecision resolvedRule{};
-    const auto* rule=ResolveGroundRule(rules.get(),item,resolvedRule) ?
-        &resolvedRule : nullptr;
-    if (!rule || !rule->hasDropSound) return;
-    if (!SoundSeenMutex.try_lock()) {
-        return;
-    }
-    const auto now=GetTickCount64();
-    const auto start=SoundArmMs.load(std::memory_order_relaxed);
-    const bool baseline=now>=start && now-start<SoundBaselineMs;
-    const auto observedEpoch=SoundRegistryEpoch.load(std::memory_order_acquire);
-    std::uint64_t itemTicket{};
-    const auto observation=SoundSeenRegistry.Observe(unitId,code,&itemTicket);
-    SoundSeenMutex.unlock();
-    if (observation!=SoundIdentity::Registry::Observation::New || baseline) return;
-    (void)QueueNamedSound(rule->dropSound.data(),unitId,code,
-        observedEpoch,itemTicket);
-}
-
-void ExamineGroundSoundCandidate(void* unit,void* record,bool sourceCall,
-                                  bool paired,std::uint8_t result) noexcept {
-    if(!SoundArmed.load(std::memory_order_acquire) || !result || !sourceCall ||
-       !paired || !unit || !record || !OriginalGetItemCode ||
-       ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
-        return;
-    std::uint32_t header[4]{},recordId{};
-    if(!SoundMemoryRead(reinterpret_cast<std::uintptr_t>(unit),header,sizeof(header)) ||
-       header[0]!=4 || !header[2] ||
-       !SoundMemoryRead(reinterpret_cast<std::uintptr_t>(record)+0x10,
-                        &recordId,sizeof(recordId)) ||
-       recordId!=header[2]) return;
-    ObserveGroundSoundIdentity(header[2],OriginalGetItemCode(unit),unit,header[1]);
 }
 
 // Re-arm sounds ONLY after an explicit successful inventory/cursor
 // observation, not on disappearance from the screen. The SDK returns copied
 // ItemInfo snapshots, so no item handles/pointers escape these callbacks.
 struct PickupPollResults final {
+    std::uint32_t visited{};
     std::uint32_t cleared{};
     std::uint32_t lastUnitId{};
+    struct Needs {
+        bool sound{},minimap{},sellPrice{};
+        explicit operator bool() const noexcept {return sound || minimap || sellPrice;}
+    } needs{};
 };
+
+PickupPollResults::Needs ReadPickupObservationNeeds() noexcept {
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+    if(!rules || ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
+        return {};
+    // Installed capabilities alone do not justify enumerating owned storage.
+    // The queued UI callback rechecks this demand after any intervening reload.
+    return {SoundArmed.load(std::memory_order_acquire),
+        rules->minimapIconRules!=0 && AutomapProjectionHookInstalled.load(std::memory_order_acquire),
+        rules->usesSellPrice};
+}
 
 void ForgetCarriedSoundItem(std::uint32_t unitId,
                             PickupPollResults& results) noexcept {
@@ -4936,10 +5458,11 @@ D2RL::Inventory::IterationAction __cdecl OnSoundInventoryItem(
         item->structSize < D2RL::Items::ItemInfoRequiredSize ||
         item->container == D2RL::Items::ItemContainer::Ground)
         return D2RL::Inventory::IterationAction::Continue;
-    ForgetMinimapProjectionItem(item->runtimeId);
-    ForgetVendorSellPriceItem(item->runtimeId);
-    ForgetCarriedSoundItem(item->runtimeId,
-        *static_cast<PickupPollResults*>(userData));
+    auto& results=*static_cast<PickupPollResults*>(userData);
+    ++results.visited;
+    if(results.needs.minimap) ForgetMinimapProjectionItem(item->runtimeId);
+    if(results.needs.sellPrice) ForgetVendorSellPriceItem(item->runtimeId);
+    if(results.needs.sound) ForgetCarriedSoundItem(item->runtimeId,results);
     return D2RL::Inventory::IterationAction::Continue;
 }
 
@@ -4950,17 +5473,15 @@ void __cdecl PollSoundInventoryOnUiThread(
     const auto finish=[]() noexcept {
         SoundPickupPollPending.store(false,std::memory_order_release);
     };
-    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
-    const bool sellPriceLifecycle=rules && rules->usesSellPrice;
-    if (!context ||
-        (!SoundArmed.load(std::memory_order_acquire) &&
-         !AutomapProjectionHookInstalled.load(std::memory_order_acquire) &&
-         !sellPriceLifecycle) ||
+    const auto needs=ReadPickupObservationNeeds();
+    if (!context || !needs ||
         !SoundInventory || !SoundInventory->getLocalPlayer ||
         !SoundInventory->forEachInventoryItem) {
         finish();
         return;
     }
+    Perf::Scope timing(Perf::Counters[Perf::Poll]);
+    timing.Items(0);
     D2RL::PlayerHandle player{};
     if (SoundInventory->getLocalPlayer(context,&player) !=
         D2RL::Inventory::Result::Success) {
@@ -4968,6 +5489,7 @@ void __cdecl PollSoundInventoryOnUiThread(
         return;
     }
     PickupPollResults results{};
+    results.needs=needs;
     constexpr auto carriedMask =
         D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Inventory) |
         D2RL::Items::ContainerBit(D2RL::Items::ItemContainer::Equipment) |
@@ -4979,8 +5501,12 @@ void __cdecl PollSoundInventoryOnUiThread(
     const D2RL::Inventory::ItemFilter filter{
         D2RL::Inventory::ItemFilterSize,0,carriedMask,0
     };
-    (void)SoundInventory->forEachInventoryItem(
-        context,player,&filter,&OnSoundInventoryItem,&results);
+    {
+        Perf::Scope enumeration(Perf::Counters[Perf::Enumeration]);
+        (void)SoundInventory->forEachInventoryItem(
+            context,player,&filter,&OnSoundInventoryItem,&results);
+        enumeration.Items(results.visited);
+    }
     // Cursor is not guaranteed to be included in inventory enumeration.
     // A ground pickup held on the cursor must also re-arm the original item.
     if (SoundInventory->getCursorItem && SoundInventoryItems &&
@@ -4994,11 +5520,13 @@ void __cdecl PollSoundInventoryOnUiThread(
                     D2RL::Items::Result::Success &&
                 info.structSize >= D2RL::Items::ItemInfoRequiredSize &&
                 info.container == D2RL::Items::ItemContainer::Cursor)
-                { ForgetMinimapProjectionItem(info.runtimeId);
-                  ForgetVendorSellPriceItem(info.runtimeId);
-                  ForgetCarriedSoundItem(info.runtimeId,results); }
+                { ++results.visited;
+                  if(needs.minimap) ForgetMinimapProjectionItem(info.runtimeId);
+                  if(needs.sellPrice) ForgetVendorSellPriceItem(info.runtimeId);
+                  if(needs.sound) ForgetCarriedSoundItem(info.runtimeId,results); }
         }
     }
+    timing.Items(results.visited);
     if (results.cleared) {
         char line[210]{};
         std::snprintf(line,sizeof(line),
@@ -5014,19 +5542,20 @@ void PollSoundInventoryLoop(std::stop_token stop) noexcept {
     while (!stop.stop_requested()) {
         std::this_thread::sleep_for(SoundPickupPollInterval);
         if (stop.stop_requested()) break;
-        const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
-        const bool sellPriceLifecycle=rules && rules->usesSellPrice;
-        if (!Context ||
-            (!SoundArmed.load(std::memory_order_acquire) &&
-             !AutomapProjectionHookInstalled.load(std::memory_order_acquire) &&
-             !sellPriceLifecycle) ||
-            !SoundInventory || !SoundThreads || !SoundThreads->runOnUiThread)
+        Perf::Counters[Perf::PollWake].Record(0);
+        if (!Context || !ReadPickupObservationNeeds() ||
+            !SoundInventory || !SoundThreads || !SoundThreads->runOnUiThread) {
+            Perf::Counters[Perf::PollSkipped].Record(0);
             continue;
-        if (SoundPickupPollPending.exchange(true,std::memory_order_acq_rel))
+        }
+        if (SoundPickupPollPending.exchange(true,std::memory_order_acq_rel)) {
+            Perf::Counters[Perf::PollPending].Record(0);
             continue;
+        }
         if (SoundThreads->runOnUiThread(
                 Context,&PollSoundInventoryOnUiThread,nullptr) !=
             D2RL::Threads::Result::Success) {
+            Perf::Counters[Perf::PollDispatchFailure].Record(0);
             SoundPickupPollPending.store(false,std::memory_order_release);
         }
     }
@@ -5042,7 +5571,7 @@ void StartSoundInventoryObserver() noexcept {
             D2RL::InventoryServiceRequiredSize) ||
         !inventory->getLocalPlayer || !inventory->forEachInventoryItem) {
         LogWarn("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=public-inventory-service-missing "
-             "sounds-continue=1 same-id-redrop=not-rearmed");
+             "sounds-continue=1 minimap-pickup-poll=unavailable");
         return;
     }
     SoundInventory=inventory;
@@ -5058,14 +5587,14 @@ void StartSoundInventoryObserver() noexcept {
         SoundInventory=nullptr;
         SoundInventoryItems=nullptr;
         LogWarn("LOOT_SOUND_PICKUP_OBSERVER_UNAVAILABLE reason=worker-create-failed "
-             "sounds-continue=1 same-id-redrop=not-rearmed");
+             "sounds-continue=1 minimap-pickup-poll=unavailable");
         return;
     }
     char line[270]{};
     std::snprintf(line,sizeof(line),
         "LOOT_SOUND_PICKUP_OBSERVER_READY version=" UNHOARDER_VERSION_STRING " source=SDK-InventoryService "
         "intervalMs=150 includesCursor=%u nativeHooksAdded=0 inventoryWrites=0 "
-        "audio=first-observed-after-pickup minimapPickupLifecycle=shared-read-only",
+        "audio=native-drop-after-pickup minimapPickupLifecycle=shared-read-only",
         SoundInventoryItems ? 1U:0U);
     LogInfo(line);
 }
@@ -5073,24 +5602,23 @@ void StartSoundInventoryObserver() noexcept {
 void ArmNewGroundSound() noexcept {
     SoundArmed.store(false,std::memory_order_release);
     auto rules=PublishedFilterRules.load(std::memory_order_acquire);
-    if(!Context || !SoundThreads || !SoundThreads->runOnGameThread ||
+    if(!Context ||
        !FormatterHookInstalled.load(std::memory_order_acquire) ||
        ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules ||
-       !rules || !rules->soundRules || !QualifyNamedSoundBackend()) {
-        LogWarn("LOOT_SOUND_REFUSED reason=needs-filter-arm-sound-rules-ThreadService-and-qualified-native-soundplay");
+       !rules || !rules->soundRules || !QualifyNamedSoundBackend() || !ArmNativeDropSoundHook()) {
+        LogWarn("LOOT_SOUND_REFUSED reason=needs-filter-arm-sound-rules-and-qualified-native-drop-route");
         return;
     }
     {
         std::lock_guard lock(SoundSeenMutex);
         SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);
         SoundSeenRegistry.Clear();
-        SoundArmMs.store(GetTickCount64(),std::memory_order_release);
     }
     SoundArmed.store(true,std::memory_order_release);
     char message[340]{};
     std::snprintf(message,sizeof(message),
-        "LOOT_SOUND_ARMED version=" UNHOARDER_VERSION_STRING " mode=session-unit-id-first-observed source=qualified-ground-label soundRules=%zu baselineMs=%llu no-visibility-replay=1 same-id-redrop=rearm-on-inventory-observation no-item-writes=1 note=not-native-drop-event",
-        rules->soundRules,static_cast<unsigned long long>(SoundBaselineMs));
+        "LOOT_SOUND_ARMED version=" UNHOARDER_VERSION_STRING " mode=native-item-drop source=qualified-native-landing-sound soundRules=%zu labelsRequired=0 no-visibility-replay=1 same-id-redrop=per-native-event no-item-writes=1 normal-sound=fallback-on-no-selection-or-rejection",
+        rules->soundRules);
     LogInfo(message);
 }
 
@@ -5151,7 +5679,7 @@ bool ActivateConfiguredFilter(bool automatic) noexcept {
         EnableAutomaticNativeHover();
     else
         ResetNativeRowLiveSession();
-    // New files/initial activation use the existing first-observed baseline.
+    // New files/initial activation qualify the native drop route.
     // For live reloads, keep already-observed sound IDs while cancelling any
     // sounds queued from the previous generation (the old epoch).
     SoundArmed.store(false,std::memory_order_release);
@@ -5226,6 +5754,7 @@ void __cdecl ActivateFirstFilterOnGameThread(
 
     {
         std::lock_guard lock(GroundIdentityMutex);
+        GroundFormatterEpoch.fetch_add(1,std::memory_order_acq_rel);
         GroundIdentities.fill({});
     }
 
@@ -5353,6 +5882,7 @@ bool TryLiveFilterReload(const char* trigger) noexcept {
     // Invalidate copied ground-label identity before re-arming the new rules.
     {
         std::lock_guard lock(GroundIdentityMutex);
+        GroundFormatterEpoch.fetch_add(1,std::memory_order_acq_rel);
         GroundIdentities.fill({}); // no old styled-name/paint identity survives
     }
     const bool activated=ActivateConfiguredFilter(false);
@@ -5381,7 +5911,6 @@ void RebaselineSoundAtGameJoin() noexcept {
         std::lock_guard lock(SoundSeenMutex);
         SoundRegistryEpoch.fetch_add(1,std::memory_order_acq_rel);
         SoundSeenRegistry.Clear();
-        SoundArmMs.store(GetTickCount64(),std::memory_order_release);
     }
     LogInfo("LOOT_SOUND_GAME_BASELINE_RESET auto=1 previously-observed-items-baselined-for-1500ms=1");
 }
@@ -5393,19 +5922,46 @@ std::uint8_t __fastcall HookLabelFormatter(
     void* unit, void* dest, void* record, std::uint32_t flags,
     std::uint64_t stack5, std::uint64_t stack6) noexcept {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    const bool sourceCall =
-        caller == Base + LabelFormatterCallRva + DirectCallBytes ||
-        caller == Base + LabelFormatterSecondCallRva + DirectCallBytes;
+    const bool firstSourceCall = caller == Base + LabelFormatterCallRva + DirectCallBytes;
+    const bool secondSourceCall = caller == Base + LabelFormatterSecondCallRva + DirectCallBytes;
+    const bool sourceCall = firstSourceCall || secondSourceCall;
     const auto destAddress = reinterpret_cast<std::uintptr_t>(dest);
     const auto recordAddress = reinterpret_cast<std::uintptr_t>(record);
+    void* const effectiveRecord = secondSourceCall && destAddress >= 0x24
+        ? reinterpret_cast<void*>(destAddress - 0x24)
+        : record;
     const bool paired = record && dest &&
-        recordAddress <= static_cast<std::uintptr_t>(-1) - 0x24 &&
-        destAddress == recordAddress + 0x24;
+        (secondSourceCall
+            ? (destAddress >= 0x24 &&
+               destAddress <= static_cast<std::uintptr_t>(-1) - 0x80)
+            : (recordAddress <= static_cast<std::uintptr_t>(-1) - 0x24 &&
+               destAddress == recordAddress + 0x24));
 
+    const auto previousScope=ControllerGroundScope;
+    ControllerGroundScope={};
+    bool controller=false;
+    if (ControllerGroundLabelsReady.load(std::memory_order_acquire) &&
+        caller==Base+ControllerGroundLabel::FormatterReturn && unit && dest &&
+        destAddress>=0x24 && destAddress<=UINTPTR_MAX-0x80) {
+        std::uint32_t header[3]{}; SIZE_T copied{};
+        if (ReadProcessMemory(GetCurrentProcess(),unit,header,sizeof(header),&copied) &&
+            copied==sizeof(header) && header[0]==4 && header[2] && header[2]!=UINT32_MAX) {
+            ControllerGroundScope={unit,dest,header[2]};
+            controller=true;
+        }
+    }
+    GroundFormatterObservation observation(unit,dest,controller || (sourceCall && paired));
     const auto result = OriginalLabelFormatter(
         unit, dest, record, flags, stack5, stack6);
-    RememberGroundIdentity(unit, record, sourceCall, paired, result);
-    ExamineGroundSoundCandidate(unit, record, sourceCall, paired, result);
+    if (controller) {
+        // R8 is temporary geometry here. The output-bearing record is RDX-0x24;
+        // identity is supplied by the exact native unit in this same call scope.
+        RememberGroundIdentity(unit,reinterpret_cast<void*>(destAddress-0x24),
+            true,true,result,true);
+    } else {
+        RememberGroundIdentity(unit, effectiveRecord, sourceCall, paired, result);
+    }
+    ControllerGroundScope=previousScope;
     return result;
 }
 
@@ -5414,8 +5970,8 @@ void ArmLabelFormatter() noexcept {
         LogInfo("LOOT_FORMATTER_OBSERVER_READY already-installed=1");
         return;
     }
-    const char* build = Context ? D2RL::GetBuildName(Context) : nullptr;
-    if (!Context || !build || std::string_view(build) != "93847" ||
+    const char* build = Context ? ResolveBuildName(Context) : nullptr;
+    if (!Context || !IsSupportedBuild(build) ||
         !Base || !ImageSize) {
         LogWarn("LOOT_FORMATTER_REFUSED unexpected-build-or-uninitialized-image");
         return;
@@ -5441,6 +5997,13 @@ void ArmLabelFormatter() noexcept {
         return;
     }
     FormatterHookInstalled.store(true,std::memory_order_release);
+    const bool controllerRoute=ControllerGroundLabel::Verify(
+        [](std::uintptr_t rva,void* out,std::size_t size) noexcept {return ReadSafe(rva,out,size);});
+    ControllerGroundLabelsReady.store(controllerRoute,std::memory_order_release);
+    if (controllerRoute)
+        LogInfo("LOOT_CONTROLLER_LABEL_ROUTE_READY formatterReturn=0x151A2B2 paintReturn=0x1519E46 unit-output-scope=exact recordId=published-after-format recordWrites=0");
+    else
+        LogWarn("LOOT_CONTROLLER_LABEL_ROUTE_REFUSED fingerprint-mismatch default-controller-labels-preserved=1");
     LogInfo("LOOT_FORMATTER_OBSERVER_READY version=" UNHOARDER_VERSION_STRING " hook=D2R+0x1FA9F0 sourceCalls=D2R+0x15171E5,D2R+0x1517783 expectedReturnRvas=0x15171EA,0x1517788 sixArgsForwarded=1 labelWrites=none nativeCodeWrites=loader-managed-hook-only");
 }
 
@@ -5460,12 +6023,32 @@ std::atomic_bool NativePickupGuardQualified{};
 thread_local bool NativePickupGuardInside=false;
 std::jthread RuntimeWorker{};
 
+bool KeyboardAltHeld() noexcept {
+    // Event-time state, not the low-bit press history or a polling deadline.
+    return PickupGuard::AltHeld(GetAsyncKeyState(VK_LMENU),GetAsyncKeyState(VK_RMENU));
+}
+
+bool KeyboardPickupMode() noexcept {
+    // The build-qualified UI manager is independent of Controller QOL. Leave
+    // controller policy to the controller input path; unknown state fails open.
+    std::uintptr_t manager{},again{};
+    std::uint32_t mode=~0U;SIZE_T copied{};
+    return ReadSafe(NativePickupProfile::ManagerSlotRva,&manager,sizeof(manager)) &&
+        manager && manager<=UINTPTR_MAX-0xe0 &&
+        ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(manager+0xdc),
+            &mode,sizeof(mode),&copied) && copied==sizeof(mode) && mode==0 &&
+        ReadSafe(NativePickupProfile::ManagerSlotRva,&again,sizeof(again)) && again==manager;
+}
+
 PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
     std::uint32_t type,std::uint32_t id) noexcept {
+    Perf::Scope timing(Perf::Counters[Perf::Pickup]);
     if(!NativePickupGuardQualified.load(std::memory_order_acquire))
         return PickupGuard::Decision::GuardInactive;
     if(!PickupGuard::Candidate(action,type,id))
         return PickupGuard::Decision::InvalidTargetId;
+    if(KeyboardAltHeld()) return PickupGuard::Decision::AltOverride;
+    if(!KeyboardPickupMode()) return PickupGuard::Decision::NonKeyboardInput;
     if(!HideGroundArmed.load(std::memory_order_acquire))
         return PickupGuard::Decision::VisibilityNotArmed;
     if(ActiveGeometryMode.load(std::memory_order_acquire)!=GeometryMode::Rules)
@@ -5513,6 +6096,13 @@ PickupGuard::Decision QualifyGroundPickup(std::uint32_t action,void* player,
         &resolvedRule : nullptr;
     if(!matchedRule || matchedRule->show)
         return PickupGuard::Decision::NoHiddenRule;
+    // Code/property reads must not turn a recycled or moving unit into proof.
+    std::array<std::uint32_t,4> after{};copied=0;
+    if(!ReadProcessMemory(GetCurrentProcess(),unit,after.data(),sizeof(after),&copied) ||
+       copied!=sizeof(after) || after!=header)
+        return PickupGuard::Decision::InvalidUnit;
+    if(KeyboardAltHeld()) return PickupGuard::Decision::AltOverride;
+    if(!KeyboardPickupMode()) return PickupGuard::Decision::NonKeyboardInput;
     return PickupGuard::Decision::Blocked;
 }
 
@@ -5521,8 +6111,10 @@ void __fastcall HookNativeActionDispatch(std::uint32_t action,void* player,
     const bool pickup=action==PickupGuard::PickupAction &&
         type==PickupGuard::ItemUnitType;
     if(pickup &&
-       QualifyGroundPickup(action,player,type,id)==PickupGuard::Decision::Blocked)
+       QualifyGroundPickup(action,player,type,id)==PickupGuard::Decision::Blocked) {
+        Perf::Counters[Perf::PickupBlocked].Record(0,1);
         return;
+    }
     if(pickup) ForgetVendorSellPriceItem(id);
     OriginalNativeActionDispatch(action,player,type,id);
 }
@@ -5540,8 +6132,8 @@ bool NativeCallMatches(std::uintptr_t callRva,
 
 void InstallNativePickupGuard() noexcept {
     if(!Context || !Base || !ImageSize ||
-       !D2RL::GetBuildName(Context) ||
-       std::string_view(D2RL::GetBuildName(Context))!="93847"){
+       !ResolveBuildName(Context) ||
+       !IsSupportedBuild(ResolveBuildName(Context))){
         LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=wrong-build-or-image forward-only=1");
         return;
     }
@@ -5579,25 +6171,16 @@ void InstallNativePickupGuard() noexcept {
         return;
     }
 
-    // Take an exact live snapshot only after the immutable build/call-graph
-    // witnesses above pass. Reject an entry already owned by an obvious bridge;
-    // the loader performs the final expected-byte check during registration.
-    std::array<std::uint8_t,20> dispatchEntry{};
-    if(!ReadSafe(NativeActionDispatchRva,dispatchEntry.data(),
-            dispatchEntry.size()) ||
-       !((dispatchEntry[0]==0x40)||(dispatchEntry[0]==0x48)||
-         (dispatchEntry[0]>=0x50 && dispatchEntry[0]<=0x57)) ||
-       (dispatchEntry[0]==0x48 && dispatchEntry[1]==0xFF &&
-        dispatchEntry[2]==0x25) ||
-       !Context->CheckExpectedBytes(NativeActionDispatchRva,
-            dispatchEntry.data(),
-            static_cast<std::uint32_t>(dispatchEntry.size()))){
+    // Qualify the captured native body, not an arbitrary current prologue.
+    const auto& dispatchEntry=NativePickupProfile::Dispatch;
+    if(!Context->CheckExpectedBytes(NativeActionDispatchRva,
+            dispatchEntry,static_cast<std::uint32_t>(sizeof(dispatchEntry)))){
         LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-entry-unqualified forward-only=1");
         return;
     }
 
     if(!Context->InstallInlineHook(NativeActionDispatchRva,
-            dispatchEntry.data(),static_cast<std::uint32_t>(dispatchEntry.size()),
+            dispatchEntry,static_cast<std::uint32_t>(sizeof(dispatchEntry)),
             HookNativeActionDispatch,&OriginalNativeActionDispatch) ||
        !OriginalNativeActionDispatch){
         LogWarn("LOOT_PICKUP_GUARD_INACTIVE version=" UNHOARDER_VERSION_STRING " reason=dispatch-hook-registration-failed forward-only=1");
@@ -5606,7 +6189,7 @@ void InstallNativePickupGuard() noexcept {
 
     NativePickupGuardQualified.store(true,std::memory_order_release);
     LogInfo("LOOT_PICKUP_GUARD_READY version=" UNHOARDER_VERSION_STRING " action=22 type=4 mode=3 "
-         "freshLookup=D2R+0x9A5D0 rule=show:false failOpen=1 stateWrites=0");
+         "freshLookup=D2R+0x9A5D0 rule=show:false override=keyboard-alt input=keyboard-only failOpen=1 stateWrites=0");
 }
 
 void RuntimeWorkerLoop(std::stop_token stop) noexcept {
@@ -5709,6 +6292,31 @@ void RuntimeWorkerStop() noexcept {
     }
 }
 
+D2RL::ConsoleCommandResult __cdecl PerformanceCommand(
+    D2R::Game::Client*,const D2RL::ConsoleCommandContext* command,void*) noexcept {
+    if(!command || (command->argsLength && !command->args) || command->argsLength>256)
+        return D2RL::ConsoleCommandResult::InvalidArguments;
+    auto args=std::string_view(command->args?command->args:"",command->argsLength);
+    const auto first=args.find_first_not_of(" \t\r\n");
+    if(first==std::string_view::npos)return D2RL::ConsoleCommandResult::InvalidArguments;
+    args=args.substr(first,args.find_last_not_of(" \t\r\n")-first+1);
+    if(args!="perf")return D2RL::ConsoleCommandResult::InvalidArguments;
+    const auto* logger=command->plugin?command->plugin:Context;
+    if(!logger)return D2RL::ConsoleCommandResult::Failed;
+    const auto rules=PublishedFilterRules.load(std::memory_order_acquire);
+    const auto needs=ReadPickupObservationNeeds();
+    char line[384]{};
+    std::snprintf(line,sizeof(line),
+        "LOOT_PERF_STATE version=" UNHOARDER_VERSION_STRING " filterLoaded=%u rules=%zu rulesActive=%u pollSound=%u pollMinimap=%u pollPrice=%u pollPending=%u",
+        rules?1U:0U,rules?rules->rules.size():0U,
+        ActiveGeometryMode.load(std::memory_order_acquire)==GeometryMode::Rules?1U:0U,
+        needs.sound?1U:0U,needs.minimap?1U:0U,needs.sellPrice?1U:0U,
+        SoundPickupPollPending.load(std::memory_order_acquire)?1U:0U);
+    logger->LogInfo(line);
+    logger->WriteConsoleMessage(line,D2RL::ConsoleMessageKind::Output);
+    Perf::Report(logger);
+    return D2RL::ConsoleCommandResult::Handled;
+}
 
 
 } // namespace
@@ -5727,6 +6335,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         Context=nullptr;
         return false;
     }
+    if(!context->RegisterConsoleCommand("unhoarder",&PerformanceCommand,"UnHoarder: perf (read-only performance report)"))
+        LogWarn("LOOT_PERF_UNAVAILABLE reason=console-command-registration-refused");
     InWorldLifecycle = nullptr;
     InWorldJoinedListener = D2RL::Lifecycle::InvalidHandle;
     InWorldCompatService.store(nullptr,std::memory_order_relaxed);
@@ -5736,7 +6346,6 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     Base = context->exeBase;
     SoundArmed.store(false,std::memory_order_relaxed);
     SoundLoaderBase.store(0,std::memory_order_relaxed);
-    SoundArmMs.store(0,std::memory_order_relaxed);
     SoundSeenRegistry.Clear();
     SoundRegistryEpoch.store(1);
     SoundPickupPollPending.store(false);
@@ -5784,7 +6393,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     TooltipGlyphSubscribers.store(std::shared_ptr<const std::vector<TooltipGlyphSubscriber>>{},std::memory_order_release);
     BackgroundPaintHookInstalled.store(false,std::memory_order_relaxed);
     OriginalSharedLabelPaint=nullptr;
-    GroundIdentities.fill({});
+    GroundFormatterEpoch.fetch_add(1,std::memory_order_acq_rel);
+        GroundIdentities.fill({});
     BackgroundTintArmed.store(false,std::memory_order_relaxed);
     HideGroundArmed.store(false,std::memory_order_relaxed);
     OriginalInnerNameWriter=nullptr;
@@ -5805,13 +6415,22 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
         context->LogError("LOOT_FILTER_REFUSED invalid main D2R PE image");
         return false;
     }
-    const char* build = D2RL::GetBuildName(context);
+    const char* build = ResolveBuildName(context);
+    {
+        char diag[200]{};
+        std::snprintf(diag, sizeof(diag),
+            "LOOT_BUILD_DETECT contextSize=%u sdkContextSize=%u resolved=%s",
+            static_cast<unsigned>(context->contextSize),
+            static_cast<unsigned>(sizeof(D2RL::PluginContext)),
+            build ? build : "unknown");
+        LogInfo(diag);
+    }
     char msg[310]{};
     std::snprintf(msg, sizeof(msg),
-        "LOOT_FILTER_READY version=" UNHOARDER_VERSION_STRING " build=%s expectedBuild=93847 config=automatic",
+        "LOOT_FILTER_READY version=" UNHOARDER_VERSION_STRING " build=%s expectedBuild=93847|93787|94995 config=automatic",
         build ? build : "unknown");
     LogInfo(msg);
-    if (!build || std::string_view(build) != "93847") {
+    if (!IsSupportedBuild(build)) {
         context->LogWarn("LOOT_FILTER_INACTIVE unexpected build, no native hook");
         return true;
     }
@@ -5828,6 +6447,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     }
     HookInstalled.store(true, std::memory_order_release);
     PublishTooltipCompatService();
+    PublishGroundVisibilityService();
+    PublishNativeHookService();
     (void)InstallStandaloneAutomapProjection();
     QualifyVendorSellPrice();
     // Reuse the qualified native filter pipeline automatically once the
@@ -5837,6 +6458,7 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
     else LogWarn("LOOT_FILTER_AUTO_INACTIVE reason=json-absent-or-invalid no-ground-label-feature-hooks=1");
     RegisterInWorldLifecycle();
     StartSoundInventoryObserver();
+    // Keyboard pickup uses fresh filter proof; either held ALT key overrides.
     InstallNativePickupGuard();
     RuntimeWorkerStart();
 
@@ -5844,7 +6466,10 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
 }
 
 D2RL_PLUGIN_EXPORT void D2RLoaderUnloadPlugin() noexcept {
+    MapsSocket::Shutdown();
     RuntimeWorkerStop();
+    // Stop our own reload/activation work before dropping leased callbacks.
+    DetachForeignNativeHookCompat();
     FirstFilterActivationPending.store(false,std::memory_order_release);
     FirstFilterActivationRetryRequested.store(false,std::memory_order_release);
     DetachForeignTooltipCompatRoutes();

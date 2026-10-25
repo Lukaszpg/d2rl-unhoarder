@@ -11,7 +11,9 @@ assert 'if (rule.conditions.sockets.enabled) fresh->usesSockets=true;' in s
 assert 'ReadNativeGroundSockets(nativeUnit,header[2],' in s
 assert 'GroundPropertyLive::AllowsMode(before[3],purpose)' in s
 assert 'before!=after' in s and 'finalHeader!=before || first!=second' in s
-assert 'if(!getter) return false;' in s
+assert 'MapsSocket::Read(Context->exeBase' in s
+assert 'if (!readSocket(first)) return false;' in s
+assert 'if (!readSocket(second)) return false;' in s
 assert 'item.socketsKnown=known' in s
 assert 'if(!known) break;' in s
 assert 'NextNativeProperty(table->rules,item)' in s

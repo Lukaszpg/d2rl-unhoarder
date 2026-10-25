@@ -147,6 +147,7 @@ target_link_libraries(unhoarder PRIVATE
     minhook
     dxgi
     User32
+    bcrypt
 )
 
 set_target_properties(unhoarder PROPERTIES
@@ -180,6 +181,10 @@ endif()
 # ---------------------------------------------------------------------------
 if(UNHOARDER_BUILD_TESTS)
     enable_testing()
+    add_executable(unhoarder-artifact-check tests/artifact_check.cpp)
+    target_compile_features(unhoarder-artifact-check PRIVATE cxx_std_20)
+    target_link_libraries(unhoarder-artifact-check PRIVATE D2RLPlugin::D2RLPlugin)
+    add_test(NAME unhoarder-artifact COMMAND unhoarder-artifact-check "$<TARGET_FILE:unhoarder>" "${PROJECT_VERSION}")
     file(GLOB UNHOARDER_PORTABLE_TEST_SOURCES CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/*_test.cpp"
     )
@@ -201,4 +206,5 @@ if(UNHOARDER_BUILD_TESTS)
         endif()
         add_test(NAME "${test_name}" COMMAND "${test_name}")
     endforeach()
+    add_subdirectory(tests/performance)
 endif()

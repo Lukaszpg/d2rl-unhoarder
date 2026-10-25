@@ -18,7 +18,7 @@ for token in (
     "InWorldCompat::ServiceName",
     "OnCompatibleInWorldLabel",
     "OnCompatibleInWorldStyle",
-    "ObserveGroundSoundIdentity(",
+    "TryReplaceNativeDropSound(",
     "ObserveNativeRowLiveLabel(",
     "ObserveNativeRowLiveReplacement(",
     "NativeRowRendererRva=0x8DA7E0",

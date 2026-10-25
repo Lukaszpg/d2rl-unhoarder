@@ -1,30 +1,83 @@
 # UnHoarder
 
-**Author:** MindH1ve
+A loot filter for Diablo II: Resurrected running through D2RLoader.
 
-Standalone D2RLoader plugin providing a production JSON loot filter for Diablo II: Resurrected build 93847.
+**Original author: MindH1ve.** This is Pyre-Flies' fork of
+[Lukaszpg/d2rl-unhoarder](https://github.com/Lukaszpg/d2rl-unhoarder), carrying
+controller, sound and compatibility fixes for our Reimagined testing. The
+original author credits, plugin identity and GPL-3.0 license are retained.
 
-## Installation
+## What changed in this fork
 
-1. Head to releases and download the newest release - `unhoarder.dll` and `unhoarder-<version>-data.zip` are required.
-2. Place `unhoarder.dll` in `<D2R_installation_directory>\mods\<your_mod_name>\d2rloader\plugins`
-3. Unzip the downloaded ZIP, but do not copy it yet to your D2R directory.
-4. If you are:
-   
-  a) NOT Using a mod that modifies `sounds.txt` file - you can copy the unzipped contents to `<D2R_installation_directory>\mods\<your_mod_name>\<your_mod_name>.mpq\`
+**1.2.19** includes quest weapons and jewelry (such as Wirt's Leg and Amulet of the Viper) in `"ques"` / `"Quest"` `itemType` rules, logs a warning instead of rejecting `filter.json` when a rule references an unknown or zero-item `itemType`, fixes minimap icons on controller ground labels, and includes the 1.2.16–1.2.17 improvements.
+Both plugins work independently.
+**Important for source builds:** Controller QOL 1.3.1+rev.93 was matched to the
+fork author's exact 1.2.19 binary. Rebuilding UnHoarder or applying this
+import PR changes its binary profile: the companion must be re-qualified
+against the resulting DLL before combined native-hook features are enabled. Both perf commands remain
+available. Live loot performance improved in user testing; complete ALT,
+controller and hosted interaction coverage remains open.
 
-  b) If you are using a mod that modifies `sounds.txt` file, you have to manually add the filter alert sounds to that file, using for example [TXTEditor](https://github.com/yinyin333333/TXTeditor):
-  - Open the downloaded `sounds.txt` file
-  - Open the `sounds.txt` file of the mod you're using
-  - Copy `Filter01` to `Filter16` rows and add them to your mods `sounds.txt` at the end of the file
-  - Make sure to change the IDS in `Index` column
-  - Save the file
+- Apply filter names, colors and backgrounds to controller ground labels.
+- Play selected filter alerts when items drop, including when labels are hidden.
+  Successful filter playback replaces the ordinary drop sound; unavailable or
+  rejected playback falls back to the ordinary sound.
+- Route the bundled filter alerts through the game's Items volume control.
+- Restore socket-based rules with the specifically reviewed Maps companion.
+- Block keyboard/mouse pickup of items hidden by a filter rule, including clicks
+  on their ground gear icon. Hold either keyboard ALT key to allow pickup.
+  Controller pickup retains its existing policy. Share confirmed
+  visibility with matching Controller QOL so hidden loot does not consume LB
+  pickup slots; QOL also applies this to unmodified controller pickup when
+  `block_filtered_pickup` is enabled.
 
-## Building and installing a filter
+Download **1.2.19** from this fork's
+[latest release](https://github.com/Pyre-Flies/d2rl-unhoarder/releases/latest).
+It includes the earlier background, controller-label and sound fixes.
+Upstream release assets do not include this fork's changes.
 
-In order to build a filter, head to [UnHoarder Builder](https://lukaszpg.github.io/unhoarder-builder/) site. Upload the required text files of the mod you're using (or vanilla if you're not using any huge overhaul mods) to enable autocomplete. Build your filter and then click `Download filter.json` at the top.
+## Install or update
 
-Place `filter.json` in `<D2R_installation_directory>\mods\<your_mod_name>\d2rloader\config`.
+With the game closed, back up your current files and put `unhoarder.dll` in:
+
+`<D2R_installation_directory>\mods\<your_mod_name>\d2rloader\plugins`
+
+Keep your existing `filter.json` in:
+
+`<D2R_installation_directory>\mods\<your_mod_name>\d2rloader\config`
+
+Use [UnHoarder Builder](https://lukaszpg.github.io/unhoarder-builder/) to create
+or edit your rules. Saving a valid filter reloads it automatically;
+**Ctrl+Shift+F9** also reloads it. Invalid JSON leaves the last valid rules active.
+Updates should preserve your filter and other saved settings.
+
+### Filter sounds
+
+The DLL alone does not install the alerts. The matching data payload belongs
+inside the selected mod's MPQ/data tree and includes the 16 `Filter01` through
+`Filter16` audio files. If the mod already supplies `sounds.txt`, merge those
+rows into its existing table instead of replacing the table with the generic
+one. Preserve that mod's row indexes and unrelated values.
+
+For those 16 rows, set `Channel` to `sfx/items_hd` and `IsUI` to `0`. Keep the
+filenames, volume, pitch and other fields unchanged. A launcher that restores
+its own clean table must preserve these changes during package preparation.
+See [packaging notes](docs/PACKAGING.md).
+
+## Compatibility and testing
+
+Requires Windows x64 and the reviewed D2RLoader ABI-4 environment. The inherited
+native profile is qualified for D2R build 93847; individual companion paths are
+admitted only when their exact compatibility checks pass. A version label alone
+is not enough. Unsupported native paths remain disabled with a diagnostic.
+
+The release passes **50 CTest tests and 51 Python source checks**, with 79
+matching Controller QOL tests. Live testing shows improved loot performance.
+Full ALT/controller interaction, audio and broader hosted coverage remain open.
+Automated checks do not establish full Ladder qualification.
+
+See the [changelog](CHANGELOG.md) for the player-facing changes. Build-specific
+records live under [docs/](docs/) for contributors.
 
 ## Identity
 
@@ -39,71 +92,13 @@ The former binary name `loot-filter.dll` is retired. UnHoarder refuses to start 
 
 The runtime configuration is `<mod>/d2rloader/config/filter.json`. UnHoarder no longer reads filter JSON files from the `plugins` directory.
 
-## Building from source
+## Performance reports
 
-Requirements:
+Run `/unhoarder perf` before and after a 30-60 second test. Each report covers
+the interval since the preceding report and writes to `unhoarder.log`. It does
+not change settings. Pair it with an FPS overlay; nested timings are not additive.
 
-- Windows x64
-- CMake 3.29+
-- MSVC with C++20 support
-- Git available to CMake for pinned `FetchContent` dependencies
-
-Configure and build:
-
-```powershell
-cmake -S . -B build
-cmake --build build --config Release --target unhoarder --parallel
-```
-
-The resulting plugin is:
-
-```text
-build/bin/unhoarder.dll
-```
-
-Copy it to your mod's D2RLoader plugin directory, for example:
-
-```text
-<Diablo II Resurrected>/mods/<mod>/d2rloader/plugins/unhoarder.dll
-```
-
-Place `filter.json` in the same mod's `d2rloader/config` directory.
-
-### PluginSDK source
-
-By default CMake fetches the public D2RLoader PluginSDK directly from `D2RLoader/PluginSDK`, pinned to commit `717f727a0ec52912d1558764345f8fa3453a2bd6` (SDK 0.3.0 / plugin ABI 4) for reproducible builds.
-
-For an offline/local SDK checkout, configure with:
-
-```powershell
-cmake -S . -B build `
-  -G "Visual Studio 17 2022" -A x64 `
-  -DUNHOARDER_PLUGINSDK_SOURCE_DIR="D:/path/to/PluginSDK"
-```
-
-## Plugin interoperability
-
-UnHoarder uses D2RLoader `DiagnosticsService` to identify the **actual owner**
-of a shared native boundary and `PluginCommunicationService` to cooperate
-with that exact provider. It never enables compatibility from a DLL name,
-load order, private export, or guessed foreign detour.
-
-Three versioned contracts are currently defined:
-
-| Contract | Native boundary | Role in UnHoarder |
-| --- | ---: | --- |
-| `unhoarder-tooltip-compat` v1 | `0x1FA8E0`, `0x658510` | host or consumer for shared label-paint / glyph-render middleware |
-| `unit-stat-read-compat` v1 | `0x2F5020` | consumer when another plugin owns the qualified UnitStat bridge |
-| `in-world-item-label-compat` v1 | `0xC0420` | consumer when another plugin owns the hidden-hover item-label path |
-
-A foreign provider is accepted only when Diagnostics proves the relevant
-D2RLoader-tracked owner and that same provider publishes the matching service.
-Unknown, untracked, mismatched, or unavailable providers still fail closed
-without disabling unrelated UnHoarder features.
-
-See [docs/tooltip-compat.md](docs/tooltip-compat.md) for the developer contract,
-lifetime rules, provider requirements, and load-order behavior. Public ABI
-headers live under [interop/](interop/).
+Build instructions and integration details are in [development](DEVELOPMENT.md).
 
 ## Canonical JSON structure
 

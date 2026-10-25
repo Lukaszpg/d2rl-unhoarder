@@ -31,12 +31,16 @@ int main() {
         "Miscellaneous\tmisc\t\t\tx\r\n"
         "Currency\tcurn\tmisc\t\tx\r\n"
         "Hybrid\thybr\tweap\tarmo\tx\r\n"
+        "Club\tclub\tmele\t\tx\r\n"
+        "Quest\tques\t\t\tx\r\n"
+        "Cloak\tcloa\ttors\t\tx\r\n"
         "Oddity\todd\t\t\tx\r\n";
     Write(types,good);
     Write(excel/"weapons.txt",
-        "name\ttype2\tcode\ttype\r\n"
+        "name\ttype2\tcode\ttype\tquest\r\n"
         "Phase Blade\t\t7cr\t1hs\r\n"
-        "Berserker Axe\t\t7wa\taxe\r\n"
+        "Berserker Axe\t\t7wa\taxe\t0\r\n"
+        "Wirt's Leg\t\tleg\tclub\t1\r\n"
         "Hybrid Weapon\tshld\thyb\thybr\r\n");
     Write(excel/"armor.txt",
         "code\ttype\ttype2\tname\n"
@@ -48,7 +52,7 @@ int main() {
         "char\tHybrid Charm\tmisc\todd\n");
     ItemTypeTable::Catalog catalog{};std::string error;
     assert(ItemTypeTable::Load(excel,catalog,error));
-    assert(catalog.typeRows==12 && catalog.weaponRows==3 &&
+    assert(catalog.typeRows==15 && catalog.weaponRows==4 &&
            catalog.armorRows==2 && catalog.miscRows==2);
     const auto has=[&](std::string_view type,std::string_view code) {
         const auto* codes=catalog.Find(type);
@@ -64,7 +68,9 @@ int main() {
     assert(has("shld","hyb") && has("shld","uit"));
     assert(has("Currency","divo") && has("misc","divo"));
     assert(has("odd","char")); // optional type2
+    assert(has("ques","leg") && has("Quest","leg") && has("weap","leg") && !has("ques","7wa"));
     assert(!catalog.Find("sword") && !catalog.Find("spurious"));
+    assert(catalog.Find("cloa") && catalog.Find("cloa")->empty() && catalog.Find("Cloak") && catalog.Find("Cloak")->empty());
     RuleEngine::Conditions c{};
     c.typeCodes=*catalog.Find("swor");
     RuleEngine::Item item{};item.code=Code("7cr");
