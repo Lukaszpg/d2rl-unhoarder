@@ -10,7 +10,10 @@ assert "OriginalNativeActionDispatch(action,player,type,id);" in hook
 qual=s[s.index("PickupGuard::Decision QualifyGroundPickup("):s.index("void __fastcall HookNativeActionDispatch(")]
 for term in ("PickupGuard::Decision::LookupFailed","PickupGuard::Decision::NotGround","PickupGuard::Decision::NoHiddenRule","PickupGuard::Decision::Blocked","PickupGuard::GroundMode(header[3])","ResolveGroundRule(rules.get(),ruleItem,resolvedRule)"):
     assert term in qual,term
-for timer in ("NativeActionPhase","NativeActionDeadline","GetAsyncKeyState","PickupClickMs"):
+for timer in ("NativeActionPhase","NativeActionDeadline","PickupClickMs"):
     assert timer not in qual,timer
 assert "RecordPickupDecision" not in s and "DrainPickupDecisions" not in s
 print("pickup guard remains phase-independent; diagnostic queue removed: ok")
+
+assert "InstallNativePickupGuard();" in s[s.index("D2RLoaderLoadPlugin"): ]
+assert "KeyboardAltHeld()" in qual and "KeyboardPickupMode()" in qual

@@ -7,7 +7,8 @@ assert 'RuleEngine::NeedsNativeQualityLevel(table->rules,item)' in s
 assert 'ResolveMatchingRulesFailOpen' in h
 assert 'ReadNativeGroundQualityLevel(' in s
 assert 'if((table->usesQuality || table->usesItemLevel) &&' in s
-assert s.count('const auto scalars=GroundRuleItem(code,unit,table.get(),recordId,') == 1
+assert s.count('scalars=GroundRuleItem(code,unit,table.get(),recordId,') == 1
+assert 'if(!ConsumeGroundFormatterObservation(unit,record,recordId,code,table,scalars)) {' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'if(CheapConditionsCannotMatch(c,item)) continue;' in h
 assert 'if(c.Matches(item) && !Continues(rule)) return false;' in h

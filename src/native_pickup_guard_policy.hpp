@@ -12,7 +12,7 @@ enum class Decision : std::uint8_t {
     Blocked, GuardInactive, InvalidTargetId,
     VisibilityNotArmed, RulesModeInactive, CodeReaderUnavailable,
     NullPlayer, Reentrant, NoHiddenRules, InvalidPlayer, LookupFailed,
-    InvalidUnit, NotGround, InvalidCode, NoHiddenRule
+    InvalidUnit, NotGround, InvalidCode, NoHiddenRule, AltOverride, NonKeyboardInput
 };
 constexpr const char* DecisionName(Decision value) noexcept {
     switch(value) {
@@ -31,6 +31,8 @@ constexpr const char* DecisionName(Decision value) noexcept {
     case Decision::NotGround: return "not-ground";
     case Decision::InvalidCode: return "invalid-item-code";
     case Decision::NoHiddenRule: return "visible-or-no-hidden-rule";
+    case Decision::AltOverride: return "keyboard-alt-held";
+    case Decision::NonKeyboardInput: return "controller-or-unknown-input";
     }
     return "unknown";
 }
@@ -44,5 +46,8 @@ constexpr bool SameItemIdentity(std::uint32_t type,std::uint32_t id,
 }
 constexpr bool GroundMode(std::uint32_t mode) noexcept {
     return mode==OnGroundMode;
+}
+constexpr bool AltHeld(short left,short right) noexcept {
+    return ((static_cast<std::uint16_t>(left)|static_cast<std::uint16_t>(right))&0x8000U)!=0;
 }
 } // namespace UnHoarder::NativePickupGuardPolicy

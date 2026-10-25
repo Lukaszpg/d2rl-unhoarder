@@ -46,6 +46,11 @@ inline std::string TypeCode(std::string_view cell) {
     if(!BaseNameTable::PackCode(cell))return {};
     return std::string(cell);
 }
+inline bool HasNonZeroCell(std::string_view cell) noexcept {
+    while(!cell.empty() && cell.front()==' ') cell.remove_prefix(1);
+    while(!cell.empty() && cell.back()==' ') cell.remove_suffix(1);
+    return !cell.empty() && cell!="0";
+}
 inline bool ReadRows(const fs::path& path,std::vector<std::string>& lines,
     std::vector<std::string_view>& headings,std::string& error) {
     std::error_code ec;
@@ -124,7 +129,7 @@ inline bool ReadItems(const fs::path& excel,const wchar_t* filename,
     std::vector<std::string_view> headings;
     if(!ReadRows(excel/filename,lines,headings,error))return false;
     const auto code=Column(headings,"code"),type=Column(headings,"type"),
-        type2=Column(headings,"type2");
+        type2=Column(headings,"type2"),quest=Column(headings,"quest");
     if(code==headings.size() || type==headings.size()) {
         error="itemType-item-table-requires-code-and-type-columns:"+
             (excel/filename).filename().string();return false;
@@ -147,6 +152,9 @@ inline bool ReadItems(const fs::path& excel,const wchar_t* filename,
             }
             direct[packed].push_back(secondary);
         }
+        if(quest<cells.size() && HasNonZeroCell(cells[quest]) &&
+           out.types.contains("ques"))
+            direct[packed].push_back("ques");
         ++count;
     }
     return true;
@@ -184,6 +192,7 @@ inline bool Load(const fs::path& excel,Catalog& out,std::string& error) {
     std::unordered_set<std::string> visiting;
     for(const auto& [id,row]:staged.types)
         if(!Ancestors(staged,id,memo,visiting,error))return false;
+    for(const auto& [id,row]:staged.types)staged.itemCodesByType[id];
     for(const auto& [itemCode,types]:direct) {
         for(const auto& id:types) {
             for(const auto& ancestor:memo.at(id))

@@ -17,7 +17,7 @@ assert 'if(!typeCodes.empty()' in r
 assert 'std::binary_search(c.typeCodes.begin(),c.typeCodes.end(),item.code)' in r
 assert '"ItemType"' in h and '"Code"' in h
 assert '"Equiv1"' in h and '"Equiv2"' in h
-assert '"type2"' in h and '"misc.txt"' in h
+assert '"type2"' in h and '"misc.txt"' in h and '"quest"' in h and '"ques"' in h
 assert 'PublishedFilterRules.store(published,' in s
 assert 'GroundPropertyLive::Purpose::VerifiedLabel' in s
 assert 'if(!PickupGuard::GroundMode(header[3]))' in s

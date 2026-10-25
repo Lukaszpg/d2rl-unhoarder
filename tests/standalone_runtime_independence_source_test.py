@@ -25,7 +25,7 @@ for required in (
     "SyncFilterBackgroundState",
     "SyncFilterTextColorState",
     "SyncFilterVisibilityState",
-    "ObserveGroundSoundIdentity",
+    "TryReplaceNativeDropSound",
     "UpdateMinimapProjectionIconRule",
     "QualifyGroundQuantityReader();",
     "PublishTooltipCompatService",
