@@ -130,6 +130,23 @@ add_library(unhoarder SHARED
     src/plugin.rc
 )
 
+# Generate the exact source checkout revision at BUILD time, not configure
+# time. An incremental build after a Git commit therefore refreshes the DLL
+# without requiring a manual CMake reconfigure. A source archive without Git
+# explicitly reports commit=unknown instead of embedding a stale SHA.
+set(UNHOARDER_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_custom_target(unhoarder-build-commit
+    COMMAND "${CMAKE_COMMAND}"
+        "-DUNHOARDER_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DUNHOARDER_OUTPUT_DIR=${UNHOARDER_BUILD_INFO_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/write_build_commit.cmake"
+    BYPRODUCTS "${UNHOARDER_BUILD_INFO_DIR}/unhoarder_build_commit.hpp"
+    COMMENT "Capture Git revision for UnHoarder startup diagnostics"
+    VERBATIM
+)
+add_dependencies(unhoarder unhoarder-build-commit)
+target_include_directories(unhoarder PRIVATE "${UNHOARDER_BUILD_INFO_DIR}")
+
 target_compile_features(unhoarder PRIVATE cxx_std_20)
 target_compile_definitions(unhoarder PRIVATE
     WIN32_LEAN_AND_MEAN

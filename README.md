@@ -157,3 +157,15 @@ Operational logs are limited to configuration, compatibility/readiness, reloads,
 ## Examples
 
 Use `unhoarder.v3.example.json` as the canonical starting point. Additional schema-3 examples cover Continue, base names, item types, sockets, ethereal, identified, and native `sellPrice` conditions.
+
+## Startup build identity
+
+The local UnHoarder version is maintained in `VERSION` (currently `1.2.2`).
+Every DLL build captures the current checkout's **12-character Git commit SHA**
+and prints `version=1.2.2 commit=<sha>` in `LOOT_COMPAT_START`. The
+revision is generated at build time, so rebuilding after a commit refreshes
+it without manually reconfiguring CMake. When building outside a Git
+checkout, the log explicitly reports `commit=unknown`; it never invents a
+revision. In GitHub pull-request CI, checkout may be a temporary merge
+commit; the logged SHA always identifies the actual checked-out source
+revision used by that build.

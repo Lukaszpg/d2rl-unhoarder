@@ -4,6 +4,7 @@
 #include <D2RLPlugin/lifecycle_events.h>
 #include <D2RLPlugin/data_tables.h>
 #include "item_code_table.hpp"
+#include "unhoarder_build_commit.hpp"
 #include "ground_quantity_label.hpp"
 #include "ground_label_background.hpp"
 #include "native_drop_sound.hpp"
@@ -6597,7 +6598,8 @@ D2RL_PLUGIN_EXPORT auto D2RLoaderLoadPlugin(const D2RL::PluginContext* context) 
             nt.OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC;
         char line[310]{};
         std::snprintf(line,sizeof(line),
-            "LOOT_COMPAT_START version=" UNHOARDER_VERSION_STRING " targetBuild=93847 "
+            "LOOT_COMPAT_START version=" UNHOARDER_VERSION_STRING
+            " commit=" UNHOARDER_BUILD_COMMIT_STRING " targetBuild=93847 "
             "loaderImage=%u peOk=%u stamp=0x%X imageSize=0x%X "
             "threadService=%u quantityPolicy=fail-closed soundPolicy=fail-closed",
             module?1U:0U,peOk?1U:0U,
