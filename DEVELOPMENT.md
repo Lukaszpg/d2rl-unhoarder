@@ -54,18 +54,21 @@ of a shared native boundary and `PluginCommunicationService` to cooperate
 with that exact provider. It never enables compatibility from a DLL name,
 load order, private export, or guessed foreign detour.
 
-Three versioned contracts are currently defined:
+Four versioned native-hook/provider contracts are currently defined (in addition to UnHoarder's ground and label visibility services):
 
 | Contract | Native boundary | Role in UnHoarder |
 | --- | ---: | --- |
 | `unhoarder-tooltip-compat` v1 | `0x1FA8E0`, `0x658510` | host or consumer for shared label-paint / glyph-render middleware |
 | `unit-stat-read-compat` v1 | `0x2F5020` | consumer when another plugin owns the qualified UnitStat bridge |
 | `in-world-item-label-compat` v1 | `0xC0420` | consumer when another plugin owns the hidden-hover item-label path |
+| `d2rl-native-item-hook-compat` v1 | `0x1C8130`, `0xD76E0` | host or owner-verified consumer for drop-audio replacement and automap observations |
 
 A foreign provider is accepted only when Diagnostics proves the relevant
 D2RLoader-tracked owner and that same provider publishes the matching service.
 Unknown, untracked, mismatched, or unavailable providers still fail closed
 without disabling unrelated UnHoarder features.
+
+See [docs/native-hook-interop.md](docs/native-hook-interop.md) for the drop/automap service, borrowed pointer lifetime and remaining collision boundaries.
 
 See [docs/tooltip-compat.md](docs/tooltip-compat.md) for the developer contract,
 lifetime rules, provider requirements, and load-order behavior. Public ABI

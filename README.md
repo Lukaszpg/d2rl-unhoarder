@@ -10,8 +10,11 @@ original author credits, plugin identity and GPL-3.0 license are retained.
 ## What changed in this fork
 
 **1.2.19** includes quest weapons and jewelry (such as Wirt's Leg and Amulet of the Viper) in `"ques"` / `"Quest"` `itemType` rules, logs a warning instead of rejecting `filter.json` when a rule references an unknown or zero-item `itemType`, fixes minimap icons on controller ground labels, and includes the 1.2.16–1.2.17 improvements.
-Both plugins work independently;
-use **Controller QOL 1.3.1+rev.93** or newer when combining them. Both perf commands remain
+Both plugins work independently.
+**Important for source builds:** Controller QOL 1.3.1+rev.93 was matched to the
+fork author's exact 1.2.19 binary. Rebuilding UnHoarder or applying this
+import PR changes its binary profile: the companion must be re-qualified
+against the resulting DLL before combined native-hook features are enabled. Both perf commands remain
 available. Live loot performance improved in user testing; complete ALT,
 controller and hosted interaction coverage remains open.
 
